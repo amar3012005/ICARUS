@@ -70,6 +70,12 @@ impl PqCodebook {
         &self.centroids[base..base + sd]
     }
 
+    /// Crate-internal centroid accessor (used by the ADC module).
+    #[inline]
+    pub(crate) fn centroid_pub(&self, s: usize, c: usize) -> &[f32] {
+        self.centroid(s, c)
+    }
+
     /// Train a codebook on `vectors` (each length `dim`) via per-subspace k-means. `seed`
     /// makes training deterministic. Subspaces train in parallel (rayon).
     pub fn train(vectors: &[Vec<f32>], m: usize, k: usize, seed: u64) -> Self {
