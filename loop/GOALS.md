@@ -158,7 +158,7 @@
 
 ## Phase P4 — Product Quantization (gate: recall@10 overlap >96% vs float32 + pq_drift_detect test; retrain never inline)
 
-- [ ] p4-1: mpq crate — PQ codebook training (k-means, M=128 subspaces × 8 dims, K=256) + encode/decode
+- [x] p4-1: mpq crate — PQ codebook training (k-means, M=128 subspaces × 8 dims, K=256) + encode/decode
       depends_on: p3-5
       acceptance: new crate/mpq. PqCodebook::train(vectors, M=128, K=256) runs per-subspace k-means (kmeans++ init, Lloyd iters, rayon over subspaces), produces [M][K][dim/M] f32 centroids. encode(vec)->[u8;128] (nearest centroid per subspace). decode(code)->reconstructed f32 vec. .mpq on-disk format byte-matches SPEC §3.2 (magic MPQC, M/K/dim header, centroids row-major). save/load. unit tests: train→encode→decode reconstruction error bounded; save/load round-trip; clippy clean.
       risk_tier: high

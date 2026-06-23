@@ -319,6 +319,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpq"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "tempfile",
+ "zerocopy",
+]
+
+[[package]]
 name = "mseg"
 version = "0.1.0"
 dependencies = [
