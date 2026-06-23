@@ -43,7 +43,8 @@ pub struct Segment {
     vec_mmap: MmapMut, // parallel f32 vectors, entry i = slot i
     txt_file: File,    // append-only text region
     txt_len: u64,
-    capacity: usize, // slots the current maps can hold
+    capacity: usize,                          // slots the current maps can hold
+    hnsw: Option<crate::index::AsyncIndexer>, // optional async HNSW overlay (P3)
 }
 
 #[inline]
@@ -119,6 +120,7 @@ impl Segment {
             txt_file,
             txt_len: 0,
             capacity: INITIAL_SLOTS,
+            hnsw: None,
         };
         seg.flush()?;
         Ok(seg)
@@ -163,6 +165,7 @@ impl Segment {
             txt_file,
             txt_len,
             capacity,
+            hnsw: None,
         })
     }
 
@@ -319,6 +322,60 @@ impl Segment {
         self.vec_file.sync_all()?;
         self.txt_file.sync_all()?;
         Ok(())
+    }
+
+    // --- HNSW overlay (P3) -------------------------------------------------------
+
+    /// Enable the async HNSW overlay, seeding it with every existing live slot. After this,
+    /// `insert` enqueues new vectors for background indexing and `recall` uses HNSW candidates.
+    /// Idempotent-ish: re-enabling rebuilds the overlay from the current segment.
+    pub fn enable_hnsw(&mut self) -> Result<()> {
+        let n = self.slot_count() as usize;
+        let indexer = crate::index::AsyncIndexer::new(self.dim, n.max(self.capacity))?;
+        for idx in 0..n {
+            let slot = self.slot(idx)?;
+            if slot.is_tombstoned() {
+                continue;
+            }
+            let v = self.read_vector(idx)?;
+            indexer.enqueue(slot.id(), &v);
+        }
+        self.hnsw = Some(indexer);
+        Ok(())
+    }
+
+    /// True if the HNSW overlay is enabled.
+    pub fn hnsw_enabled(&self) -> bool {
+        self.hnsw.is_some()
+    }
+
+    /// Enqueue a vector for async indexing (no-op if the overlay is disabled). Never blocks,
+    /// never rebuilds (SPEC §6.2) — called from the `insert` path in crud.rs.
+    pub(crate) fn enqueue_index_add(&self, slot_id: u32, vector: &[f32]) {
+        if let Some(ix) = &self.hnsw {
+            ix.enqueue(slot_id, vector);
+        }
+    }
+
+    /// Approximate HNSW candidate search (returns `None` if the overlay is disabled).
+    pub(crate) fn hnsw_search(
+        &self,
+        query: &[f32],
+        k: usize,
+    ) -> Option<Result<Vec<mnsw_index::Candidate>>> {
+        self.hnsw.as_ref().map(|ix| ix.search(query, k))
+    }
+
+    /// Block until all enqueued index adds are applied (test/flush helper).
+    pub fn index_drain(&self) {
+        if let Some(ix) = &self.hnsw {
+            ix.drain();
+        }
+    }
+
+    /// Number of vectors currently in the HNSW overlay (0 if disabled).
+    pub fn hnsw_len(&self) -> usize {
+        self.hnsw.as_ref().map(|ix| ix.len()).unwrap_or(0)
     }
 }
 

@@ -54,6 +54,13 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// True if any filter condition is set (used to widen HNSW over-fetch).
+    pub fn is_active(&self) -> bool {
+        self.entity_mask.is_some()
+            || self.created_at_range.is_some()
+            || self.valid_from_range.is_some()
+    }
+
     /// True if `(entity_bitmap, created_at, valid_from)` passes every present condition.
     pub fn matches(&self, entity_bitmap: u64, created_at: i64, valid_from: i64) -> bool {
         if let Some(m) = self.entity_mask {

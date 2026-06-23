@@ -324,6 +324,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memmap2",
+ "mnsw-index",
  "mseg-format",
  "proptest",
  "tempfile",

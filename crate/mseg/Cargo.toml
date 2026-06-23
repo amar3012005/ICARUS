@@ -17,6 +17,7 @@ path = "src/bin/bench.rs"
 
 [dependencies]
 mseg-format = { path = "../mseg-format" }
+mnsw-index = { path = "../mnsw-index" }
 memmap2.workspace = true
 zerocopy.workspace = true
 

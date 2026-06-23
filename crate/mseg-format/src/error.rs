@@ -31,6 +31,8 @@ pub enum MsegError {
     InvalidOrgId(String),
     /// Another process holds the shard lock (SPEC §4.3).
     ShardLocked,
+    /// The HNSW overlay (usearch) failed.
+    Index(String),
     /// The host is big-endian but a native-endian fast path was requested (none in prod).
     Corrupt(String),
 }
@@ -57,6 +59,7 @@ impl fmt::Display for MsegError {
             MsegError::NoSuchSlot(id) => write!(f, "no such slot {id}"),
             MsegError::InvalidOrgId(s) => write!(f, "invalid org_id: {s:?}"),
             MsegError::ShardLocked => write!(f, "shard is locked by another process"),
+            MsegError::Index(m) => write!(f, "hnsw index error: {m}"),
             MsegError::Corrupt(m) => write!(f, "corrupt segment: {m}"),
         }
     }
@@ -93,6 +96,7 @@ mod tests {
             MsegError::NoSuchSlot(9),
             MsegError::InvalidOrgId("../x".into()),
             MsegError::ShardLocked,
+            MsegError::Index("usearch".into()),
             MsegError::Corrupt("oops".into()),
         ];
         for v in &variants {

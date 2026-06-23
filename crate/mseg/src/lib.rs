@@ -4,7 +4,9 @@
 //! (P2-3), CRUD (P2-4), and the multi-tenant `Shard` (P2-5). This is the I/O + lifecycle
 //! layer; the byte format itself lives in `mseg-format` and is spec-locked there.
 
+mod append;
 mod crud;
+mod index;
 mod segment;
 mod shard;
 mod types;

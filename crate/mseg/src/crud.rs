@@ -6,22 +6,15 @@
 //! brute-force f32 cosine scan over live slots (HNSW arrives in P3); it skips tombstones and
 //! applies the entity-bitmap + bi-temporal `Filter` (SPEC §5.4 steps 1–4; `hops` is P5).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use mseg_format::{flags, MsegError, Result, SlotHeader, TextRef, SENTINEL_U32};
 
 use crate::segment::{Segment, SlotId};
 use crate::types::{Filter, Hit, MemoryInput};
 
-fn now_nanos() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
-}
-
 impl Segment {
-    /// Insert a memory, returning its stable [`SlotId`]. Append-only (SPEC §5.3, §6.1).
+    /// Insert a memory, returning its stable [`SlotId`]. The durable write is the append-only
+    /// path in `append.rs`; if an HNSW overlay is enabled, the new vector is enqueued for
+    /// asynchronous indexing here — never rebuilt inline (SPEC §5.3, §6.1, §6.2).
     pub fn insert(&mut self, mem: MemoryInput) -> Result<SlotId> {
         if mem.vector.len() != self.dim() {
             return Err(MsegError::DimMismatch {
@@ -29,47 +22,10 @@ impl Segment {
                 got: mem.vector.len(),
             });
         }
-
-        // 1. text -> append-only .txt block
-        let tref: TextRef = self.append_text_block(mem.text.as_bytes())?;
-
-        // 2. choose a slot: pop the free list, else append a fresh index
-        let free_head = self.free_list_head();
-        let idx: usize = if free_head != SENTINEL_U32 {
-            let reused = free_head as usize;
-            // next free = the tombstoned slot's adjacency[0] (SPEC §1.6 chaining)
-            let next_free = self.slot(reused)?.adjacency(0);
-            self.with_header_mut(|h| h.set_free_list_head(next_free));
-            reused
-        } else {
-            let new_idx = self.slot_count() as usize;
-            self.ensure_capacity(new_idx + 1)?;
-            self.with_header_mut(|h| h.set_slot_count(new_idx as u32 + 1));
-            new_idx
-        };
-
-        // 3. build + write the slot header
-        let created_at = mem.created_at.unwrap_or_else(now_nanos);
-        let mut slot = SlotHeader::empty();
-        slot.set_id(idx as u32);
-        slot.set_flags(0); // live, PQ not trained (raw vector in .vec)
-        slot.set_created_at(created_at);
-        slot.set_valid_from(mem.valid_from);
-        slot.set_text_ptr(tref.text_ptr);
-        slot.set_text_len_lz4(tref.text_len_lz4);
-        slot.set_text_len_raw(tref.text_len_raw);
-        slot.set_entity_bitmap(mem.entity_bitmap);
-        for (i, &adj) in mem.adjacency.iter().enumerate() {
-            slot.set_adjacency(i, adj);
-        }
-        self.write_slot(idx, &slot)?;
-
-        // 4. raw vector -> parallel .vec entry
-        self.write_vector(idx, &mem.vector)?;
-
-        // 5. live count++
-        self.with_header_mut(|h| h.set_live_count(h.live_count() + 1));
-        Ok(idx as SlotId)
+        let id = self.append_memory(&mem)?;
+        // async index add (no-op if HNSW not enabled); never blocks, never rebuilds.
+        self.enqueue_index_add(id, &mem.vector);
+        Ok(id)
     }
 
     /// Fetch a memory by id. `Err(TombstonedSlot)` if deleted, `Err(NoSuchSlot)` if never used.
@@ -108,8 +64,70 @@ impl Segment {
         Ok(())
     }
 
-    /// Exact brute-force cosine recall over live slots (SPEC §5.4, P2: no HNSW, `hops` ignored).
+    /// Recall the top-`k` memories for `query` under `filter` (SPEC §5.4). Uses the HNSW
+    /// overlay when enabled (sublinear, recall never blocks on pending async adds — SPEC §6.2),
+    /// otherwise an exact brute-force scan. `hops` is deferred to P5.
     pub fn recall(&mut self, query: &[f32], filter: &Filter, top_k: usize) -> Result<Vec<Hit>> {
+        if query.len() != self.dim() {
+            return Err(MsegError::DimMismatch {
+                segment: self.dim(),
+                got: query.len(),
+            });
+        }
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        if self.hnsw_enabled() {
+            self.recall_hnsw(query, filter, top_k)
+        } else {
+            self.recall_brute(query, filter, top_k)
+        }
+    }
+
+    /// HNSW-backed recall: take an over-fetch of candidates from usearch, post-filter
+    /// tombstones + the `Filter`, then exact-rerank by f32 cosine over the surviving
+    /// candidates' raw vectors (SPEC §5.4 steps 2–4; ADC arrives with PQ in P4).
+    fn recall_hnsw(&mut self, query: &[f32], filter: &Filter, top_k: usize) -> Result<Vec<Hit>> {
+        // Over-fetch candidates so post-filtering still returns top_k. A selective entity /
+        // temporal filter needs a wider net, so widen ef when any filter condition is set
+        // (post-filter is SPEC-§5.4-allowed; widening keeps recall high without a usearch
+        // predicate callback). Capped at the live slot count.
+        let base = (top_k * 4).max(64);
+        let widened = if filter.is_active() { base * 8 } else { base };
+        let ef = widened.min(self.slot_count() as usize).max(top_k);
+        let candidates = self.hnsw_search(query, ef).expect("hnsw enabled")?; // Option is Some because hnsw_enabled() was checked
+        let q_norm = l2_norm(query);
+        let n = self.slot_count() as usize;
+
+        let mut scored: Vec<(f32, usize)> = Vec::with_capacity(candidates.len());
+        let mut seen = std::collections::HashSet::new();
+        for c in candidates {
+            let idx = c.slot_id as usize;
+            if idx >= n || !seen.insert(idx) {
+                continue; // stale/duplicate label guard
+            }
+            let slot = self.slot(idx)?;
+            if slot.is_tombstoned() {
+                continue;
+            }
+            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from()) {
+                continue;
+            }
+            let v = self.read_vector(idx)?;
+            scored.push((cosine(query, q_norm, &v), idx));
+        }
+        sort_take(&mut scored, top_k);
+        self.hydrate_all(scored)
+    }
+
+    /// Exact brute-force cosine recall over every live slot — the correctness oracle and the
+    /// fallback when no HNSW overlay is enabled.
+    pub fn recall_brute(
+        &mut self,
+        query: &[f32],
+        filter: &Filter,
+        top_k: usize,
+    ) -> Result<Vec<Hit>> {
         if query.len() != self.dim() {
             return Err(MsegError::DimMismatch {
                 segment: self.dim(),
@@ -121,8 +139,6 @@ impl Segment {
         }
         let q_norm = l2_norm(query);
         let n = self.slot_count() as usize;
-
-        // collect (score, idx) for surviving slots, then take top_k
         let mut scored: Vec<(f32, usize)> = Vec::new();
         for idx in 0..n {
             let slot = self.slot(idx)?;
@@ -133,16 +149,14 @@ impl Segment {
                 continue;
             }
             let v = self.read_vector(idx)?;
-            let score = cosine(query, q_norm, &v);
-            scored.push((score, idx));
+            scored.push((cosine(query, q_norm, &v), idx));
         }
-        scored.sort_unstable_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.1.cmp(&b.1))
-        });
-        scored.truncate(top_k);
+        sort_take(&mut scored, top_k);
+        self.hydrate_all(scored)
+    }
 
+    /// Hydrate a ranked `(score, idx)` list into `Hit`s.
+    fn hydrate_all(&mut self, scored: Vec<(f32, usize)>) -> Result<Vec<Hit>> {
         let mut hits = Vec::with_capacity(scored.len());
         for (score, idx) in scored {
             let slot = self.slot(idx)?;
@@ -175,6 +189,17 @@ impl Segment {
             adjacency,
         })
     }
+}
+
+/// Sort `(score, idx)` descending by score (tie-break ascending idx for determinism) and
+/// keep the top `k`.
+fn sort_take(scored: &mut Vec<(f32, usize)>, k: usize) {
+    scored.sort_unstable_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
+    scored.truncate(k);
 }
 
 #[inline]
