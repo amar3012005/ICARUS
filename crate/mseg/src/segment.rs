@@ -332,13 +332,23 @@ impl Segment {
     pub fn enable_hnsw(&mut self) -> Result<()> {
         let n = self.slot_count() as usize;
         let indexer = crate::index::AsyncIndexer::new(self.dim, n.max(self.capacity))?;
+        // Seed in parallel chunks: collect a chunk of live (id, vector) pairs, parallel-add it,
+        // then drop it — bounds extra RAM to chunk_size·dim·4 while using all cores.
+        const CHUNK: usize = 50_000;
+        let mut batch: Vec<(u32, Vec<f32>)> = Vec::with_capacity(CHUNK.min(n));
         for idx in 0..n {
             let slot = self.slot(idx)?;
             if slot.is_tombstoned() {
                 continue;
             }
-            let v = self.read_vector(idx)?;
-            indexer.enqueue(slot.id(), &v);
+            batch.push((slot.id(), self.read_vector(idx)?));
+            if batch.len() >= CHUNK {
+                indexer.bulk_add_parallel(&batch);
+                batch.clear();
+            }
+        }
+        if !batch.is_empty() {
+            indexer.bulk_add_parallel(&batch);
         }
         self.hnsw = Some(indexer);
         Ok(())

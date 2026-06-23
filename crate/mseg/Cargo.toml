@@ -20,6 +20,7 @@ mseg-format = { path = "../mseg-format" }
 mnsw-index = { path = "../mnsw-index" }
 memmap2.workspace = true
 zerocopy.workspace = true
+rayon.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # advisory shard lock via flock(2) (SPEC §4.3, see shard.rs for the fcntl-vs-flock note)
@@ -32,3 +33,11 @@ tempfile = "=3.13.0"
 [[bin]]
 name = "solvis-demo"
 path = "src/bin/solvis.rs"
+
+[[bin]]
+name = "bench-1m"
+path = "src/bin/bench_1m.rs"
+
+[[bin]]
+name = "quality"
+path = "src/bin/quality.rs"

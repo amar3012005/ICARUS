@@ -1,0 +1,1 @@
+qdrant_f32_recall10=1.0000

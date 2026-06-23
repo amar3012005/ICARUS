@@ -66,6 +66,17 @@ impl AsyncIndexer {
         }
     }
 
+    /// Bulk-add a batch of `(slot_id, vector)` in parallel (usearch add is thread-safe; the
+    /// index capacity is pre-reserved at `new`, so no reserve races). Used by `enable_hnsw`
+    /// to seed an existing segment's vectors far faster than one-at-a-time async adds.
+    pub fn bulk_add_parallel(&self, batch: &[(u32, Vec<f32>)]) {
+        use rayon::prelude::*;
+        let idx = &self.index; // &Arc<MnswIndex>; MnswIndex is Sync (usearch concurrent add)
+        batch.par_iter().for_each(|(id, v)| {
+            let _ = idx.add(*id, v);
+        });
+    }
+
     /// Concurrent approximate search over the current index snapshot (never blocks on adds).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<Candidate>> {
         self.index.search(query, k).map_err(map_err)

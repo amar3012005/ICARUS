@@ -327,6 +327,7 @@ dependencies = [
  "mnsw-index",
  "mseg-format",
  "proptest",
+ "rayon",
  "tempfile",
  "zerocopy",
 ]

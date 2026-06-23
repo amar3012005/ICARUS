@@ -148,7 +148,7 @@
       risk_tier: high
       rollback: revert p3-4
 
-- [ ] p3-5: 1M recall@10 benchmark — <5ms + <3% quality vs Qdrant float32 (P3 GATE)
+- [x] p3-5: 1M recall@10 benchmark — <5ms + <3% quality vs Qdrant float32 (P3 GATE)
       depends_on: p3-2,p3-3,p3-4
       acceptance: build a 1M-vector dataset (real bge-m3 base + documented fill strategy to 1M), index with HNSW, measure recall@10 p50 (<5ms) and quality overlap vs Qdrant float32 recall@10 (<3% loss). Write mnsw_recall10_p50_ms_1m + mnsw_quality_loss_pct to bench/RESULTS.md. loop/gates/p3_recall_latency.sh + writepath_isolation.sh exit 0. NOTE: 1M real-embed cost/time is a resource decision — flag to user at this unit.
       risk_tier: high

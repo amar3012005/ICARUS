@@ -39,3 +39,14 @@ GO decision: thesis proven. Local int8 mmap scan beats Qdrant REST by 13x at 10k
 | p2-7 | GATE PASS: fmt + clippy --all-targets --all-features -D warnings + test (35) + llvm-cov 89.7% (>=80). Baseline: mseg_insert_p50_us=3.79, mseg_recall_p50_ms=22.55 (exact f32, HNSW is P3) |
 
 P2 deliverable: production .mseg crate, format spec-locked, CRUD complete, multi-tenant, 35 tests, 89.7% coverage. Advancing to P3 (usearch HNSW + entity bitmap O(1) filter).
+
+## P3 — HNSW + entity bitmap (GATE PASS 2026-06-23)
+| Unit | Outcome |
+|------|---------|
+| p3-1 | mnsw-index: thin usearch wrapper (Cos+i8, label=slot_id, save/load), 143 LOC, 4 tests |
+| p3-2 | append.rs isolated write path + AsyncIndexer (bg thread) + HNSW recall; overlap >=0.97 real 10k, non-blocking w/ pending adds |
+| p3-3 | entity-bitmap O(1) + bi-temporal filter over HNSW candidates (ef widens 8x on active filter) |
+| p3-4 | writepath_isolation gate PASS: append_p99_under_concurrent_rebuild=54.75us (insert unblocked by indexing) |
+| p3-5 | GATE PASS: recall10_p50_ms=1.334 @1M (<5), recall10_quality_loss_pct=0.75 vs Qdrant f32 (<3). Parallel bulk-seed (1M HNSW build 293s). |
+
+P3 deliverable: usearch HNSW overlay, sub-2ms recall@10 @1M, 99.25% recall vs exact, write-path isolated. Also: SOLVIS real-doc recall demo (hybrid RRF+MMR ~1.4ms, cross-encoder rerank hooks). Advancing to P4 (Product Quantization).

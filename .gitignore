@@ -27,3 +27,7 @@ crate/target/
 bench/.qdrant_numbers.txt
 bench/qdrant/.qdrant-initialized
 bench/qdrant/raft_state.json
+bench/qdrant/storage_q/
+bench/qdrant/.qdrant_quality.txt
+bench/.qdrant_quality.txt
+bench/solvis/

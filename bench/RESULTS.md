@@ -33,3 +33,10 @@ append_p99_under_concurrent_rebuild=
 ## P3-4 write-path isolation 2026-06-23T19:14:27Z sha=20d3d2cb
 - append_p99_under_concurrent_rebuild=54.7525  (insert p99 us while HNSW indexer churns a 10k-add backlog)
 append_p99_under_concurrent_rebuild=54.7525
+
+## P3-5 recall@10 1M latency + quality 2026-06-23T19:27:52Z sha=4e3101f6
+- dataset: 1M = 10k real bge-m3 + 990k deterministic-perturbed-real (latency scale-test); quality on 100% real 10k
+- recall10_p50_ms=1.3340  (mneme HNSW @1M, p90=3.6925) — gate <5ms
+- mneme_recall10=0.9925 vs qdrant_f32_recall10=1.0000 -> recall10_quality_loss_pct=0.75 — gate <3%
+recall10_p50_ms=1.3340
+recall10_quality_loss_pct=0.75
