@@ -10,37 +10,37 @@
 
 ## Phase P0 — Spec first (gate: frozen SPEC.md, no code yet)
 
-- [ ] p0-1: SPEC §1 — fully specify `.mseg` slot header + variable region
+- [x] p0-1: SPEC §1 — fully specify `.mseg` slot header + variable region
       depends_on: none
       acceptance: every field has exact type/size/offset/endianness; variable LZ4 region addressing defined; file header (magic, version, dim, count, free-list) defined
       risk_tier: medium
       rollback: revert SPEC.md §1 to skeleton
 
-- [ ] p0-2: SPEC §2 — `.mnsw` HNSW index format (map usearch on-disk index to slot ids)
+- [x] p0-2: SPEC §2 — `.mnsw` HNSW index format (map usearch on-disk index to slot ids)
       depends_on: p0-1
       acceptance: names the reused crate (usearch) per reference/OPENSOURCE_RECON.md; specifies key→slot-id mapping + co-location/mmap strategy; NO bespoke HNSW design
       risk_tier: low
       rollback: revert §2
 
-- [ ] p0-3: SPEC §3 — `.mpq` PQ codebook format
+- [x] p0-3: SPEC §3 — `.mpq` PQ codebook format
       depends_on: p0-1
       acceptance: M subspaces, K centroids, training trigger (first 10k), drift alignment score, on-disk layout all specified
       risk_tier: medium
       rollback: revert §3
 
-- [ ] p0-4: SPEC §4 — multi-tenant isolation scheme
+- [x] p0-4: SPEC §4 — multi-tenant isolation scheme
       depends_on: p0-1
       acceptance: one .mseg/.mnsw/.mpq triple per org; directory layout + naming + open/mount lifecycle specified
       risk_tier: low
       rollback: revert §4
 
-- [ ] p0-5: SPEC §5 — query API surface (exact signatures + semantics)
+- [x] p0-5: SPEC §5 — query API surface (exact signatures + semantics)
       depends_on: p0-1
       acceptance: open/insert/recall/compact signatures final; Filter carries entity bitmap + created_at/valid_from ranges; hops semantics defined; all served from one mmap
       risk_tier: medium
       rollback: revert §5
 
-- [ ] p0-6: SPEC §6 — invariants
+- [x] p0-6: SPEC §6 — invariants
       depends_on: p0-1,p0-5
       acceptance: enumerate — append-only write path; async (never inline) index rebuild; recall never blocks on rebuild; stable slot ids; tombstone deletes until compact. These are the kill-condition guards the later gates check.
       risk_tier: high
