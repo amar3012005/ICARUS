@@ -15,3 +15,15 @@ node_modules/
 loop/APPROVALS/*.freeze
 loop/APPROVALS/*.golive
 loop/APPROVALS/*.launch
+
+# P1 bench heavy artifacts (reproducible, not committed)
+bench/.venv/
+bench/qdrant/qdrant
+bench/qdrant/qdrant.tar.gz
+bench/qdrant/storage/
+bench/data/*.bin
+bench/.fastembed_cache/
+crate/target/
+bench/.qdrant_numbers.txt
+bench/qdrant/.qdrant-initialized
+bench/qdrant/raft_state.json

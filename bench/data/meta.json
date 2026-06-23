@@ -1,0 +1,14 @@
+{
+  "dim": 1024,
+  "n_corpus": 10000,
+  "n_query": 200,
+  "model": "bge-m3",
+  "endpoint": "https://api.blaiq.ai/v1/embeddings",
+  "source": "/Users/amar/HIVE-MIND/benchmarks/LongMemEval/data/longmemeval_s_cleaned.json",
+  "source_sha": "8ae79d4297ac0dd7",
+  "normalized": true,
+  "endianness": "little",
+  "dtype": "float32",
+  "layout": "row-major",
+  "note": "same bge-m3 model+gateway HIVE-MIND uses in production"
+}

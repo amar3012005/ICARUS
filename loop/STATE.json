@@ -1,12 +1,12 @@
 {
   "project": "mneme",
-  "phase": "P0",
-  "task": "execute-units",
-  "iter": 6,
+  "phase": "P2",
+  "task": "decompose-P2",
+  "iter": 0,
   "max_iter": 80,
-  "phases_done": 0,
-  "last_shipped_sha": null,
-  "scope_frozen_at_spec": false,
+  "phases_done": 2,
+  "last_shipped_sha": "d61eed5d",
+  "scope_frozen_at_spec": true,
   "consecutive_gate_failures": 0,
   "max_consecutive_gate_failures": 5,
   "consecutive_no_progress": 0,
@@ -14,7 +14,7 @@
   "last_unit_hash": null,
   "noop_turns": 0,
   "max_noop_turns": 3,
-  "awaiting_human": "P0 spec freeze",
+  "awaiting_human": null,
   "blocked": false,
   "blocked_reason": null
 }

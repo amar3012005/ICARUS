@@ -52,6 +52,32 @@
       risk_tier: human-gate
       rollback: set Frozen:NO
 
+## Phase P1 — Proof of physics (gate: mneme int8 scan p50 < Qdrant REST p50 @10k, real memories)
+
+- [x] p1-1: real test-vector generator (bge-m3 via blaiq LiteLLM (prod model), 1024-dim, real LongMemEval memories)
+      depends_on: p0-freeze
+      acceptance: bench/gen_vectors.py streams LongMemEval haystack turns, embeds 10,000 corpus + 200 query memory texts with bge-m3 via blaiq LiteLLM gateway (same model+endpoint HIVE-MIND prod uses, 1024-dim), L2-normalizes, writes bench/data/corpus_f32.bin (10000×1024 f32 LE) + queries_f32.bin (200×1024) + meta.json (counts, dim, model, sha of source). Deterministic (fixed slice). Real text only, no synthetic.
+      risk_tier: medium
+      rollback: rm bench/gen_vectors.py bench/data/*
+
+- [x] p1-2: Rust workspace + mneme-probe crate (mseg-precursor writer/reader + int8 scan)
+      depends_on: p1-1
+      acceptance: crate/ cargo workspace builds; mneme-probe lib has: write_segment() (header + N×{id u32, int8[dim]} packed, mmap-readable), open_segment() (memmap2-wrapped, zerocopy cast), int8 scalar-quantize (per-vector L2→i8 scale 127), brute_scan(query, top_k) rayon parallel cosine over int8, returns top_k (slot_id, score). cargo test green incl. proptest round-trip (write→mmap→read byte-identical) + scan-correctness vs exact f32 oracle (top-10 overlap ≥ 0.9 on real vectors).
+      risk_tier: high
+      rollback: rm -rf crate/
+
+- [x] p1-3: Qdrant baseline harness (real REST, int8 scalar quant, recall@10 p50)
+      depends_on: p1-1
+      acceptance: bench/qdrant_bench.py starts local qdrant 1.18.2, creates 1024-dim cosine collection with int8 scalar quantization (matches HIVEMIND prod config), upserts the 10k corpus, runs 200 query recall@10 over REST (HTTP localhost, default search), records p50 latency ms across queries. Writes qdrant_rest_p50_ms to a temp numbers file.
+      risk_tier: medium
+      rollback: kill qdrant; rm qdrant storage
+
+- [x] p1-4: run benchmark, write RESULTS.md numbers, pass p1 gate
+      depends_on: p1-2,p1-3
+      acceptance: mneme-probe bench bin loads corpus, builds segment, runs identical 200 queries recall@10, measures p50 (criterion or manual percentile). Append mneme_scan_p50_ms= and qdrant_rest_p50_ms= to bench/RESULTS.md with the producing sha. loop/gates/p1_beats_qdrant.sh exits 0 (mneme p50 < qdrant p50). Both numbers from real runs on identical real vectors.
+      risk_tier: high
+      rollback: revert RESULTS.md numbers
+
 ## Done
 
 _(units move here with their sha as they complete)_

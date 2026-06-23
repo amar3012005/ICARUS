@@ -1,0 +1,25 @@
+[package]
+name = "mneme-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "mneme P1 proof-of-physics probe: mmap int8 brute-force cosine scan vs Qdrant REST"
+
+[lib]
+name = "mneme_probe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mneme-bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+memmap2.workspace = true
+zerocopy.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+proptest = "=1.5.0"
+tempfile = "=3.13.0"
