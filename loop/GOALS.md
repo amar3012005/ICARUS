@@ -122,6 +122,38 @@
       risk_tier: medium
       rollback: revert p2-7
 
+## Phase P3 — HNSW + entity bitmap (gate: recall@10 <5ms @1M, <3% quality loss vs Qdrant float32, writepath isolated)
+
+- [x] p3-1: mnsw-index crate — thin usearch HNSW wrapper (reuse, ≤150 LOC, label=slot_id)
+      depends_on: p2-7
+      acceptance: new crate/mnsw-index wrapping usearch 2.25 (Cos, i8 scalar quant). add(slot_id as label, vector), search(query, ef)->candidate slot_ids, save(.mnsw)/load(.mnsw) (usearch serialize). NO bespoke HNSW (recon denylist: any *hnsw* file >150 LOC fails). build clean, unit tests: add N → self-search returns own id; save→load round-trip; clippy -D warnings clean.
+      risk_tier: high
+      rollback: rm -rf crate/mnsw-index
+
+- [ ] p3-2: HNSW-backed recall + async index update (write-path isolation)
+      depends_on: p3-1,p2-4
+      acceptance: Segment gains an optional .mnsw overlay. insert() appends slot+vec+text AND enqueues an async usearch.add (channel/bg thread) — NEVER rebuilds inline (SPEC §6.1/§6.2). recall() uses usearch.search(ef=max(4k,64)) for candidates, post-filters tombstones, exact/ADC rerank, returns top_k. recall never blocks on the async queue (SPEC §6.2). tests: HNSW recall matches brute-force top-k on 10k real (overlap ≥ 0.97); recall returns even with pending async adds. clippy clean.
+      risk_tier: high
+      rollback: revert p3-2
+
+- [ ] p3-3: entity-bitmap O(1) filter in recall
+      depends_on: p3-2
+      acceptance: recall(query, Filter{entity_mask}) applies bitwise-AND entity filter (SPEC §1.3/§5.4) over HNSW candidates (usearch predicate callback if available, else post-filter), plus temporal ranges. test: entity-filtered recall returns only slots with matching bits; matches brute-force-with-filter on real data. clippy clean.
+      risk_tier: medium
+      rollback: revert p3-3
+
+- [ ] p3-4: write-path isolation gate (append never triggers inline rebuild)
+      depends_on: p3-2
+      acceptance: loop/gates/writepath_isolation.sh passes — no static call edge append→rebuild_hnsw, AND append_p99_under_concurrent_rebuild bench number recorded to bench/RESULTS.md (insert p99 stays bounded while a background index rebuild runs). Encodes the kill-condition guard (HNSW rebuild-on-write).
+      risk_tier: high
+      rollback: revert p3-4
+
+- [ ] p3-5: 1M recall@10 benchmark — <5ms + <3% quality vs Qdrant float32 (P3 GATE)
+      depends_on: p3-2,p3-3,p3-4
+      acceptance: build a 1M-vector dataset (real bge-m3 base + documented fill strategy to 1M), index with HNSW, measure recall@10 p50 (<5ms) and quality overlap vs Qdrant float32 recall@10 (<3% loss). Write mnsw_recall10_p50_ms_1m + mnsw_quality_loss_pct to bench/RESULTS.md. loop/gates/p3_recall_latency.sh + writepath_isolation.sh exit 0. NOTE: 1M real-embed cost/time is a resource decision — flag to user at this unit.
+      risk_tier: high
+      rollback: revert RESULTS numbers
+
 ## Done
 
 _(units move here with their sha as they complete)_
