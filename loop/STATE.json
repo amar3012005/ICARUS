@@ -1,7 +1,7 @@
 {
   "project": "mneme",
   "phase": "P4",
-  "task": "decompose-P4",
+  "task": "execute-units",
   "iter": 0,
   "max_iter": 80,
   "phases_done": 4,

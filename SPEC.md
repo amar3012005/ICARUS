@@ -178,12 +178,13 @@ The `.mnsw` file IS the usearch serialized index; mneme owns the slot_id↔usear
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| M (subspaces) | 8 | 1024-dim / 8 = 128-dim per subspace; balanced compression/quality |
+| M (subspaces) | 128 | 1024-dim / 128 = 8-dim per subspace; 1 byte/subspace → 128-byte code (ERRATUM: an earlier "8" was inconsistent with the frozen 128-byte `vector_pq` field — the code length equals M, and `vector_pq` is `[u8;128]`, so M=128; reference/OPENSOURCE_RECON.md line on the codebook also states m=128, k=256. Not a layout change.) |
 | K (centroids per subspace) | 256 | 1 byte per subspace → 128-byte PQ code |
 | Training trigger | first 10,000 inserts | Enough data for stable centroids |
 | Max drift before retrain | alignment_score < 0.85 | See §3.4 |
 
-Result: 1024-dim float32 (4096 bytes) → 128-byte PQ code = **32x compression**.
+Result: 1024-dim float32 (4096 bytes) → 128-byte PQ code (M=128 bytes) = **32x compression**.
+On-disk codebook size is identical either way (M·K·(dim/M)·4 = K·dim·4 = 1 MiB), so §3.2 is unchanged.
 
 ### 3.2 On-disk layout
 

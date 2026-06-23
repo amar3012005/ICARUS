@@ -156,4 +156,32 @@
 
 ## Done
 
+## Phase P4 — Product Quantization (gate: recall@10 overlap >96% vs float32 + pq_drift_detect test; retrain never inline)
+
+- [ ] p4-1: mpq crate — PQ codebook training (k-means, M=128 subspaces × 8 dims, K=256) + encode/decode
+      depends_on: p3-5
+      acceptance: new crate/mpq. PqCodebook::train(vectors, M=128, K=256) runs per-subspace k-means (kmeans++ init, Lloyd iters, rayon over subspaces), produces [M][K][dim/M] f32 centroids. encode(vec)->[u8;128] (nearest centroid per subspace). decode(code)->reconstructed f32 vec. .mpq on-disk format byte-matches SPEC §3.2 (magic MPQC, M/K/dim header, centroids row-major). save/load. unit tests: train→encode→decode reconstruction error bounded; save/load round-trip; clippy clean.
+      risk_tier: high
+      rollback: rm -rf crate/mpq
+
+- [ ] p4-2: ADC (asymmetric distance computation) — query vs PQ codes
+      depends_on: p4-1
+      acceptance: adc_table(query) precomputes [M][K] distances (query subvec vs each centroid); adc_distance(table, code) sums per-subspace table lookups (no decode). matches SPEC §3.3 ADC. test: ADC ranking correlates with exact f32 cosine ranking (top-10 overlap high on real vectors). clippy clean.
+      risk_tier: medium
+      rollback: revert p4-2
+
+- [ ] p4-3: drift detection — alignment score + enqueue retrain (never inline)
+      depends_on: p4-1
+      acceptance: alignment_score(codebook, sample) = mean cosine(reconstructed, original) over a sample; <0.85 sets a DRIFT flag and ENQUEUES retrain (never runs inline — writepath gate: retrain_codebook absent from append.rs). cargo test pq_drift_detect passes (drift on a shifted distribution flags; aligned distribution does not). clippy clean.
+      risk_tier: high
+      rollback: revert p4-3
+
+- [ ] p4-4: integrate PQ into segment + P4 gate (recall@10 overlap >96% vs float32)
+      depends_on: p4-1,p4-2,p4-3
+      acceptance: segment trains per-org codebook at 10k inserts, populates slot vector_pq + PQ_TRAINED flag, .vec side-file retired post-train per SPEC §3.3 (or kept for rerank). recall path can use ADC over PQ codes. bench: pq_recall10_overlap_pct = overlap of PQ-based recall@10 vs float32 ground truth on real 10k. Write to bench/RESULTS.md. loop/gates/p4_pq_overlap.sh exits 0 (>96.0). clippy clean.
+      risk_tier: high
+      rollback: revert RESULTS numbers
+
+## Done
+
 _(units move here with their sha as they complete)_
