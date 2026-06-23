@@ -86,7 +86,7 @@
       risk_tier: high
       rollback: rm -rf crate/mseg-format
 
-- [ ] p2-2: variable LZ4 text region (lz4_flex) — append + read-by-text_ptr
+- [x] p2-2: variable LZ4 text region (lz4_flex) — append + read-by-text_ptr
       depends_on: p2-1
       acceptance: VarRegion writer appends LZ4 block, returns text_ptr/text_len_lz4/text_len_raw; reader decompresses by ptr. 64KiB max text enforced (Err TextTooLarge). proptest: text round-trips (compress→ptr→decompress == original) for arbitrary utf8 ≤64KiB. clippy clean.
       risk_tier: medium

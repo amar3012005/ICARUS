@@ -5,9 +5,13 @@
 //! I/O policy — the segment manager (P2-3) and CRUD (P2-4) build on top. Keeping the format
 //! isolated lets the spec-lock test guard the frozen byte offsets in one place.
 
+mod error;
 mod header;
+mod varregion;
 
+pub use error::{MsegError, Result};
 pub use header::{
     flags, FileHeader, SlotHeader, ADJACENCY_LEN, FILE_HEADER_SIZE, FORMAT_VERSION, MAGIC,
     MAX_TEXT_BYTES, SENTINEL_U32, SLOT_REGION_OFFSET, SLOT_SIZE, VECTOR_PQ_LEN,
 };
+pub use varregion::{append_text, read_text, TextRef};
