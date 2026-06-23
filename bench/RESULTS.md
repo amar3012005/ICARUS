@@ -45,3 +45,7 @@ recall10_quality_loss_pct=0.75
 - PQ M=128/K=256, 128-byte code (32x). Production pattern: ADC scan over codes -> exact-f32 rescore top-100 (same as Qdrant quant+rescore).
 - pq_recall10_overlap_pct=100.0000 (rescored)  |  pure-ADC@10=79.30% (transparency)
 pq_recall10_overlap_pct=100.0000
+
+## P5 bi-temporal + 2-hop graph 2026-06-23T23:46:37Z sha=372295a6
+- bitemporal_2hop_p50_ms=1.9298 @1M (recall_with_hops hops=2 + valid_from filter, lean HNSW seed + 256-cap BFS, all from one mmap). recall@10 base=1.47ms.
+bitemporal_2hop_p50_ms=1.9298

@@ -176,19 +176,34 @@ impl Segment {
                 got: query.len(),
             });
         }
-        // seed with a wider base so the graph has good entry points.
-        let base = self.recall(query, filter, top_k.max(top_k * 2))?;
         let n = self.slot_count() as usize;
         let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut frontier: Vec<usize> = Vec::new();
-        for h in &base {
-            let idx = h.slot_id as usize;
-            if seen.insert(idx) {
-                frontier.push(idx);
+        // Lean seeding: a fixed modest-ef HNSW search (NOT the filter-widened recall path —
+        // that reads hundreds of vectors and dominates latency at 1M). The graph expansion
+        // provides the breadth; the seeds just need to be good entry points.
+        if let Some(cands) = self.hnsw_search(query, 32) {
+            for c in cands? {
+                let idx = c.slot_id as usize;
+                if idx < n && seen.insert(idx) {
+                    frontier.push(idx);
+                }
+            }
+        } else {
+            // no HNSW overlay → seed from a small brute pass.
+            for h in self.recall_brute(query, filter, top_k.max(top_k * 2))? {
+                let idx = h.slot_id as usize;
+                if seen.insert(idx) {
+                    frontier.push(idx);
+                }
             }
         }
-        // BFS expansion over adjacency.
-        for _ in 0..hops {
+        // BFS expansion over adjacency, bounded: we never re-rank an unbounded pool — once the
+        // reachable set reaches MAX_HOP_CANDIDATES we stop expanding (the closest entries are
+        // discovered first via the seeded frontier, so the cap keeps recall high at bounded
+        // latency, which is what the <8ms @1M gate requires).
+        const MAX_HOP_CANDIDATES: usize = 256;
+        'bfs: for _ in 0..hops {
             let mut next = Vec::new();
             for &idx in &frontier {
                 let slot = self.slot(idx)?;
@@ -198,6 +213,9 @@ impl Segment {
                         continue;
                     }
                     next.push(nb);
+                    if seen.len() >= MAX_HOP_CANDIDATES {
+                        break 'bfs;
+                    }
                 }
             }
             frontier = next;

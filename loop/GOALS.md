@@ -192,7 +192,7 @@
       risk_tier: high
       rollback: revert p5-1
 
-- [ ] p5-2: 1M bi-temporal 2-hop bench + P5 gate
+- [x] p5-2: 1M bi-temporal 2-hop bench + P5 gate
       depends_on: p5-1
       acceptance: bench at 1M (adjacency populated from HNSW neighbours), recall_with_hops(hops=2) + bi-temporal filter, measure p50. Write bitemporal_2hop_p50_ms to bench/RESULTS.md. loop/gates/p5_timetravel.sh exits 0 (<8ms). Miri documented-skip (no nightly; mmap not Miri-able) — OOB-safety proptest already covers the read path. clippy clean.
       risk_tier: high

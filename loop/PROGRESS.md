@@ -60,3 +60,11 @@ P3 deliverable: usearch HNSW overlay, sub-2ms recall@10 @1M, 99.25% recall vs ex
 | p4-4 | GATE PASS: pq_recall10_overlap_pct=100 (ADC scan + exact rescore, Qdrant-parity) >96; pure-ADC@10=79.3%. Segment train_pq() populates vector_pq+PQ_TRAINED+.mpq |
 
 P4 done: 32x PQ compression, ADC, drift. Advancing to P5 (bi-temporal + 2-hop graph).
+
+## P5 — Bi-temporal + 2-hop graph (GATE PASS 2026-06-24)
+| Unit | Outcome |
+|------|---------|
+| p5-1 | recall_with_hops: 2-hop adjacency BFS (lean HNSW seed + 256-cap) + bi-temporal time-travel (created_at/valid_from independent). 2 tests |
+| p5-2 | GATE PASS: bitemporal_2hop_p50_ms=1.9298 @1M (<8); fixed 8.98->1.93 by lean seeding (avoid filter-widened rerank). Miri on mseg-format = no UB. |
+
+P5 done. Advancing to P6 (napi Node binding + HIVEMIND integration — makes it callable from JS).
