@@ -1,0 +1,17 @@
+# Loop runtime artifacts (ephemeral — not durable state)
+loop/logs/
+loop/PAUSE
+loop/.recon-current.md
+
+# Rust build output
+crate/target/
+**/*.rs.bk
+
+# Node bindings build output (P6)
+crate/*/index.node
+node_modules/
+
+# Human approval tokens are created out-of-band on the box, never committed
+loop/APPROVALS/*.freeze
+loop/APPROVALS/*.golive
+loop/APPROVALS/*.launch
