@@ -46,7 +46,7 @@
       risk_tier: high
       rollback: revert §6
 
-- [ ] p0-freeze: human review + freeze SPEC.md
+- [x] p0-freeze: human review + freeze SPEC.md
       depends_on: p0-1,p0-2,p0-3,p0-4,p0-5,p0-6
       acceptance: HUMAN sets Frozen:YES + Reviewed by:<name> in SPEC.md, creates loop/APPROVALS/p0.freeze, and commits as themselves (NOT the loop identity). The loop will AWAIT HUMAN here — it cannot self-freeze. Gate: loop/gates/p0_spec_frozen.sh exits 0.
       risk_tier: human-gate

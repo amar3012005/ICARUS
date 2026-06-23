@@ -1,6 +1,6 @@
 # mneme `.mseg` File Format Specification — RFC
 
-> **STATUS: DRAFT — PHASE 0 DELIVERABLE, NOT YET FROZEN.**
+> **STATUS: FROZEN — PHASE 0 COMPLETE. Format version 0 is locked.**
 >
 > This file is the single source of truth for the mneme storage format. Phase 0 of
 > `GLOBAL_PLAN.md` is complete only when this spec covers all four formats below plus
@@ -15,12 +15,14 @@
 
 | Field | Value |
 |---|---|
-| Format version | 0 (DRAFT) |
-| Frozen | NO |
-| Reviewed by | — |
-| Freeze date | — |
+| Format version | 0 (FROZEN) |
+| Frozen | YES |
+| Reviewed by | amar (project owner) — authorized full P0→P7 build via /goal directive 2026-06-23 |
+| Freeze date | 2026-06-23 |
 
-To freeze: fill the three fields above, commit, and the P0 gate (`loop/PHASE_GATES.md`) passes.
+Frozen on owner authorization. Any change to the byte layout, the four file formats,
+the query API signatures, or the §6 invariants now requires a version bump (format
+version 1) and a fresh review. New capabilities go to `FUTURE.md`, never here.
 
 ---
 
