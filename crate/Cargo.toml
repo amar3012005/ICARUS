@@ -3,19 +3,20 @@
 # Later phases add mseg-format, mnsw-index, mpq-codebook, mneme-node crates here.
 [workspace]
 resolver = "2"
-members = ["mneme-probe"]
+members = ["mneme-probe", "mseg-format"]
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/amar3012005/HIVEMIND"
-rust-version = "1.74"
+# 1.77 for stable `core::mem::offset_of!` (used by the spec-lock test).
+rust-version = "1.77"
 
 [workspace.dependencies]
 # Reuse spine (see reference/OPENSOURCE_RECON.md). Pinned exact per global standards.
 memmap2 = "=0.9.5"
 zerocopy = { version = "=0.8.26", features = ["derive"] }
-lz4_flex = "=0.11.3"
+lz4_flex = "=0.13.1"
 rayon = "=1.10.0"
 
 [profile.release]

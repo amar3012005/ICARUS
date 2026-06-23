@@ -78,6 +78,50 @@
       risk_tier: high
       rollback: revert RESULTS.md numbers
 
+## Phase P2 — Production crate (gate: cargo test 100% green + clippy -D warnings clean + bench baseline)
+
+- [x] p2-1: mseg-format crate — file header (64B) + slot header (202B) exact byte layout
+      depends_on: p1-4
+      acceptance: new crate/mseg-format. FileHeader (64B) + SlotHeader (202B) #[repr(C)] zerocopy structs byte-match SPEC §1.2/§1.3 EXACTLY (offsets/sizes/types). flags bitmask (SPEC §1.4) const set. spec_lock test asserts size_of::<FileHeader>()==64, size_of::<SlotHeader>()==202 and every field offset matches a fixture table parsed from SPEC.md. cargo test green, clippy -D warnings clean.
+      risk_tier: high
+      rollback: rm -rf crate/mseg-format
+
+- [ ] p2-2: variable LZ4 text region (lz4_flex) — append + read-by-text_ptr
+      depends_on: p2-1
+      acceptance: VarRegion writer appends LZ4 block, returns text_ptr/text_len_lz4/text_len_raw; reader decompresses by ptr. 64KiB max text enforced (Err TextTooLarge). proptest: text round-trips (compress→ptr→decompress == original) for arbitrary utf8 ≤64KiB. clippy clean.
+      risk_tier: medium
+      rollback: revert p2-2 module
+
+- [ ] p2-3: segment open/create lifecycle + .vec bootstrap side-file (SPEC §3.3)
+      depends_on: p2-1,p2-2
+      acceptance: Segment::create initializes 64B file header (magic MNEME\0, version 0, dim, counts, free_list_head=0xFFFFFFFF, var_region_off page-aligned). Segment::open mmaps RW (memmap2 wrapped owner), validates header. Raw f32 vectors stored in <org>.vec side-file (pre-PQ bootstrap, SPEC §3.3) keyed by slot_id. proptest: create→open round-trip header-consistent. clippy clean.
+      risk_tier: high
+      rollback: revert p2-3
+
+- [ ] p2-4: CRUD — insert/get/delete/recall (append-only, free-list, tombstone)
+      depends_on: p2-3
+      acceptance: insert (LZ4 text append + slot append OR free-list pop + .vec append; returns stable SlotId; append-only per SPEC §6.1); get(SlotId) (Err TombstonedSlot if deleted); delete (set TOMBSTONE + free-list push, var bytes NOT freed per §6.4); recall (brute-force f32 cosine over .vec, skip tombstoned, apply Filter entity_mask + temporal ranges per §5.4 steps 1-4, hops=0 for P2). proptest: insert N → all gettable; delete → not in recall, slot reusable; append-only (file strictly grows on insert). clippy clean.
+      risk_tier: high
+      rollback: revert p2-4
+
+- [ ] p2-5: multi-tenant Shard + fcntl lock (SPEC §4)
+      depends_on: p2-4
+      acceptance: Shard::open(data_root, org_id) validates org_id [a-zA-Z0-9_-]{1,64} (reject .. / symlink traversal), mkdir data_root/<org_id>/, acquires shard.lock via fcntl F_SETLK (Err ShardLocked if held). Drop flushes msync + releases lock. test: two opens of same org → second Err ShardLocked; bad org_id rejected. clippy clean.
+      risk_tier: medium
+      rollback: revert p2-5
+
+- [ ] p2-6: invariant tests + Miri over unsafe mmap path (SPEC §6)
+      depends_on: p2-4
+      acceptance: proptest suite encoding SPEC §6 invariants — append-only (file grows, existing slots immutable), tombstone-until-compact, stable slot ids, header-consistent-after-flush. cargo +nightly miri test over the mmap read path passes (or documented-skip if miri unavailable, with a same-coverage non-miri OOB-safety proptest). clippy clean.
+      risk_tier: high
+      rollback: revert p2-6
+
+- [ ] p2-7: criterion bench baseline + P2 milestone gate
+      depends_on: p2-1,p2-2,p2-3,p2-4,p2-5,p2-6
+      acceptance: criterion bench over insert + recall recorded to bench/RESULTS.md (mseg_insert_p50_us, mseg_recall_p50_ms vs the same 10k real corpus). Full workspace cargo test 100% green, cargo clippy --all-targets -D warnings clean, cargo fmt --check clean. These three are the P2 gate.
+      risk_tier: medium
+      rollback: revert p2-7
+
 ## Done
 
 _(units move here with their sha as they complete)_

@@ -32,7 +32,8 @@ version 1) and a fresh review. New capabilities go to `FUTURE.md`, never here.
 
 - All multi-byte integers: **little-endian**.
 - Slot region: page-aligned (align to 4096 bytes). Start offset rounded up from end of file header to next 4096-byte boundary.
-- Slot headers: packed (no padding between slots). Each slot is exactly **194 bytes**.
+- Slot headers: packed (no padding between slots). Each slot is exactly **202 bytes** (see §1.3 for the authoritative field table; an earlier "194" was a pre-resolution sketch — ERRATUM, not a layout change).
+- On-disk fields are stored as little-endian byte arrays (not native-endian typed fields), so the format is identical on little- and big-endian hosts. Typed access goes through explicit `from_le_bytes`/`to_le_bytes` accessors.
 - Variable region: immediately follows the slot array, no alignment padding.
 
 ### 1.2 File header
