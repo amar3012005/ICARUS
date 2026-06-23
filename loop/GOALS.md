@@ -184,4 +184,20 @@
 
 ## Done
 
+## Phase P5 — Bi-temporal + 2-hop graph (gate: bitemporal_2hop_p50_ms < 8 @1M, from one mmap)
+
+- [x] p5-1: 2-hop adjacency BFS in recall (hops param) + bi-temporal time-travel
+      depends_on: p4-4
+      acceptance: recall_with_hops(query, filter, top_k, hops) — base recall, then BFS over slot adjacency[8] up to `hops` levels, re-rank base+expanded by cosine, apply Filter (entity + created_at + valid_from independent ranges) throughout (SPEC §5.4 step 5). All from the one mmap (slot read = adjacency). tests: explicit-adjacency hop reaches neighbour; bi-temporal time-travel (created_at vs valid_from independent) returns correct set; tombstoned neighbours skipped. clippy clean.
+      risk_tier: high
+      rollback: revert p5-1
+
+- [ ] p5-2: 1M bi-temporal 2-hop bench + P5 gate
+      depends_on: p5-1
+      acceptance: bench at 1M (adjacency populated from HNSW neighbours), recall_with_hops(hops=2) + bi-temporal filter, measure p50. Write bitemporal_2hop_p50_ms to bench/RESULTS.md. loop/gates/p5_timetravel.sh exits 0 (<8ms). Miri documented-skip (no nightly; mmap not Miri-able) — OOB-safety proptest already covers the read path. clippy clean.
+      risk_tier: high
+      rollback: revert RESULTS numbers
+
+## Done
+
 _(units move here with their sha as they complete)_

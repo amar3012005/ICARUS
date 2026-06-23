@@ -155,6 +155,74 @@ impl Segment {
         self.hydrate_all(scored)
     }
 
+    /// Recall with `hops` levels of graph expansion (SPEC §5.4 step 5). Seeds from the normal
+    /// recall, then BFS over each slot's `adjacency[8]` up to `hops` levels — all from the same
+    /// mmap (a neighbour read is one slot read). Tombstoned / filtered-out neighbours are
+    /// skipped. The base + expanded set is re-ranked by cosine and the top `top_k` returned.
+    /// `hops == 0` is identical to `recall`.
+    pub fn recall_with_hops(
+        &mut self,
+        query: &[f32],
+        filter: &Filter,
+        top_k: usize,
+        hops: u8,
+    ) -> Result<Vec<Hit>> {
+        if hops == 0 {
+            return self.recall(query, filter, top_k);
+        }
+        if query.len() != self.dim() {
+            return Err(MsegError::DimMismatch {
+                segment: self.dim(),
+                got: query.len(),
+            });
+        }
+        // seed with a wider base so the graph has good entry points.
+        let base = self.recall(query, filter, top_k.max(top_k * 2))?;
+        let n = self.slot_count() as usize;
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut frontier: Vec<usize> = Vec::new();
+        for h in &base {
+            let idx = h.slot_id as usize;
+            if seen.insert(idx) {
+                frontier.push(idx);
+            }
+        }
+        // BFS expansion over adjacency.
+        for _ in 0..hops {
+            let mut next = Vec::new();
+            for &idx in &frontier {
+                let slot = self.slot(idx)?;
+                for a in 0..mseg_format::ADJACENCY_LEN {
+                    let nb = slot.adjacency(a) as usize;
+                    if nb == SENTINEL_U32 as usize || nb >= n || !seen.insert(nb) {
+                        continue;
+                    }
+                    next.push(nb);
+                }
+            }
+            frontier = next;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        // re-rank the whole reachable set by cosine, applying the filter + tombstone skip.
+        let q_norm = l2_norm(query);
+        let mut scored: Vec<(f32, usize)> = Vec::with_capacity(seen.len());
+        for &idx in &seen {
+            let slot = self.slot(idx)?;
+            if slot.is_tombstoned() {
+                continue;
+            }
+            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from()) {
+                continue;
+            }
+            let v = self.read_vector(idx)?;
+            scored.push((cosine(query, q_norm, &v), idx));
+        }
+        sort_take(&mut scored, top_k);
+        self.hydrate_all(scored)
+    }
+
     /// Hydrate a ranked `(score, idx)` list into `Hit`s.
     fn hydrate_all(&mut self, scored: Vec<(f32, usize)>) -> Result<Vec<Hit>> {
         let mut hits = Vec::with_capacity(scored.len());
