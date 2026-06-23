@@ -71,3 +71,42 @@ impl From<std::io::Error> for MsegError {
 }
 
 pub type Result<T> = std::result::Result<T, MsegError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_variant_has_a_nonempty_display() {
+        let variants: Vec<MsegError> = vec![
+            MsegError::Io(std::io::Error::other("x")),
+            MsegError::TextTooLarge { len: 1, max: 0 },
+            MsegError::OutOfBounds {
+                start: 5,
+                end: 9,
+                len: 3,
+            },
+            MsegError::Decompress("bad".into()),
+            MsegError::BadHeader,
+            MsegError::DimMismatch { segment: 8, got: 4 },
+            MsegError::TombstonedSlot(7),
+            MsegError::NoSuchSlot(9),
+            MsegError::InvalidOrgId("../x".into()),
+            MsegError::ShardLocked,
+            MsegError::Corrupt("oops".into()),
+        ];
+        for v in &variants {
+            let s = format!("{v}");
+            assert!(!s.is_empty(), "Display for {v:?} was empty");
+            // Error trait is wired
+            let _: &dyn std::error::Error = v;
+        }
+    }
+
+    #[test]
+    fn io_error_converts() {
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let e: MsegError = io.into();
+        assert!(matches!(e, MsegError::Io(_)));
+    }
+}

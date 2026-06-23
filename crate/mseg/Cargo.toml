@@ -11,10 +11,18 @@ description = "mneme .mseg storage engine: mmap'd segment, CRUD, multi-tenant sh
 name = "mseg"
 path = "src/lib.rs"
 
+[[bin]]
+name = "mseg-bench"
+path = "src/bin/bench.rs"
+
 [dependencies]
 mseg-format = { path = "../mseg-format" }
 memmap2.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# advisory shard lock via flock(2) (SPEC §4.3, see shard.rs for the fcntl-vs-flock note)
+libc = "=0.2.186"
 
 [dev-dependencies]
 proptest = "=1.5.0"

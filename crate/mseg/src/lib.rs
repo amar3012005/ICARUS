@@ -6,8 +6,10 @@
 
 mod crud;
 mod segment;
+mod shard;
 mod types;
 
 pub use mseg_format::{flags, MsegError, Result};
 pub use segment::{Segment, SlotId};
+pub use shard::Shard;
 pub use types::{Filter, Hit, MemoryInput};

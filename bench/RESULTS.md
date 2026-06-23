@@ -18,3 +18,10 @@ qdrant_rest_p50_ms=2.0571
 - vectors: real bge-m3 (blaiq), dim=1024, 10k corpus / 200 queries (LongMemEval)
 - mneme_scan_p50_ms=0.1548  (int8 mmap brute scan, recall@10=0.9565)
 - qdrant_rest_p50_ms=2.0571  (Qdrant 1.18.2 REST, int8 quant, recall@10=1.0000)
+
+## P2 baseline 2026-06-23T18:25:25Z sha=077fd8d1
+- corpus: real bge-m3, 10k memories, dim=1024 (LongMemEval)
+- mseg_insert_p50_us=3.7920  (append-only: LZ4 text + slot + .vec write)
+- mseg_recall_p50_ms=22.5543  (exact brute-force f32 cosine, single-thread; HNSW is P3)
+mseg_insert_p50_us=3.7920
+mseg_recall_p50_ms=22.5543

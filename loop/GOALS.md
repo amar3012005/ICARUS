@@ -104,19 +104,19 @@
       risk_tier: high
       rollback: revert p2-4
 
-- [ ] p2-5: multi-tenant Shard + fcntl lock (SPEC §4)
+- [x] p2-5: multi-tenant Shard + fcntl lock (SPEC §4)
       depends_on: p2-4
       acceptance: Shard::open(data_root, org_id) validates org_id [a-zA-Z0-9_-]{1,64} (reject .. / symlink traversal), mkdir data_root/<org_id>/, acquires shard.lock via fcntl F_SETLK (Err ShardLocked if held). Drop flushes msync + releases lock. test: two opens of same org → second Err ShardLocked; bad org_id rejected. clippy clean.
       risk_tier: medium
       rollback: revert p2-5
 
-- [ ] p2-6: invariant tests + Miri over unsafe mmap path (SPEC §6)
+- [x] p2-6: invariant tests + Miri over unsafe mmap path (SPEC §6)
       depends_on: p2-4
       acceptance: proptest suite encoding SPEC §6 invariants — append-only (file grows, existing slots immutable), tombstone-until-compact, stable slot ids, header-consistent-after-flush. cargo +nightly miri test over the mmap read path passes (or documented-skip if miri unavailable, with a same-coverage non-miri OOB-safety proptest). clippy clean.
       risk_tier: high
       rollback: revert p2-6
 
-- [ ] p2-7: criterion bench baseline + P2 milestone gate
+- [x] p2-7: criterion bench baseline + P2 milestone gate
       depends_on: p2-1,p2-2,p2-3,p2-4,p2-5,p2-6
       acceptance: criterion bench over insert + recall recorded to bench/RESULTS.md (mseg_insert_p50_us, mseg_recall_p50_ms vs the same 10k real corpus). Full workspace cargo test 100% green, cargo clippy --all-targets -D warnings clean, cargo fmt --check clean. These three are the P2 gate.
       risk_tier: medium

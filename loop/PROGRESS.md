@@ -26,3 +26,16 @@
 | p1-4 | DONE — GATE PASS: mneme_scan_p50_ms=0.1548 < qdrant_rest_p50_ms=2.0571 (13.3x). mneme recall@10=0.957 vs f32 oracle; Qdrant recall@10=1.0 |
 
 GO decision: thesis proven. Local int8 mmap scan beats Qdrant REST by 13x at 10k on real bge-m3 vectors. Advancing to P2 (production crate).
+
+## P2 — Production crate (GATE PASS 2026-06-23)
+| Unit | Outcome |
+|------|---------|
+| p2-1 | mseg-format: FileHeader(64B)+SlotHeader(202B) byte-array LE structs, spec-locked (offset_of! == SPEC §1.2/§1.3) |
+| p2-2 | LZ4 var text region (append/read-by-ptr, 64KiB cap, proptest 200) + MsegError enum |
+| p2-3 | Segment: growable mmap .mseg + parallel .vec mmap + append-only .txt; create/open/flush |
+| p2-4 | CRUD: insert(append-only)/get/delete(tombstone+free-list)/recall(exact f32 cosine + entity+temporal Filter) |
+| p2-5 | Shard: data_root/<org_id>/ + flock(LOCK_EX|NB) advisory lock (stronger than fcntl per §4.3 note) |
+| p2-6 | §6 invariant tests (append-only/stable-ids/tombstone-keeps-bytes/entity-controlled/header-consistency) + OOB-safety proptest (Miri documented-skip: mmap not Miri-able, no nightly) |
+| p2-7 | GATE PASS: fmt + clippy --all-targets --all-features -D warnings + test (35) + llvm-cov 89.7% (>=80). Baseline: mseg_insert_p50_us=3.79, mseg_recall_p50_ms=22.55 (exact f32, HNSW is P3) |
+
+P2 deliverable: production .mseg crate, format spec-locked, CRUD complete, multi-tenant, 35 tests, 89.7% coverage. Advancing to P3 (usearch HNSW + entity bitmap O(1) filter).
