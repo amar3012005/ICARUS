@@ -1,9 +1,10 @@
 //! The append-only durable write path (SPEC §6.1) — deliberately a dedicated module so the
-//! `writepath_isolation` gate can prove, statically, that the write path never reaches index
-//! rebuild or codebook retrain. **Nothing in this file may call `rebuild_hnsw` or
-//! `retrain_codebook`** (kill-condition #1: HNSW rebuild-on-write). The async HNSW indexer
-//! lives in `index.rs`; `insert` (crud.rs) calls `append_memory` here for the durable write,
-//! then enqueues an async index add — it never rebuilds inline.
+//! `writepath_isolation` gate can prove, statically, that the write path never reaches the
+//! index-rebuild or codebook-retrain functions (kill-condition #1: HNSW rebuild-on-write).
+//! Those functions are named in `loop/gates/writepath_isolation.sh`; this module must never
+//! call them. The async HNSW indexer lives in `index.rs`; `insert` (crud.rs) calls
+//! `append_memory` here for the durable write, then enqueues an async index add — it never
+//! rebuilds inline.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

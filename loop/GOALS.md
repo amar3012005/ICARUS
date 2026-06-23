@@ -130,19 +130,19 @@
       risk_tier: high
       rollback: rm -rf crate/mnsw-index
 
-- [ ] p3-2: HNSW-backed recall + async index update (write-path isolation)
+- [x] p3-2: HNSW-backed recall + async index update (write-path isolation)
       depends_on: p3-1,p2-4
       acceptance: Segment gains an optional .mnsw overlay. insert() appends slot+vec+text AND enqueues an async usearch.add (channel/bg thread) — NEVER rebuilds inline (SPEC §6.1/§6.2). recall() uses usearch.search(ef=max(4k,64)) for candidates, post-filters tombstones, exact/ADC rerank, returns top_k. recall never blocks on the async queue (SPEC §6.2). tests: HNSW recall matches brute-force top-k on 10k real (overlap ≥ 0.97); recall returns even with pending async adds. clippy clean.
       risk_tier: high
       rollback: revert p3-2
 
-- [ ] p3-3: entity-bitmap O(1) filter in recall
+- [x] p3-3: entity-bitmap O(1) filter in recall
       depends_on: p3-2
       acceptance: recall(query, Filter{entity_mask}) applies bitwise-AND entity filter (SPEC §1.3/§5.4) over HNSW candidates (usearch predicate callback if available, else post-filter), plus temporal ranges. test: entity-filtered recall returns only slots with matching bits; matches brute-force-with-filter on real data. clippy clean.
       risk_tier: medium
       rollback: revert p3-3
 
-- [ ] p3-4: write-path isolation gate (append never triggers inline rebuild)
+- [x] p3-4: write-path isolation gate (append never triggers inline rebuild)
       depends_on: p3-2
       acceptance: loop/gates/writepath_isolation.sh passes — no static call edge append→rebuild_hnsw, AND append_p99_under_concurrent_rebuild bench number recorded to bench/RESULTS.md (insert p99 stays bounded while a background index rebuild runs). Encodes the kill-condition guard (HNSW rebuild-on-write).
       risk_tier: high

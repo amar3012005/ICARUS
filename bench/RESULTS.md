@@ -25,3 +25,11 @@ qdrant_rest_p50_ms=2.0571
 - mseg_recall_p50_ms=22.5543  (exact brute-force f32 cosine, single-thread; HNSW is P3)
 mseg_insert_p50_us=3.7920
 mseg_recall_p50_ms=22.5543
+
+## P3-4 write-path isolation 2026-06-23T19:12:53Z sha=20d3d2cb
+- append_p99_under_concurrent_rebuild=  (insert p99 µs while HNSW indexer churns 10k-add backlog)
+append_p99_under_concurrent_rebuild=
+
+## P3-4 write-path isolation 2026-06-23T19:14:27Z sha=20d3d2cb
+- append_p99_under_concurrent_rebuild=54.7525  (insert p99 us while HNSW indexer churns a 10k-add backlog)
+append_p99_under_concurrent_rebuild=54.7525
