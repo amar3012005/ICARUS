@@ -28,3 +28,7 @@ libc = "=0.2.186"
 [dev-dependencies]
 proptest = "=1.5.0"
 tempfile = "=3.13.0"
+
+[[bin]]
+name = "solvis-demo"
+path = "src/bin/solvis.rs"

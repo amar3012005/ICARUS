@@ -93,10 +93,27 @@ fn main() {
     let rec_p50 = percentile(&rec_ms, 50.0);
     let rec_p90 = percentile(&rec_ms, 90.0);
 
+    // Write-path isolation (SPEC §6.1/§6.2): enabling HNSW seeds the whole corpus into the
+    // background indexer's queue — a "rebuild in progress". We then time fresh inserts while
+    // that rebuild churns. Insert = durable append + a non-blocking channel send, so its p99
+    // must stay bounded regardless of the indexer backlog (the kill-condition guard).
+    seg.enable_hnsw().expect("enable hnsw"); // enqueues `corpus.len()` adds = rebuild backlog
+    let mut iso_us: Vec<f64> = Vec::with_capacity(corpus.len());
+    for (i, v) in corpus.iter().enumerate() {
+        let m = MemoryInput::new(format!("concurrent {i}"), v.clone());
+        let t = Instant::now();
+        seg.insert(m).expect("insert under rebuild");
+        iso_us.push(t.elapsed().as_secs_f64() * 1e6);
+    }
+    iso_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let iso_p99 = percentile(&iso_us, 99.0);
+    seg.index_drain(); // let the background indexer finish before teardown
+
     println!("mseg_insert_p50_us={ins_p50:.4}");
     println!("mseg_insert_mean_us={ins_mean:.4}");
     println!("mseg_recall_p50_ms={rec_p50:.4}");
     println!("mseg_recall_p90_ms={rec_p90:.4}");
+    println!("append_p99_under_concurrent_rebuild={iso_p99:.4}");
     println!("mseg_n_corpus={}", corpus.len());
     println!("mseg_dim={dim}");
     println!("mseg_top_k={top_k}");
