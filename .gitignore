@@ -31,3 +31,6 @@ bench/qdrant/storage_q/
 bench/qdrant/.qdrant_quality.txt
 bench/.qdrant_quality.txt
 bench/solvis/
+crate/mneme-node/*.node
+crate/mneme-node/node_modules/
+crate/mneme-node/npm-debug.log

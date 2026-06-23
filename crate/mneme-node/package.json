@@ -1,0 +1,7 @@
+{
+  "name": "mneme-node",
+  "version": "0.1.0",
+  "main": "index.js",
+  "napi": { "name": "mneme" },
+  "devDependencies": { "@napi-rs/cli": "^2.18.4" }
+}

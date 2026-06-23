@@ -200,4 +200,32 @@
 
 ## Done
 
+## Phase P6 — napi Node binding + HIVEMIND integration (gate: eval ≥ Qdrant baseline + 72h soak)
+
+- [x] p6-1: mneme-node napi-rs crate — async insert/recall/delete over the mseg engine
+      depends_on: p5-2
+      acceptance: crate/mneme-node (napi-rs v2/v3) exposes async open(dataRoot, orgId, dim), insert(text, vectorFloat32, entityBitmap, validFrom), recall(queryFloat32, topK, filter), delete(slotId). Builds a .node addon on arm64. JS smoke (node -e) opens a shard, inserts, recalls. clippy clean.
+      risk_tier: high
+      rollback: rm -rf crate/mneme-node
+
+- [x] p6-2: MnemeVectorStore JS wrapper matching the indexer.js interface
+      depends_on: p6-1
+      acceptance: a JS class MnemeVectorStore with async upsert(collectionName, points) + search(collectionName, vector, topK) matching core/src/ingestion/indexer.js QdrantVectorStore. Maps collection->org shard, point{id,embedding,payload}->insert, search->recall. node test: upsert N + search returns ranked ids. No change to indexer.js call sites required.
+      risk_tier: medium
+      rollback: rm the wrapper
+
+- [ ] p6-3: eval-harness on mneme-backed store ≥ Qdrant baseline
+      depends_on: p6-2
+      acceptance: run the HIVEMIND eval-harness (or a faithful golden-case recall eval) against BOTH the Qdrant store and the MnemeVectorStore on the same real corpus; write mneme_eval_score + qdrant_eval_score to bench/RESULTS.md. loop/gates/p6_eval_ge_baseline.sh exits 0 (mneme >= qdrant). Storage reduction measured (>5x RAM).
+      risk_tier: high
+      rollback: revert RESULTS numbers
+
+- [ ] p6-4: 72h soak (DEPLOY-TIME gate — 3-day wall-clock, cannot complete in one session)
+      depends_on: p6-3
+      acceptance: a 72h continuous run (insert+recall load) on the mneme-backed store; write soak_hours_completed (>71.9), soak_crashes (0), soak_rss_growth_pct (<5), soak_recall_p99_ms (<5) to bench/RESULTS.md. loop/gates/p6_soak_72h.sh exits 0. NOTE: this is a literal 72-hour runtime gate — start it, it completes 3 days later. Not fakeable.
+      risk_tier: human-gate
+      rollback: restart soak
+
+## Done
+
 _(units move here with their sha as they complete)_

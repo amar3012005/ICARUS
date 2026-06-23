@@ -3,7 +3,7 @@
 # Later phases add mseg-format, mnsw-index, mpq-codebook, mneme-node crates here.
 [workspace]
 resolver = "2"
-members = ["mneme-probe", "mseg-format", "mseg", "mnsw-index", "mpq"]
+members = ["mneme-probe", "mseg-format", "mseg", "mnsw-index", "mpq", "mneme-node"]
 
 [workspace.package]
 edition = "2021"
