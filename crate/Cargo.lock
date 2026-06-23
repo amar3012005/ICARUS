@@ -153,6 +153,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mseg"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "mseg-format",
+ "proptest",
+ "tempfile",
+ "zerocopy",
+]
+
+[[package]]
 name = "mseg-format"
 version = "0.1.0"
 dependencies = [

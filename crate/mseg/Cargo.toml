@@ -1,0 +1,21 @@
+[package]
+name = "mseg"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "mneme .mseg storage engine: mmap'd segment, CRUD, multi-tenant shard"
+
+[lib]
+name = "mseg"
+path = "src/lib.rs"
+
+[dependencies]
+mseg-format = { path = "../mseg-format" }
+memmap2.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+proptest = "=1.5.0"
+tempfile = "=3.13.0"

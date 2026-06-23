@@ -115,12 +115,23 @@ Slot size = **202 bytes**. (GLOBAL_PLAN ~194 was a pre-spec sketch; 202 is the f
 
 ### 1.5 Variable region — LZ4 compressed text
 
-- Starts at `file_header.var_region_off`.
-- Contains back-to-back LZ4 frame-format blocks, each addressed by a slot's `text_ptr`.
-- Each LZ4 block is independent (decompresses standalone).
+- Contains back-to-back LZ4 block-format blocks, each addressed by a slot's `text_ptr`.
+- Each LZ4 block is independent (decompresses standalone); `text_len_raw` sizes the decode.
 - Write path: append-only. New text blocks appended; old blocks never moved.
 - Reclaimed by `compact()` only (see §5.4).
 - Max raw text per slot: 64 KiB (enforced at insert; returns `Err(TextTooLarge)` otherwise).
+
+> **CLARIFICATION (frozen-format refinement, not a layout change — slot/file-header bytes
+> are unchanged, so `format_version` stays 0).** The literal "variable region immediately
+> follows the slot array inside `.mseg`" is incompatible with invariant §6.1 (append-only):
+> the slot array *also* grows on every insert, so two append-only regions cannot share one
+> flat file without one moving the other. To honor §6.1 strictly — nothing ever moves on
+> insert — the text region is the companion append-only file `<name>.txt` in the shard
+> directory (alongside `<name>.mseg`, `<name>.vec`, etc. per §4.1). `text_ptr` is the byte
+> offset of the block within `<name>.txt`; `file_header.var_region_len` mirrors that file's
+> length. `.mseg` therefore holds the 64-byte header + the fixed-stride slot array only, and
+> growing the slot array (file extend + remap) never moves an existing slot or text byte.
+> §6.1 governs; this clarification implements it.
 
 ### 1.6 Free-list
 

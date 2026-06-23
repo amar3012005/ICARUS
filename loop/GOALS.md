@@ -92,13 +92,13 @@
       risk_tier: medium
       rollback: revert p2-2 module
 
-- [ ] p2-3: segment open/create lifecycle + .vec bootstrap side-file (SPEC §3.3)
+- [x] p2-3: segment open/create lifecycle + .vec bootstrap side-file (SPEC §3.3)
       depends_on: p2-1,p2-2
       acceptance: Segment::create initializes 64B file header (magic MNEME\0, version 0, dim, counts, free_list_head=0xFFFFFFFF, var_region_off page-aligned). Segment::open mmaps RW (memmap2 wrapped owner), validates header. Raw f32 vectors stored in <org>.vec side-file (pre-PQ bootstrap, SPEC §3.3) keyed by slot_id. proptest: create→open round-trip header-consistent. clippy clean.
       risk_tier: high
       rollback: revert p2-3
 
-- [ ] p2-4: CRUD — insert/get/delete/recall (append-only, free-list, tombstone)
+- [x] p2-4: CRUD — insert/get/delete/recall (append-only, free-list, tombstone)
       depends_on: p2-3
       acceptance: insert (LZ4 text append + slot append OR free-list pop + .vec append; returns stable SlotId; append-only per SPEC §6.1); get(SlotId) (Err TombstonedSlot if deleted); delete (set TOMBSTONE + free-list push, var bytes NOT freed per §6.4); recall (brute-force f32 cosine over .vec, skip tombstoned, apply Filter entity_mask + temporal ranges per §5.4 steps 1-4, hops=0 for P2). proptest: insert N → all gettable; delete → not in recall, slot reusable; append-only (file strictly grows on insert). clippy clean.
       risk_tier: high
