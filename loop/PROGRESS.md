@@ -50,3 +50,13 @@ P2 deliverable: production .mseg crate, format spec-locked, CRUD complete, multi
 | p3-5 | GATE PASS: recall10_p50_ms=1.334 @1M (<5), recall10_quality_loss_pct=0.75 vs Qdrant f32 (<3). Parallel bulk-seed (1M HNSW build 293s). |
 
 P3 deliverable: usearch HNSW overlay, sub-2ms recall@10 @1M, 99.25% recall vs exact, write-path isolated. Also: SOLVIS real-doc recall demo (hybrid RRF+MMR ~1.4ms, cross-encoder rerank hooks). Advancing to P4 (Product Quantization).
+
+## P4 — Product Quantization (GATE PASS 2026-06-24)
+| Unit | Outcome |
+|------|---------|
+| p4-1 | mpq crate: k-means PQ codebook M=128/K=256, encode/decode, .mpq format. 4 tests |
+| p4-2 | ADC distance (precomputed [M][K] table, no decode) |
+| p4-3 | drift detection (alignment<0.85), pq_drift_detect test, retrain never inline |
+| p4-4 | GATE PASS: pq_recall10_overlap_pct=100 (ADC scan + exact rescore, Qdrant-parity) >96; pure-ADC@10=79.3%. Segment train_pq() populates vector_pq+PQ_TRAINED+.mpq |
+
+P4 done: 32x PQ compression, ADC, drift. Advancing to P5 (bi-temporal + 2-hop graph).

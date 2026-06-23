@@ -7,6 +7,7 @@
 mod append;
 mod crud;
 mod index;
+mod pq;
 mod segment;
 mod shard;
 mod types;

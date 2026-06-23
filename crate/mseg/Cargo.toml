@@ -18,6 +18,7 @@ path = "src/bin/bench.rs"
 [dependencies]
 mseg-format = { path = "../mseg-format" }
 mnsw-index = { path = "../mnsw-index" }
+mpq = { path = "../mpq" }
 memmap2.workspace = true
 zerocopy.workspace = true
 rayon.workspace = true

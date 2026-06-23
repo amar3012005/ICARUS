@@ -334,6 +334,7 @@ dependencies = [
  "libc",
  "memmap2",
  "mnsw-index",
+ "mpq",
  "mseg-format",
  "proptest",
  "rayon",

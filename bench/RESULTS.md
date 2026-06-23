@@ -40,3 +40,8 @@ append_p99_under_concurrent_rebuild=54.7525
 - mneme_recall10=0.9925 vs qdrant_f32_recall10=1.0000 -> recall10_quality_loss_pct=0.75 — gate <3%
 recall10_p50_ms=1.3340
 recall10_quality_loss_pct=0.75
+
+## P4 PQ recall@10 overlap 2026-06-23T22:46:40Z sha=80cf2a62
+- PQ M=128/K=256, 128-byte code (32x). Production pattern: ADC scan over codes -> exact-f32 rescore top-100 (same as Qdrant quant+rescore).
+- pq_recall10_overlap_pct=100.0000 (rescored)  |  pure-ADC@10=79.30% (transparency)
+pq_recall10_overlap_pct=100.0000
