@@ -1,6 +1,6 @@
 {
   "name": "singulance-amr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SINGULANCE AMR \u2014 a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store in the .amr format. Drop-in for Qdrant.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -56,5 +56,12 @@
   "homepage": "https://github.com/amar3012005/mneme",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"
+  },
+  "optionalDependencies": {
+    "singulance-amr-win32-x64-msvc": "0.1.0",
+    "singulance-amr-darwin-x64": "0.1.0",
+    "singulance-amr-linux-x64-gnu": "0.1.0",
+    "singulance-amr-darwin-arm64": "0.1.0",
+    "singulance-amr-linux-arm64-gnu": "0.1.0"
   }
 }
