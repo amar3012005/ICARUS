@@ -1,7 +1,56 @@
 {
   "name": "mneme-node",
   "version": "0.1.0",
+  "description": "mneme — a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store. Drop-in for Qdrant.",
   "main": "index.js",
-  "napi": { "name": "mneme" },
-  "devDependencies": { "@napi-rs/cli": "^2.18.4" }
+  "types": "index.d.ts",
+  "bin": {
+    "mneme": "mneme-cli.js"
+  },
+  "files": [
+    "index.js",
+    "mneme-cli.js",
+    "*.node",
+    "README.md"
+  ],
+  "napi": {
+    "name": "mneme",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "napi build --release",
+    "build:debug": "napi build"
+  },
+  "keywords": [
+    "vector-database",
+    "memory",
+    "embeddings",
+    "hnsw",
+    "ai-agents",
+    "mmap",
+    "qdrant-alternative",
+    "vector-search"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amar3012005/HIVEMIND.git",
+    "directory": "mneme/crate/mneme-node"
+  },
+  "homepage": "https://github.com/amar3012005/HIVEMIND/tree/main/mneme",
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
 }

@@ -1,0 +1,11 @@
+mneme — a memory filesystem for AI agents
+Copyright 2026 mneme authors
+
+This product includes software developed as part of the HIVEMIND project.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This software depends on third-party open-source components, each under its own
+license, including (non-exhaustive): usearch (Apache-2.0), memmap2 (MIT/Apache-2.0),
+zerocopy (BSD-2/Apache-2.0/MIT), lz4_flex (MIT), rayon (MIT/Apache-2.0), and
+napi-rs (MIT). Their licenses are reproduced in their respective distributions.

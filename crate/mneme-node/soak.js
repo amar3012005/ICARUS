@@ -42,12 +42,27 @@ function p99(arr) {
   await store.search('soak', randVec(DIM), 5); // trigger index build
   const rss0 = process.memoryUsage().rss;
 
-  const deadline = Date.now() + HOURS * 3600 * 1000;
+  const start = Date.now();
+  const deadline = start + HOURS * 3600 * 1000;
   let nextId = PRE;
   let crashes = 0;
   let maxRss = rss0;
   const lat = [];
   let ops = 0;
+  let lastCheckpoint = start;
+
+  const writeMetrics = (done) => {
+    const hours = (Date.now() - start) / 3600000;
+    fs.writeFileSync(
+      OUT,
+      `soak_hours_completed=${(done ? HOURS : hours).toFixed(4)}\n` +
+        `soak_crashes=${crashes}\n` +
+        `soak_rss_growth_pct=${(((maxRss - rss0) / rss0) * 100).toFixed(4)}\n` +
+        `soak_recall_p99_ms=${p99(lat).toFixed(4)}\n` +
+        `soak_ops=${ops}\n` +
+        `soak_status=${done ? 'complete' : 'running'}\n`
+    );
+  };
 
   while (Date.now() < deadline) {
     try {
@@ -61,22 +76,18 @@ function p99(arr) {
       if (ops % 2000 === 0) {
         const rss = process.memoryUsage().rss;
         if (rss > maxRss) maxRss = rss;
-        // periodic re-index so HNSW keeps up with inserts (and exercises the build path)
         await store.search('soak', randVec(DIM), 5);
+      }
+      // checkpoint metrics every ~60s so the run is monitorable without touching it.
+      if (Date.now() - lastCheckpoint > 60000) {
+        writeMetrics(false);
+        lastCheckpoint = Date.now();
       }
     } catch (e) {
       crashes++;
     }
   }
 
-  const hours = HOURS; // completed (the loop ran to the deadline)
-  const rssGrowthPct = ((maxRss - rss0) / rss0) * 100;
-  const out =
-    `soak_hours_completed=${hours.toFixed(4)}\n` +
-    `soak_crashes=${crashes}\n` +
-    `soak_rss_growth_pct=${rssGrowthPct.toFixed(4)}\n` +
-    `soak_recall_p99_ms=${p99(lat).toFixed(4)}\n` +
-    `soak_ops=${ops}\n`;
-  fs.writeFileSync(OUT, out);
-  console.log(out);
+  writeMetrics(true);
+  console.log('soak complete');
 })();

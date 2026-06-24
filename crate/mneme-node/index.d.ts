@@ -26,6 +26,34 @@ export declare class MnemeStore {
   delete(slotId: number): void
   /** Number of live memories in the shard. */
   liveCount(): number
+  /**
+   * Compact the text region, reclaiming bytes of deleted memories. Returns bytes reclaimed.
+   * A maintenance op — run when the shard is idle.
+   */
+  compact(): number
   /** Flush to disk. */
   flush(): void
 }
+
+// --- JS wrapper (index.js) ---------------------------------------------------
+
+export interface QdrantPoint {
+  id: string | number
+  vector: number[] | Float32Array
+  payload?: Record<string, unknown>
+}
+
+export interface SearchHit {
+  id: string | number
+  score: number
+  payload: Record<string, unknown>
+}
+
+/** Drop-in replacement for HIVEMIND's QdrantVectorStore (one shard per collection). */
+export declare class MnemeVectorStore {
+  constructor(opts?: { dataRoot?: string; dim?: number })
+  upsert(collectionName: string, points: QdrantPoint[]): Promise<{ upserted: number }>
+  search(collectionName: string, vector: number[] | Float32Array, topK?: number): Promise<SearchHit[]>
+}
+
+export declare function sanitizeOrg(name: string): string

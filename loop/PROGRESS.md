@@ -78,3 +78,16 @@ P5 done. Advancing to P6 (napi Node binding + HIVEMIND integration — makes it 
 | p6-4 | 72h soak = deploy-time wall (deferred). Harness built; SHORT proof found+fixed a real concurrent-reserve SEGFAULT (RwLock: search/add=read, reserve=write). |
 
 Engine changes this phase: f32 HNSW + M=48/ef_construct=256/ef_search=400 (recall parity), deterministic sequential index build (reproducible recall), RwLock-guarded reserve (crash-safe incremental indexing). All 20 test suites green, clippy clean.
+
+## P7 — packaging for free OSS release (2026-06-24)
+| Deliverable | State |
+|------|---------|
+| THESIS.md | full design + benchmarks + DB comparison table (Qdrant/pgvector/LanceDB/Pinecone) |
+| README.md | quickstart, numbers, architecture, repo layout |
+| LICENSE + NOTICE | Apache-2.0 |
+| install.sh | curl\|bash: toolchain → build addon → install CLI → config → HIVEMIND OAuth → verify |
+| mneme-cli.js | ingest/recall/compact/status/connect — e2e verified with real bge-m3 (top-1 correct) |
+| package.json | npm bin/files/triples/keywords/repo; index.d.ts types |
+| 72h soak | RUNNING detached (bench/soak/), checkpoints every 60s |
+
+Engine COMPLETE (P0-P6) + robustness (crash-safety, compact). Remaining for publish: standalone repo extract, CI prebuilt .node per platform, npm publish + cargo publish.
