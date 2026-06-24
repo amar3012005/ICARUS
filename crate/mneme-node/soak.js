@@ -40,7 +40,7 @@ function p99(arr) {
   for (let i = 0; i < PRE; i++) pts.push({ id: i, vector: randVec(DIM), payload: { i } });
   await store.upsert('soak', pts);
   await store.search('soak', randVec(DIM), 5); // trigger index build
-  const rss0 = process.memoryUsage().rss;
+  let rss0 = process.memoryUsage().rss;
 
   const start = Date.now();
   const deadline = start + HOURS * 3600 * 1000;
@@ -64,14 +64,30 @@ function p99(arr) {
     );
   };
 
+  // Steady-state load: hold a BOUNDED working set so RSS growth is a leak signal, not data
+  // growth. Fill to CAP, then run recall-dominant with a trickle of inserts capped at CAP*1.2
+  // (a real memory store is read-heavy). Unbounded insertion would grow RSS with the corpus and
+  // conflate "the index got bigger" with "we leaked".
+  const CAP = Number(process.env.SOAK_CAP || 30000);
+  let steady = false;
   while (Date.now() < deadline) {
     try {
-      // insert one + recall (the steady-state load)
-      await store.upsert('soak', [{ id: nextId, vector: randVec(DIM), payload: { i: nextId } }]);
-      nextId++;
+      // 1 insert every 10 ops while under cap; otherwise pure recall (read-heavy steady state).
+      if (nextId < CAP && ops % 10 === 0) {
+        await store.upsert('soak', [{ id: nextId, vector: randVec(DIM), payload: { i: nextId } }]);
+        nextId++;
+      } else if (!steady && nextId >= CAP) {
+        // corpus filled — reset the leak baseline so growth/p99 measure STEADY STATE only,
+        // not the legitimate data-growth + index warmup of the fill phase.
+        steady = true;
+        rss0 = process.memoryUsage().rss;
+        maxRss = rss0;
+        lat.length = 0;
+      }
       const t = process.hrtime.bigint();
       await store.search('soak', randVec(DIM), 5);
       lat.push(Number(process.hrtime.bigint() - t) / 1e6);
+      if (lat.length > 100000) lat.splice(0, 50000); // bound the latency buffer itself
       ops++;
       if (ops % 2000 === 0) {
         const rss = process.memoryUsage().rss;

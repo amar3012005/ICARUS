@@ -60,7 +60,11 @@ impl AsyncIndexer {
                         Msg::Add(id, v) => {
                             // grow under the write guard FIRST, then add under the read guard
                             // (concurrent with searches) — never reserve while searching.
-                            ensure_capacity(&worker, worker.read().expect("lock").len() + 1);
+                            // Read `len` into a LOCAL so the read guard is released before
+                            // ensure_capacity may take the write guard: a read-held-into-write on
+                            // the same thread deadlocks (std RwLock is not reentrant).
+                            let need = worker.read().expect("index lock").len() + 1;
+                            ensure_capacity(&worker, need);
                             let g = worker.read().expect("index lock");
                             let _ = g.add(id, &v);
                         }
