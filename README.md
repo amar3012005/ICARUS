@@ -34,15 +34,15 @@ benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amar3012005/HIVEMIND/main/mneme/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amar3012005/mneme/main/install.sh | bash
 ```
 
 Installs the toolchain if missing, builds the native addon, installs the `mneme` CLI to `~/.mneme`,
 and (optionally) connects your HIVEMIND account. Manual build:
 
 ```bash
-git clone https://github.com/amar3012005/HIVEMIND
-cd HIVEMIND/mneme/crate/mneme-node && npm install && npx napi build --release
+git clone https://github.com/amar3012005/mneme
+cd mneme/crate/mneme-node && npm install && npx napi build --release
 ```
 
 ## Quickstart (Node)
