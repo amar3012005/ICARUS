@@ -30,22 +30,29 @@ impl Segment {
         // 1. text -> append-only .txt block
         let tref: TextRef = self.append_text_block(mem.text.as_bytes())?;
 
-        // 2. choose a slot: pop the free list, else append a fresh index
+        // 2. choose a slot: pop the free list, else append a fresh index. We DECIDE the index
+        //    here but DO NOT publish it (slot_count / free_list_head) until the slot+vector
+        //    bytes are written — see the commit step. Crash-safety: a memory becomes visible
+        //    only after its bytes exist, so a torn write before the commit is simply ignored on
+        //    reopen (no phantom slot with garbage). For strict per-insert durability call
+        //    `flush()`; otherwise the commit ordering still prevents reading uninitialised slots.
         let free_head = self.free_list_head();
-        let idx: usize = if free_head != SENTINEL_U32 {
-            let reused = free_head as usize;
-            // next free = the tombstoned slot's adjacency[0] (SPEC §1.6 chaining)
-            let next_free = self.slot(reused)?.adjacency(0);
-            self.with_header_mut(|h| h.set_free_list_head(next_free));
-            reused
+        let reuse = free_head != SENTINEL_U32;
+        let idx: usize = if reuse {
+            free_head as usize
         } else {
             let new_idx = self.slot_count() as usize;
             self.ensure_capacity(new_idx + 1)?;
-            self.with_header_mut(|h| h.set_slot_count(new_idx as u32 + 1));
             new_idx
         };
+        // for a reused slot, capture the next free pointer before we overwrite the slot.
+        let next_free = if reuse {
+            self.slot(idx)?.adjacency(0)
+        } else {
+            SENTINEL_U32
+        };
 
-        // 3. build + write the slot header
+        // 3. build + write the slot header (bytes hit the file BEFORE the commit).
         let created_at = mem.created_at.unwrap_or_else(now_nanos);
         let mut slot = SlotHeader::empty();
         slot.set_id(idx as u32);
@@ -61,11 +68,19 @@ impl Segment {
         }
         self.write_slot(idx, &slot)?;
 
-        // 4. raw vector -> parallel .vec entry
+        // 4. raw vector -> parallel .vec entry (also before the commit).
         self.write_vector(idx, &mem.vector)?;
 
-        // 5. live count++
-        self.with_header_mut(|h| h.set_live_count(h.live_count() + 1));
+        // 5. COMMIT: publish the slot. The counter / free-list head is the single visibility
+        //    point — until now the slot's bytes existed but it was not reachable by recall/get.
+        self.with_header_mut(|h| {
+            if reuse {
+                h.set_free_list_head(next_free); // pop only now that the slot is fully written
+            } else {
+                h.set_slot_count(idx as u32 + 1); // count it only now
+            }
+            h.set_live_count(h.live_count() + 1);
+        });
         Ok(idx as SlotId)
     }
 }
