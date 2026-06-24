@@ -22,16 +22,22 @@ result, measured on real `bge-m3` embeddings of real conversational memories:
 
 | Metric | mneme | Qdrant (baseline) |
 |---|---|---|
-| recall@10 latency @ 1M | **1.33 ms** (local) | 2.06 ms (REST round-trip) |
-| recall quality (recall@5 vs exact) | **1.00** | 1.00 |
+| recall@10 latency @ 1M (native vs REST) | **1.33 ms** (native scan) | 2.06 ms (over REST) |
+| **recall quality — production data, vs live Qdrant** | **99.8% top-10 overlap** | baseline |
+| recall quality (recall@5 vs exact, lab) | **1.00** | 1.00 |
 | bi-temporal + 2-hop graph @ 1M | **1.93 ms** | (multiple calls) |
 | storage per memory | **~600 B** | ~4,500 B |
 | vector compression (PQ) | **32×** | 4× (scalar int8) |
 | infrastructure | one file, no server | managed cluster |
 
 The thesis: when the access pattern is fixed, the right abstraction is a **file format**, not a
-service. mneme proves it by beating a tuned Qdrant on latency at equal recall, at 7.5× smaller
-storage, with no server to run.
+service. mneme is to a vector DB what **SQLite is to Postgres** — embedded, single-file,
+in-process. On real production data it returns the **same memories** a live Qdrant returns (99.8%
+overlap) at 7.5× smaller storage with no server. The latency headline is stated precisely: the
+native engine beats a vector DB *over REST* (the network hop is the cost); against a *co-located*
+Qdrant, and especially through the current Node binding, mneme is **not** a latency win yet — a
+binding-overhead problem, not a format one. The honest wins are equal recall, no server, and the
+byte layout.
 
 ---
 
@@ -198,7 +204,15 @@ by HNSW traversal, not vector semantics — and this is stated, not hidden).
 | mneme int8 mmap scan | **0.155 ms** | local, no network |
 | Qdrant REST (int8) | 2.057 ms | localhost HTTP round-trip |
 
-**13.3× faster** — the network hop and serialization, not the search, were the cost.
+**13.3× faster** — but read this precisely. The comparison is mneme's *native int8 scan* against
+Qdrant *over its REST API with the localhost HTTP round-trip*. The win is the **network hop +
+serialization**, not the search algorithm. Measured **in-container** (no client round-trip, §5.7),
+Qdrant's own search is ~1.5 ms — fast. So the latency advantage is real **only versus a networked
+vector-DB call**; against a co-located Qdrant the gap narrows, and through mneme's *Node binding*
+(napi + JS marshalling + wide-ef rerank) mneme is currently **slower** than in-container Qdrant
+(§5.7). The honest claim: mneme's *format/engine* is faster than a *REST vector DB*; its *Node
+binding* is not yet faster than a *localhost* one. The durable wins are equal recall, no server,
+and a single mmap'd file.
 
 ### 5.2 At scale (P3) — recall@10 @ 1M
 
@@ -238,6 +252,52 @@ reproducible graph and stable 1.0).
 |---|---|
 | insert p50 | **3.79 µs** |
 | insert p99 under concurrent index rebuild | 54.75 µs |
+
+### 5.7 Real-world validation — production shadow eval
+
+The lab numbers above use real `bge-m3` embeddings but a controlled corpus. The decisive test is a
+**production shadow eval**: take a live deployment's actual vectors and ask whether mneme returns
+the *same memories* a production Qdrant returns — with **zero production risk** (read-only scroll,
+mneme runs locally, nothing is written or swapped).
+
+Setup: one production org's **8,682 real vectors** (1024-dim, the exact data serving live recall)
+were scrolled read-only out of the production Qdrant. A local mneme shard was built from them. For
+200 leave-one-out queries (a stored vector queried against both stores), mneme's top-10 was
+compared to the production Qdrant's top-10.
+
+| Metric | Result |
+|---|---|
+| **top-10 overlap (mneme vs prod Qdrant)** | **99.80%** |
+| top-1 agreement | 98.0% (196/200 identical #1; 4 at 9/10) |
+| mneme latency (Node binding) | p50 4.0 ms / p99 4.9 ms |
+| Qdrant latency (in-container, no client RTT) | p50 1.5 ms / p99 3.1 ms |
+| mneme shard | one 40 MB mmap'd file, no server |
+
+Two honest conclusions:
+
+1. **Recall is production-equivalent.** 99.8% top-10 overlap on real production data means mneme is
+   a *correctness-safe* swap for the vector layer — it surfaces the same memories.
+2. **Latency through the Node binding is not yet a win** against a co-located Qdrant: 4.0 ms vs
+   1.5 ms. The cost is the napi/JS boundary + the wide-ef exact rerank, not the format. The lever
+   to reclaim the native advantage is calling the Rust engine directly or trimming the binding
+   (narrower ef, no `Float32Array` re-marshalling).
+
+The value mneme delivers *today*, proven on production data: **the same recall with no separate
+vector-database server** — one file per tenant, opened in-process.
+
+### 5.8 Robustness — what continuous load found
+
+The engine is hardened against the failure modes that kill custom stores, and a soak harness
+(continuous insert+recall) earned its keep by catching two real bugs before any deployment:
+
+- a **segfault** from `usearch reserve()` racing concurrent `search()` → fixed with an `RwLock`
+  (search/add take the read guard, the reallocating reserve takes the exclusive write guard);
+- a **deadlock** from a read guard held across a write-lock acquisition on one thread (std `RwLock`
+  is not reentrant) → fixed by reading into a local first.
+
+Both have regression tests. Crash-safety (commit-last insert ordering — a torn write is never read
+as a live memory) and `compact()` (reclaims deleted memories' bytes without renumbering slot ids)
+round out the durability story.
 
 ---
 
@@ -303,9 +363,16 @@ the contract.
 
 A vector database is the right tool when the access pattern is unknown. When it is fixed — and for
 agent memory it is — the right tool is a **file format** that bakes the pattern into the bytes.
-mneme is that format: 13× faster recall than a REST vector DB at equal quality, 7.5× smaller
-storage, 32× vector compression with no recall loss, bi-temporal time-travel and graph hops served
-from the same `mmap`, and zero servers to operate. The code is the proof; the `.amr` layout is the
-moat.
+mneme is that format. The relationship to a vector DB is the one **SQLite** has to Postgres: an
+embedded, single-file, in-process format — not a server. It does **not** replace a relational
+database; in a real system (e.g. HIVEMIND) Postgres still owns identity, auth, typed graph edges,
+versioning, and governance. mneme replaces exactly one component: the **vector store**.
+
+Proven, on production data: **equal recall** (99.8% top-10 overlap vs a live Qdrant), 7.5× smaller
+persistent storage, 32× vector compression with no recall loss, bi-temporal time-travel and graph
+hops served from the same `mmap`, and **zero servers to operate**. The latency claim is narrower and
+stated honestly: mneme's native engine beats a *REST* vector DB (the network hop was the cost), but
+its Node binding is not yet faster than a *co-located* one — that's a binding-overhead problem, not
+a format one. The code is the proof; the `.amr` layout is the moat.
 
 *Build it, don't buy it — when you know exactly what you're storing.*

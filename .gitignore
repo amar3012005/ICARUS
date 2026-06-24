@@ -34,3 +34,6 @@ bench/solvis/
 crate/mneme-node/*.node
 crate/mneme-node/node_modules/
 crate/mneme-node/npm-debug.log
+bench/shadow/*.jsonl
+bench/shadow/*.err
+bench/shadow/mneme-shard/
