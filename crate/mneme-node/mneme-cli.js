@@ -174,13 +174,13 @@ async function main() {
       case 'compact': cmdCompact(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
       default:
-        console.log(`mneme — memory filesystem CLI
+        console.log(`amr — SINGULANCE memory filesystem CLI
 
-  mneme ingest <dir> --org <name>     extract + embed + store a folder
-  mneme recall "<query>" --org <name> [--k 5]
-  mneme compact --org <name>          reclaim deleted memories' bytes
-  mneme status                        shards + disk usage
-  mneme connect                       link your HIVEMIND account
+  amr ingest <dir> --org <name>     extract + embed + store a folder
+  amr recall "<query>" --org <name> [--k 5]
+  amr compact --org <name>          reclaim deleted memories' bytes
+  amr status                        shards + disk usage
+  amr connect                       link your HIVEMIND account
 
   env: LITELLM_API_KEY (embeddings), MNEME_HOME (default ~/.mneme)`);
     }

@@ -9,7 +9,8 @@
 // indexer.js call sites are unchanged.
 
 const path = require('path');
-const { MnemeStore } = require('./mneme.node');
+const native = require('./native.js');
+const { MnemeStore } = native;
 
 function sanitizeOrg(name) {
   const s = String(name).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);

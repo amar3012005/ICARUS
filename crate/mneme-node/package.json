@@ -1,21 +1,22 @@
 {
-  "name": "mneme-node",
+  "name": "singulance-amr",
   "version": "0.1.0",
-  "description": "mneme — a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store. Drop-in for Qdrant.",
+  "description": "SINGULANCE AMR \u2014 a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store in the .amr format. Drop-in for Qdrant.",
   "main": "index.js",
   "types": "index.d.ts",
   "bin": {
-    "mneme": "mneme-cli.js"
+    "amr": "mneme-cli.js"
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "native.js",
     "mneme-cli.js",
     "*.node",
     "README.md"
   ],
   "napi": {
-    "name": "mneme",
+    "name": "singulance-amr",
     "triples": {
       "defaults": true,
       "additional": [
@@ -29,7 +30,8 @@
   },
   "scripts": {
     "build": "napi build --release",
-    "build:debug": "napi build"
+    "build:debug": "napi build",
+    "prepublishOnly": "napi prepublish -t npm --skip-gh-release"
   },
   "keywords": [
     "vector-database",
@@ -39,7 +41,8 @@
     "ai-agents",
     "mmap",
     "qdrant-alternative",
-    "vector-search"
+    "vector-search",
+    "singulance"
   ],
   "engines": {
     "node": ">=18"
@@ -47,10 +50,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/amar3012005/HIVEMIND.git",
-    "directory": "mneme/crate/mneme-node"
+    "url": "git+https://github.com/amar3012005/mneme.git",
+    "directory": "crate/mneme-node"
   },
-  "homepage": "https://github.com/amar3012005/HIVEMIND/tree/main/mneme",
+  "homepage": "https://github.com/amar3012005/mneme",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"
   }
