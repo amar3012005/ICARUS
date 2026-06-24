@@ -61,7 +61,7 @@ network hop — not the search algorithm — was the bottleneck all along.
 
 ---
 
-## 2. The `.mseg` format: the moat
+## 2. The `.amr` format: the moat
 
 ### 2.1 One slot per memory (202 bytes, fixed)
 
@@ -102,7 +102,7 @@ One slot = one cache-line-friendly record carrying everything a recall needs.
 
 ```
 <data_root>/<org_id>/
-  shard.mseg   64-byte file header + the fixed-stride slot array (mmap'd)
+  shard.amr   64-byte file header + the fixed-stride slot array (mmap'd)
   shard.vec    raw f32 vectors (exact-rescore source; bootstrap pre-PQ)
   shard.txt    append-only LZ4 text region (text_ptr addresses it)
   shard.mnsw   usearch HNSW index (the candidate accelerator)
@@ -158,7 +158,7 @@ system, no second round-trip, no join.
 | **PQ codebook** | **built** | usearch does scalar int8 only; per-org PQ + drift is mneme's IP |
 | Node bridge | `napi-rs` | drop-in for HIVEMIND's JS indexer, no node-gyp |
 
-The innovation budget is spent on exactly three things — the `.mseg` byte layout, the
+The innovation budget is spent on exactly three things — the `.amr` byte layout, the
 entity-bitmap AND filter, and the per-org PQ codebook with drift detection. Everything else is a
 battle-tested dependency.
 
@@ -241,9 +241,9 @@ reproducible graph and stable 1.0).
 
 ---
 
-## 6. How the `.mseg` slot differs from every other store
+## 6. How the `.amr` slot differs from every other store
 
-| | mneme `.mseg` slot | Qdrant point | pgvector row | LanceDB | Pinecone |
+| | mneme `.amr` slot | Qdrant point | pgvector row | LanceDB | Pinecone |
 |---|---|---|---|---|---|
 | Embedding storage | inline, PQ 128 B | separate, float32/int8 | column, float32 | columnar IVF_PQ | managed |
 | Entity filter | inline 64-bit AND, O(1) | payload index (separate) | WHERE on column | SQL filter | metadata filter |
@@ -270,7 +270,7 @@ replaces the *vector store*, not the memory graph.
 - **64 entities.** The entity bitmap is 64 bits. Larger entity vocabularies need a roaring-bitmap
   inverted index (a planned extension); today entities beyond 64 must be hashed or scoped.
 - **HNSW index is f32 (not compressed).** For recall parity the candidate graph is float32, so the
-  *index* is not the storage win — the win is the persistent `.mseg`/`.mpq` format. (An int8 graph
+  *index* is not the storage win — the win is the persistent `.amr`/`.mpq` format. (An int8 graph
   option trades ~0.5% recall for a 4×-smaller index.)
 - **compact() is a maintenance op.** It reclaims deleted memories' text bytes correctly on
   completion and is re-runnable if interrupted, but is not crash-atomic across the file pair; run
@@ -305,7 +305,7 @@ A vector database is the right tool when the access pattern is unknown. When it 
 agent memory it is — the right tool is a **file format** that bakes the pattern into the bytes.
 mneme is that format: 13× faster recall than a REST vector DB at equal quality, 7.5× smaller
 storage, 32× vector compression with no recall loss, bi-temporal time-travel and graph hops served
-from the same `mmap`, and zero servers to operate. The code is the proof; the `.mseg` layout is the
+from the same `mmap`, and zero servers to operate. The code is the proof; the `.amr` layout is the
 moat.
 
 *Build it, don't buy it — when you know exactly what you're storing.*

@@ -1,4 +1,4 @@
-# mneme `.mseg` File Format Specification — RFC
+# mneme `.amr` File Format Specification — RFC
 
 > **STATUS: FROZEN — PHASE 0 COMPLETE. Format version 0 is locked.**
 >
@@ -26,7 +26,7 @@ version 1) and a fresh review. New capabilities go to `FUTURE.md`, never here.
 
 ---
 
-## 1. `.mseg` — memory segment (one per org)
+## 1. `.amr` — memory segment (one per org)
 
 ### 1.1 Endianness and alignment
 
@@ -43,7 +43,7 @@ Offset 0, fixed 64 bytes:
 ```
 offset  size  type    field            description
 ------  ----  ------  ---------------  -------------------------------------------
-0       6     [u8;6]  magic            b"MNEME\0"  (6 bytes, null-terminated)
+0       6     [u8;6]  magic            b"AMR\0\0\0"  (6 bytes, null-terminated)
 6       2     u16     format_version   0 = this spec; bump on incompatible change
 8       4     u32     dim              embedding dimension (e.g. 1024 for bge-m3)
 12      4     u32     slot_count       total allocated slots (includes tombstoned)
@@ -123,13 +123,13 @@ Slot size = **202 bytes**. (GLOBAL_PLAN ~194 was a pre-spec sketch; 202 is the f
 
 > **CLARIFICATION (frozen-format refinement, not a layout change — slot/file-header bytes
 > are unchanged, so `format_version` stays 0).** The literal "variable region immediately
-> follows the slot array inside `.mseg`" is incompatible with invariant §6.1 (append-only):
+> follows the slot array inside `.amr`" is incompatible with invariant §6.1 (append-only):
 > the slot array *also* grows on every insert, so two append-only regions cannot share one
 > flat file without one moving the other. To honor §6.1 strictly — nothing ever moves on
 > insert — the text region is the companion append-only file `<name>.txt` in the shard
-> directory (alongside `<name>.mseg`, `<name>.vec`, etc. per §4.1). `text_ptr` is the byte
+> directory (alongside `<name>.amr`, `<name>.vec`, etc. per §4.1). `text_ptr` is the byte
 > offset of the block within `<name>.txt`; `file_header.var_region_len` mirrors that file's
-> length. `.mseg` therefore holds the 64-byte header + the fixed-stride slot array only, and
+> length. `.amr` therefore holds the 64-byte header + the fixed-stride slot array only, and
 > growing the slot array (file extend + remap) never moves an existing slot or text byte.
 > §6.1 governs; this clarification implements it.
 
@@ -158,10 +158,10 @@ The `.mnsw` file IS the usearch serialized index; mneme owns the slot_id↔usear
 
 ### 2.3 Co-location and mmap strategy
 
-- `.mseg` and `.mnsw` sit in the same shard directory (see §4).
-- `.mseg` is mmap'd read-write; `.mnsw` is loaded via `usearch::Index::load()` (usearch manages its own mmap).
+- `.amr` and `.mnsw` sit in the same shard directory (see §4).
+- `.amr` is mmap'd read-write; `.mnsw` is loaded via `usearch::Index::load()` (usearch manages its own mmap).
 - Both files opened on `Shard::open()`; held open for the shard lifetime.
-- Writes to `.mseg` (slot append) are immediately visible via mmap. Index updates from HNSW are async (see §6 invariants).
+- Writes to `.amr` (slot append) are immediately visible via mmap. Index updates from HNSW are async (see §6 invariants).
 
 ### 2.4 Async index rebuild
 
@@ -227,7 +227,7 @@ After each batch of 1,000 inserts (once trained): compute **alignment score** = 
 ```
 <data_root>/
   <org_id>/               # one directory per org (org_id = alphanumeric slug, max 64 chars)
-    shard.mseg            # memory segment
+    shard.amr            # memory segment
     shard.mnsw            # usearch HNSW index
     shard.mpq             # PQ codebook (absent until first 10k inserts)
     shard.vec             # raw float32 side-file (absent after PQ trained + compacted)
@@ -250,7 +250,7 @@ Shard::open(data_root, org_id):
   2. mkdir_all(path) if absent
   3. Acquire shard.lock via fcntl F_SETLK (LOCK_EX, non-blocking)
      → Err(ShardLocked) if another process holds it
-  4. mmap shard.mseg (create + write file header if new)
+  4. mmap shard.amr (create + write file header if new)
   5. Load shard.mnsw via usearch::Index::load() (or create empty index)
   6. Load shard.mpq if present
   7. Return Shard handle

@@ -175,7 +175,7 @@ proptest! {
     fn prop_append_only_and_all_retrievable(texts in proptest::collection::vec("[a-z ]{1,40}", 1..50)) {
         let dir = tempdir().unwrap();
         let mut seg = Segment::create(dir.path(), "s", 3).unwrap();
-        let mseg_path = dir.path().join("s.mseg");
+        let mseg_path = dir.path().join("s.amr");
         let mut last_len = std::fs::metadata(&mseg_path).unwrap().len();
         let mut ids = Vec::new();
         for (i, t) in texts.iter().enumerate() {

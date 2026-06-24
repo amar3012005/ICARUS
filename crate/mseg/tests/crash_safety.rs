@@ -20,7 +20,7 @@ fn phantom_slot_beyond_count_is_ignored_on_reopen() {
     // Simulate a crash AFTER slot bytes were partially written but BEFORE the count was bumped:
     // scribble a plausible-looking but garbage slot at index 1 (which slot_count does NOT cover),
     // without touching the file header's slot_count.
-    let mseg_path = dir.path().join("s.mseg");
+    let mseg_path = dir.path().join("s.amr");
     {
         let mut f = std::fs::OpenOptions::new()
             .read(true)

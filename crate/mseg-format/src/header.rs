@@ -9,8 +9,8 @@
 
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-/// File magic (SPEC §1.2): `b"MNEME\0"`, 6 bytes.
-pub const MAGIC: [u8; 6] = *b"MNEME\0";
+/// File magic (SPEC §1.2): `b"AMR\0\0\0"`, 6 bytes.
+pub const MAGIC: [u8; 6] = *b"AMR\0\0\0";
 /// Frozen format version (SPEC §0).
 pub const FORMAT_VERSION: u16 = 0;
 /// File header size in bytes (SPEC §1.2).
@@ -323,7 +323,7 @@ mod spec_lock {
 
     #[test]
     fn magic_and_version_are_frozen() {
-        assert_eq!(MAGIC, *b"MNEME\0");
+        assert_eq!(MAGIC, *b"AMR\0\0\0");
         assert_eq!(FORMAT_VERSION, 0);
         assert_eq!(SLOT_REGION_OFFSET, 4096);
         assert_eq!(VECTOR_PQ_LEN, 128);

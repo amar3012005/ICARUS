@@ -16,7 +16,7 @@ bi-temporal + graph recall from a single read. 13× faster than a REST vector DB
 
 General-purpose vector databases are built for document search. Agent *memory* needs
 **similarity + entity filter + bi-temporal range + graph hop — in one shot, per tenant, in
-milliseconds.** mneme bakes that access pattern into a byte layout (`.mseg`) instead of stitching a
+milliseconds.** mneme bakes that access pattern into a byte layout (`.amr`) instead of stitching a
 vector DB to a relational DB across a network. See [`THESIS.md`](./THESIS.md) for the full design +
 benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
 
@@ -94,7 +94,7 @@ recall(query, Filter{entity, created_at, valid_from}, hops, top_k)
   → 2-hop adjacency BFS                                           [same mmap]
 ```
 
-Per-org shard = one directory: `shard.mseg` (64-byte header + 202-byte slots), `shard.vec`
+Per-org shard = one directory: `shard.amr` (64-byte header + 202-byte slots), `shard.vec`
 (rescore source), `shard.txt` (LZ4 text), `shard.mnsw` (HNSW), `shard.mpq` (PQ codebook),
 `shard.lock`.
 
@@ -102,7 +102,7 @@ Per-org shard = one directory: `shard.mseg` (64-byte header + 202-byte slots), `
 
 ```
 mneme/
-  SPEC.md            frozen .mseg format RFC (the moat)
+  SPEC.md            frozen .amr format RFC (the moat)
   THESIS.md          design + benchmarks + DB comparison
   crate/
     mseg-format/     pure byte layout (spec-locked, offset_of! asserts)

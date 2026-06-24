@@ -15,7 +15,7 @@ use proptest::prelude::*;
 use tempfile::tempdir;
 
 fn read_slot_bytes(dir: &std::path::Path, name: &str, idx: usize) -> Vec<u8> {
-    let bytes = std::fs::read(dir.join(format!("{name}.mseg"))).unwrap();
+    let bytes = std::fs::read(dir.join(format!("{name}.amr"))).unwrap();
     let off = SLOT_REGION_OFFSET + idx * SLOT_SIZE;
     bytes[off..off + SLOT_SIZE].to_vec()
 }

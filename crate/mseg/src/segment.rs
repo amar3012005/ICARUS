@@ -60,7 +60,7 @@ fn mseg_len_for(capacity: usize) -> u64 {
 impl Segment {
     fn paths(dir: &Path, name: &str) -> (PathBuf, PathBuf, PathBuf) {
         (
-            dir.join(format!("{name}.mseg")),
+            dir.join(format!("{name}.amr")),
             dir.join(format!("{name}.vec")),
             dir.join(format!("{name}.txt")),
         )

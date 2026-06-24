@@ -106,7 +106,7 @@ impl Shard {
             .open(dir.join(LOCK_NAME))?;
         try_lock_exclusive(&lock_file)?;
 
-        let segment = if dir.join(format!("{SEGMENT_NAME}.mseg")).exists() {
+        let segment = if dir.join(format!("{SEGMENT_NAME}.amr")).exists() {
             Segment::open(&dir, SEGMENT_NAME)?
         } else {
             Segment::create(&dir, SEGMENT_NAME, dim)?
