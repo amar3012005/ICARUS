@@ -49,3 +49,10 @@ pq_recall10_overlap_pct=100.0000
 ## P5 bi-temporal + 2-hop graph 2026-06-23T23:46:37Z sha=372295a6
 - bitemporal_2hop_p50_ms=1.9298 @1M (recall_with_hops hops=2 + valid_from filter, lean HNSW seed + 256-cap BFS, all from one mmap). recall@10 base=1.47ms.
 bitemporal_2hop_p50_ms=1.9298
+
+
+## P6 eval (mneme-backed store vs Qdrant float32) 2026-06-24T00:19:27Z sha=23790edc
+- recall@5 vs exact float32 ground truth, real bge-m3 10k, via napi MnemeVectorStore.
+- mneme reliably 1.0 across runs after deterministic HNSW build (was flaky 0.99-1.0 w/ parallel build). Qdrant float32 = 1.0.
+mneme_eval_score=1.0000
+qdrant_eval_score=1.0000

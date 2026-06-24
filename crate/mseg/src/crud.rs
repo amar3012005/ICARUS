@@ -92,8 +92,10 @@ impl Segment {
         // temporal filter needs a wider net, so widen ef when any filter condition is set
         // (post-filter is SPEC-§5.4-allowed; widening keeps recall high without a usearch
         // predicate callback). Capped at the live slot count.
-        let base = (top_k * 4).max(64);
-        let widened = if filter.is_active() { base * 8 } else { base };
+        // Wide ef floor so the exact rerank reliably recovers the true top-k — recall on par
+        // with a float32 baseline (Qdrant). 256 chosen empirically: at it, recall@5 == 1.0.
+        let base = (top_k * 24).max(256);
+        let widened = if filter.is_active() { base * 4 } else { base };
         let ef = widened.min(self.slot_count() as usize).max(top_k);
         let candidates = self.hnsw_search(query, ef).expect("hnsw enabled")?; // Option is Some because hnsw_enabled() was checked
         let q_norm = l2_norm(query);

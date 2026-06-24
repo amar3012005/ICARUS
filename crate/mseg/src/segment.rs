@@ -343,12 +343,12 @@ impl Segment {
             }
             batch.push((slot.id(), self.read_vector(idx)?));
             if batch.len() >= CHUNK {
-                indexer.bulk_add_parallel(&batch);
+                indexer.bulk_add_sequential(&batch)?;
                 batch.clear();
             }
         }
         if !batch.is_empty() {
-            indexer.bulk_add_parallel(&batch);
+            indexer.bulk_add_sequential(&batch)?;
         }
         self.hnsw = Some(indexer);
         Ok(())

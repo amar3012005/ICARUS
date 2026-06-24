@@ -21,7 +21,6 @@ mnsw-index = { path = "../mnsw-index" }
 mpq = { path = "../mpq" }
 memmap2.workspace = true
 zerocopy.workspace = true
-rayon.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # advisory shard lock via flock(2) (SPEC §4.3, see shard.rs for the fcntl-vs-flock note)

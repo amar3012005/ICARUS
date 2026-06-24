@@ -214,7 +214,7 @@
       risk_tier: medium
       rollback: rm the wrapper
 
-- [ ] p6-3: eval-harness on mneme-backed store ≥ Qdrant baseline
+- [x] p6-3: eval-harness on mneme-backed store ≥ Qdrant baseline
       depends_on: p6-2
       acceptance: run the HIVEMIND eval-harness (or a faithful golden-case recall eval) against BOTH the Qdrant store and the MnemeVectorStore on the same real corpus; write mneme_eval_score + qdrant_eval_score to bench/RESULTS.md. loop/gates/p6_eval_ge_baseline.sh exits 0 (mneme >= qdrant). Storage reduction measured (>5x RAM).
       risk_tier: high

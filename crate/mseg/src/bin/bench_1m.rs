@@ -98,8 +98,14 @@ fn main() {
             perturb(&real[i % n_real], i as u64)
         };
         // empty text → no .txt write (bounds RAM/disk at 1M); vectors are what we benchmark.
-        seg.insert(MemoryInput::new(String::new(), v))
-            .expect("insert");
+        // populate adjacency with 8 deterministic neighbours so the 2-hop BFS has a graph to
+        // traverse (the BFS latency depends on the fan-out count, not which neighbours).
+        let mut mem = MemoryInput::new(String::new(), v);
+        for (a, slot) in mem.adjacency.iter_mut().enumerate() {
+            *slot = ((i + a + 1) % target_n) as u32;
+        }
+        mem.valid_from = i as i64; // give each slot a distinct valid_from for temporal filtering
+        seg.insert(mem).expect("insert");
         if (i + 1) % 100_000 == 0 {
             eprintln!("  inserted {}/{target_n}", i + 1);
         }
@@ -135,8 +141,33 @@ fn main() {
     let p50 = percentile(&samples, 50.0);
     let p90 = percentile(&samples, 90.0);
 
+    // P5: bi-temporal filter + 2-hop adjacency BFS, all from the one mmap.
+    let bitemporal = Filter {
+        valid_from_range: Some((0, target_n as i64)),
+        ..Default::default()
+    };
+    for q in queries.iter().take(50) {
+        let _ = seg
+            .recall_with_hops(q, &bitemporal, top_k, 2)
+            .expect("hops");
+    }
+    let mut bt: Vec<f64> = Vec::new();
+    for _ in 0..5 {
+        for q in &queries {
+            let t = Instant::now();
+            let hits = seg
+                .recall_with_hops(q, &bitemporal, top_k, 2)
+                .expect("hops");
+            std::hint::black_box(&hits);
+            bt.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    bt.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let bt_p50 = percentile(&bt, 50.0);
+
     println!("recall10_p50_ms={p50:.4}");
     println!("recall10_p90_ms={p90:.4}");
+    println!("bitemporal_2hop_p50_ms={bt_p50:.4}");
     println!("mneme_1m_n={}", seg.hnsw_len());
     println!("mneme_1m_dim={dim}");
     println!("mneme_1m_top_k={top_k}");

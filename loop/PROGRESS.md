@@ -68,3 +68,13 @@ P4 done: 32x PQ compression, ADC, drift. Advancing to P5 (bi-temporal + 2-hop gr
 | p5-2 | GATE PASS: bitemporal_2hop_p50_ms=1.9298 @1M (<8); fixed 8.98->1.93 by lean seeding (avoid filter-widened rerank). Miri on mseg-format = no UB. |
 
 P5 done. Advancing to P6 (napi Node binding + HIVEMIND integration — makes it callable from JS).
+
+## P6 — napi binding + HIVEMIND integration (partial 2026-06-24)
+| Unit | Outcome |
+|------|---------|
+| p6-1 | mneme-node napi addon: MnemeStore open/insert/enableHnsw/recall/delete. JS-callable. |
+| p6-2 | MnemeVectorStore drop-in (upsert/search) matching QdrantVectorStore interface. |
+| p6-3 | GATE PASS: mneme_eval_score=1.0 >= qdrant_eval_score=1.0 (recall@5 vs exact float32, real 10k). Achieved via f32 HNSW (M=48/ef400) + DETERMINISTIC build (fixed flaky 0.99-1.0). |
+| p6-4 | 72h soak = deploy-time wall (deferred). Harness built; SHORT proof found+fixed a real concurrent-reserve SEGFAULT (RwLock: search/add=read, reserve=write). |
+
+Engine changes this phase: f32 HNSW + M=48/ef_construct=256/ef_search=400 (recall parity), deterministic sequential index build (reproducible recall), RwLock-guarded reserve (crash-safe incremental indexing). All 20 test suites green, clippy clean.

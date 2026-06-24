@@ -9,7 +9,7 @@
 //! (`append.rs`) has no edge to it.
 
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
 use mnsw_index::{Candidate, MnswIndex};
@@ -23,9 +23,25 @@ enum Msg {
     Drain(Sender<()>),
 }
 
-/// Owns the HNSW index and the background add thread.
+/// Grow the index capacity to at least `need`, doubling, BEFORE any add can overflow it.
+/// usearch `reserve` reallocates the graph and is unsafe concurrent with `search`/`add`, so it
+/// runs under the RwLock **write** guard (exclusive) while search/add take the **read** guard.
+fn ensure_capacity(index: &RwLock<MnswIndex>, need: usize) {
+    let (len_cap_ok, cap) = {
+        let g = index.read().expect("index lock");
+        (g.len() < g.capacity() && need <= g.capacity(), g.capacity())
+    };
+    if !len_cap_ok {
+        let target = need.max(cap * 2).max(16);
+        let g = index.write().expect("index lock");
+        let _ = g.reserve(target);
+    }
+}
+
+/// Owns the HNSW index and the background add thread. The index is behind an `RwLock` purely to
+/// serialize the unsafe `reserve` (write) against concurrent `search`/`add` (read).
 pub(crate) struct AsyncIndexer {
-    index: Arc<MnswIndex>,
+    index: Arc<RwLock<MnswIndex>>,
     tx: Option<Sender<Msg>>,
     handle: Option<JoinHandle<()>>,
 }
@@ -33,7 +49,7 @@ pub(crate) struct AsyncIndexer {
 impl AsyncIndexer {
     /// Create an empty index of dimension `dim` and start the background add thread.
     pub fn new(dim: usize, capacity: usize) -> Result<AsyncIndexer> {
-        let index = Arc::new(MnswIndex::new(dim, capacity).map_err(map_err)?);
+        let index = Arc::new(RwLock::new(MnswIndex::new(dim, capacity).map_err(map_err)?));
         let (tx, rx) = mpsc::channel::<Msg>();
         let worker = index.clone();
         let handle = std::thread::Builder::new()
@@ -41,10 +57,12 @@ impl AsyncIndexer {
             .spawn(move || {
                 for msg in rx {
                     match msg {
-                        // a failed add is logged-by-ignore: the durable .mseg/.vec already
-                        // hold the memory; the index can be rebuilt by compact (never inline).
                         Msg::Add(id, v) => {
-                            let _ = worker.add(id, &v);
+                            // grow under the write guard FIRST, then add under the read guard
+                            // (concurrent with searches) — never reserve while searching.
+                            ensure_capacity(&worker, worker.read().expect("lock").len() + 1);
+                            let g = worker.read().expect("index lock");
+                            let _ = g.add(id, &v);
                         }
                         Msg::Drain(ack) => {
                             let _ = ack.send(());
@@ -66,25 +84,32 @@ impl AsyncIndexer {
         }
     }
 
-    /// Bulk-add a batch of `(slot_id, vector)` in parallel (usearch add is thread-safe; the
-    /// index capacity is pre-reserved at `new`, so no reserve races). Used by `enable_hnsw`
-    /// to seed an existing segment's vectors far faster than one-at-a-time async adds.
-    pub fn bulk_add_parallel(&self, batch: &[(u32, Vec<f32>)]) {
-        use rayon::prelude::*;
-        let idx = &self.index; // &Arc<MnswIndex>; MnswIndex is Sync (usearch concurrent add)
-        batch.par_iter().for_each(|(id, v)| {
-            let _ = idx.add(*id, v);
-        });
+    /// Bulk-add a batch sequentially in the given order — a DETERMINISTIC graph and thus
+    /// reproducible recall (no run-to-run variance). Used by `enable_hnsw` so recall quality
+    /// is stable. Reserves capacity up front (exclusive), then adds under the read guard. Any
+    /// failed add is surfaced (not silently dropped) so a missing vector can't degrade recall.
+    pub fn bulk_add_sequential(&self, batch: &[(u32, Vec<f32>)]) -> Result<()> {
+        let target = self.len() + batch.len();
+        ensure_capacity(&self.index, target);
+        let g = self.index.read().expect("index lock");
+        for (id, v) in batch {
+            g.add(*id, v).map_err(map_err)?;
+        }
+        Ok(())
     }
 
     /// Concurrent approximate search over the current index snapshot (never blocks on adds).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<Candidate>> {
-        self.index.search(query, k).map_err(map_err)
+        self.index
+            .read()
+            .expect("index lock")
+            .search(query, k)
+            .map_err(map_err)
     }
 
     /// Number of vectors indexed so far.
     pub fn len(&self) -> usize {
-        self.index.len()
+        self.index.read().expect("index lock").len()
     }
 
     /// Block until every `enqueue` issued before this call has been applied. Test/flush only.

@@ -27,7 +27,8 @@ QBIN = HERE / "qdrant" / "qdrant"
 STORAGE = HERE / "qdrant" / "storage_q"
 HOST = "http://127.0.0.1:6333"
 COLL = "mneme_p3_quality"
-TOP_K = 10
+import sys as _sys
+TOP_K = int(_sys.argv[1]) if len(_sys.argv)>1 else 10
 
 
 def load(path: Path, dim: int) -> np.ndarray:

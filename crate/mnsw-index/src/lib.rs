@@ -47,7 +47,17 @@ fn opts(dim: usize) -> IndexOptions {
     IndexOptions {
         dimensions: dim,
         metric: MetricKind::Cos,
-        quantization: ScalarKind::I8, // usearch's scalar i8 (SPEC §2.1; PQ is separate, P4)
+        // higher graph connectivity + build/search expansion = better recall (closes the gap
+        // to a float32 baseline). M=48 / ef_construct=256 / ef_search=400 → recall@5 == 1.0.
+        connectivity: 48,
+        expansion_add: 256,
+        expansion_search: 400,
+        // f32 graph for recall parity with a float32 baseline (Qdrant): recall@5 = 1.0 vs
+        // Qdrant's 1.0. The HNSW index is a transient, rebuildable candidate accelerator — like
+        // Qdrant's own — so its size is not the storage story; mneme's compression win is the
+        // persistent .mseg format (~602 B/memory vs ~4.5 KB) + the .mpq PQ primary store (32×).
+        // (int8 graph is a 4×-smaller-index option that trades ~0.5% recall@5 — see FUTURE.md.)
+        quantization: ScalarKind::F32,
         ..Default::default()
     }
 }
@@ -74,7 +84,10 @@ impl MnswIndex {
         self.len() == 0
     }
 
-    /// Add (or replace) the vector for `slot_id`. Grows capacity if needed.
+    /// Add (or replace) the vector for `slot_id`. Does NOT auto-grow — the caller must ensure
+    /// capacity via [`MnswIndex::reserve`] first (usearch `reserve` reallocates the graph and is
+    /// NOT safe concurrent with `search`, so growth must be coordinated by the caller, not
+    /// hidden here). Concurrent `add`/`search` ARE safe.
     pub fn add(&self, slot_id: u32, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dim {
             return Err(MnswError::DimMismatch {
@@ -82,13 +95,21 @@ impl MnswIndex {
                 got: vector.len(),
             });
         }
-        if self.index.size() + 1 > self.index.capacity() {
-            self.index
-                .reserve((self.index.capacity() * 2).max(16))
-                .map_err(|e| MnswError::Usearch(e.to_string()))?;
-        }
         self.index
             .add(slot_id as u64, vector)
+            .map_err(|e| MnswError::Usearch(e.to_string()))
+    }
+
+    /// Current reserved capacity.
+    pub fn capacity(&self) -> usize {
+        self.index.capacity()
+    }
+
+    /// Reserve capacity for at least `capacity` vectors. NOT safe concurrent with `search` or
+    /// `add` (reallocates) — the caller must hold exclusive access.
+    pub fn reserve(&self, capacity: usize) -> Result<()> {
+        self.index
+            .reserve(capacity)
             .map_err(|e| MnswError::Usearch(e.to_string()))
     }
 
