@@ -1,7 +1,7 @@
 'use strict';
 // MnemeVectorStore — drop-in replacement for HIVEMIND's QdrantVectorStore
 // (core/src/ingestion/indexer.js). Same async upsert(collectionName, points) +
-// search(collectionName, vector, topK) interface, backed by the local .mseg engine
+// search(collectionName, vector, topK) interface, backed by the local .amr engine
 // (one shard per collection). No network, no Qdrant server.
 //
 // A Qdrant point's { id, vector, payload } is stored as the memory's text = JSON({id,payload})

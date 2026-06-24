@@ -1,4 +1,4 @@
-// P6-3: eval the MnemeVectorStore (napi → .mseg engine) on the real bge-m3 10k corpus.
+// P6-3: eval the MnemeVectorStore (napi → .amr engine) on the real bge-m3 10k corpus.
 // Score = mean recall@K vs the exact float32 cosine ground truth (the same metric the Qdrant
 // baseline is scored on by bench/quality_vs_qdrant.py). Prints mneme_eval_score.
 //

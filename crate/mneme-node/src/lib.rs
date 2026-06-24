@@ -1,4 +1,4 @@
-//! mneme Node.js binding (napi-rs). Exposes the `.mseg` engine as a drop-in vector store so
+//! mneme Node.js binding (napi-rs). Exposes the `.amr` engine as a drop-in vector store so
 //! HIVEMIND's `indexer.js` can call it in place of Qdrant. Methods are synchronous over a
 //! per-org shard held in the JS object; the JS wrapper (MnemeVectorStore) adapts them to the
 //! async `upsert`/`search` interface HIVEMIND expects.
@@ -16,7 +16,7 @@ pub struct MnemeHit {
     pub text: String,
 }
 
-/// A per-org mneme store (wraps one `.mseg` shard).
+/// A per-org mneme store (wraps one `.amr` shard).
 #[napi]
 pub struct MnemeStore {
     shard: Shard,

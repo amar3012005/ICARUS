@@ -9,7 +9,7 @@ export interface MnemeHit {
   score: number
   text: string
 }
-/** A per-org mneme store (wraps one `.mseg` shard). */
+/** A per-org mneme store (wraps one `.amr` shard). */
 export declare class MnemeStore {
   /** Open (or create) the shard for `org_id` under `data_root` with embedding dimension `dim`. */
   static open(dataRoot: string, orgId: string, dim: number): MnemeStore
@@ -34,26 +34,3 @@ export declare class MnemeStore {
   /** Flush to disk. */
   flush(): void
 }
-
-// --- JS wrapper (index.js) ---------------------------------------------------
-
-export interface QdrantPoint {
-  id: string | number
-  vector: number[] | Float32Array
-  payload?: Record<string, unknown>
-}
-
-export interface SearchHit {
-  id: string | number
-  score: number
-  payload: Record<string, unknown>
-}
-
-/** Drop-in replacement for HIVEMIND's QdrantVectorStore (one shard per collection). */
-export declare class MnemeVectorStore {
-  constructor(opts?: { dataRoot?: string; dim?: number })
-  upsert(collectionName: string, points: QdrantPoint[]): Promise<{ upserted: number }>
-  search(collectionName: string, vector: number[] | Float32Array, topK?: number): Promise<SearchHit[]>
-}
-
-export declare function sanitizeOrg(name: string): string
