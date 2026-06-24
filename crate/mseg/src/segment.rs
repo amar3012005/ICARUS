@@ -313,6 +313,65 @@ impl Segment {
         read_text(&buf, local)
     }
 
+    /// Compact the variable text region (SPEC §5.5): rewrite `<name>.txt` keeping only the
+    /// blocks of LIVE slots, reclaiming the bytes of tombstoned/superseded memories (which
+    /// `delete` never frees — §6.4). Slot ids are NOT renumbered (§6.3): the fixed slot array
+    /// and `.vec` are untouched; only each live slot's `text_ptr` is rewritten to its new offset
+    /// in the compacted file. Returns the bytes reclaimed.
+    ///
+    /// This is a rare maintenance op — call it with the shard otherwise idle (no concurrent
+    /// recall). It is correct on completion; it is not crash-atomic across the `.mseg`/`.txt`
+    /// pair, so if interrupted mid-rename, re-run it (no data is lost — the slot array still
+    /// names every live memory; only `text_ptr`s may need the rewrite to finish).
+    pub fn compact(&mut self) -> Result<u64> {
+        let n = self.slot_count() as usize;
+        let txt_path = self.dir.join(format!("{}.txt", self.name));
+        let tmp_path = self.dir.join(format!("{}.txt.compact", self.name));
+        let old_len = self.txt_len;
+
+        let mut tmp = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)?;
+        let mut new_len: u64 = 0;
+        // copy each live slot's raw (still-compressed) block into the new file, rewrite its ptr.
+        for i in 0..n {
+            let mut slot = self.slot(i)?;
+            if slot.is_tombstoned() || slot.text_len_lz4() == 0 {
+                continue;
+            }
+            let len = slot.text_len_lz4() as usize;
+            let mut buf = vec![0u8; len];
+            self.txt_file
+                .seek(SeekFrom::Start(slot.text_ptr() as u64))?;
+            self.txt_file.read_exact(&mut buf)?;
+            tmp.write_all(&buf)?;
+            slot.set_text_ptr(new_len as u32);
+            self.write_slot(i, &slot)?;
+            new_len += len as u64;
+        }
+        tmp.flush()?;
+        tmp.sync_all()?;
+        drop(tmp);
+
+        // commit: durably write the rewritten slot ptrs, then atomically swap in the new file.
+        self.mmap.flush()?;
+        std::fs::rename(&tmp_path, &txt_path)?;
+        self.txt_file = OpenOptions::new().read(true).write(true).open(&txt_path)?;
+        self.txt_len = new_len;
+        let compacted_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        self.with_header_mut(|h| {
+            h.set_var_region_len(new_len as u32);
+            h.set_last_compact_at(compacted_at);
+        });
+        self.flush()?;
+        Ok(old_len.saturating_sub(new_len))
+    }
+
     /// Flush all maps + files to disk (msync + fsync).
     pub fn flush(&mut self) -> Result<()> {
         self.mmap.flush()?;

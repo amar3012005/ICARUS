@@ -99,6 +99,17 @@ impl MnemeStore {
         self.shard.segment().live_count()
     }
 
+    /// Compact the text region, reclaiming bytes of deleted memories. Returns bytes reclaimed.
+    /// A maintenance op — run when the shard is idle.
+    #[napi]
+    pub fn compact(&mut self) -> Result<f64> {
+        self.shard
+            .segment()
+            .compact()
+            .map(|n| n as f64)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Flush to disk.
     #[napi]
     pub fn flush(&mut self) -> Result<()> {
