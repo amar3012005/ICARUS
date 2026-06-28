@@ -1,6 +1,6 @@
 <div align="center">
 
-# mneme
+# ICARUS
 
 **A memory filesystem for AI agents.** One memory-mapped file per tenant. Semantic + entity +
 bi-temporal + graph recall from a single read. 13× faster than a REST vector DB at equal recall,
