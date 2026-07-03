@@ -41,6 +41,31 @@ impl Segment {
         self.hydrate(idx, &slot, f32::NAN)
     }
 
+    /// Rewrite a live slot's TEXT payload in place, keeping its vector, layer, temporal anchors,
+    /// entity bitmap and adjacency untouched. Append-only compatible: the new text block is
+    /// APPENDED to `.txt` and the slot's TextRef repointed — the old block becomes dead bytes
+    /// reclaimed by `compact()` (same lifecycle as a deleted memory's text, SPEC §6.4).
+    ///
+    /// This is the durability primitive for metadata-only mutations (tags, recall reinforcement,
+    /// supersession flags baked into the record JSON) — without it, callers that can't reproduce
+    /// the slot's vector had no way to persist a record change.
+    pub fn rewrite_text(&mut self, id: SlotId, text: &str) -> Result<()> {
+        let idx = id as usize;
+        if idx >= self.slot_count() as usize {
+            return Err(MsegError::NoSuchSlot(id));
+        }
+        let mut slot = self.slot(idx)?;
+        if slot.is_tombstoned() {
+            return Err(MsegError::TombstonedSlot(id));
+        }
+        let tref = self.append_text_block(text.as_bytes())?;
+        slot.set_text_ptr(tref.text_ptr);
+        slot.set_text_len_lz4(tref.text_len_lz4);
+        slot.set_text_len_raw(tref.text_len_raw);
+        self.write_slot(idx, &slot)?;
+        Ok(())
+    }
+
     /// Tombstone a memory and push its slot onto the free list (SPEC §6.4). Idempotent: a
     /// second delete of the same id is a no-op (already tombstoned).
     pub fn delete(&mut self, id: SlotId) -> Result<()> {
@@ -101,6 +126,17 @@ impl Segment {
         let q_norm = l2_norm(query);
         let n = self.slot_count() as usize;
 
+        // usearch returns candidates already ordered by (int8) distance, so the true top-k sit
+        // near the front. Exact-rerank only the first MNEME_RERANK_DEPTH survivors instead of all
+        // `ef` — at scale each rerank is a cold `.vec` read, so reranking ~32 vs 256 is the
+        // difference between ~ms and ~30ms at 10M. Default = unbounded (full rerank, max recall).
+        // Default cap = (top_k*6).max(64): the 10M real-BIGANN sweep showed depth 64 is lossless
+        // vs full-rerank (recall_vs_full 1.0000) while cutting p50 31ms→2.4ms — so cap by default
+        // and let MNEME_RERANK_DEPTH override (huge = exhaustive, smaller = faster/scale).
+        let rerank_depth = std::env::var("MNEME_RERANK_DEPTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((top_k * 6).max(64));
         let mut scored: Vec<(f32, usize)> = Vec::with_capacity(candidates.len());
         let mut seen = std::collections::HashSet::new();
         for c in candidates {
@@ -109,14 +145,17 @@ impl Segment {
                 continue; // stale/duplicate label guard
             }
             let slot = self.slot(idx)?;
-            if slot.is_tombstoned() {
+            if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from()) {
+            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
                 continue;
             }
             let v = self.read_vector(idx)?;
             scored.push((cosine(query, q_norm, &v), idx));
+            if scored.len() >= rerank_depth {
+                break; // top int8-ranked survivors reranked; stop the cold reads
+            }
         }
         sort_take(&mut scored, top_k);
         self.hydrate_all(scored)
@@ -144,10 +183,10 @@ impl Segment {
         let mut scored: Vec<(f32, usize)> = Vec::new();
         for idx in 0..n {
             let slot = self.slot(idx)?;
-            if slot.is_tombstoned() {
+            if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from()) {
+            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
                 continue;
             }
             let v = self.read_vector(idx)?;
@@ -230,10 +269,10 @@ impl Segment {
         let mut scored: Vec<(f32, usize)> = Vec::with_capacity(seen.len());
         for &idx in &seen {
             let slot = self.slot(idx)?;
-            if slot.is_tombstoned() {
+            if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from()) {
+            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
                 continue;
             }
             let v = self.read_vector(idx)?;

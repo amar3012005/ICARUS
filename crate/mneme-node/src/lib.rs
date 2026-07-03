@@ -6,7 +6,26 @@
 use mseg::{Filter, MemoryInput, Shard};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+
+/// Extract the record id from a stored JSON payload without a full JSON parse: the agent always
+/// serializes `{"id":"<uuid>",...}` (or with the id elsewhere in the object) — find `"id":"` and
+/// read to the closing quote. Cheap enough to run over every slot at open().
+fn extract_id(text: &str) -> Option<&str> {
+    let start = text.find("\"id\":\"")? + 6;
+    let rest = &text[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+fn hash_id(id: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
+}
 
 /// One recall hit returned to JS.
 #[napi(object)]
@@ -16,24 +35,99 @@ pub struct MnemeHit {
     pub text: String,
 }
 
+/// One stored record: slot id + its full-record text payload. Used by the Prisma adapter's loader
+/// to hydrate every memory from `.amr` on open (Path B — `.amr` as the relational store).
+#[napi(object)]
+pub struct RecordRow {
+    pub slot_id: u32,
+    pub text: String,
+}
+
+/// One typed edge from a slot: target slot, edge type, weight. The relationship backend reads these
+/// back to reconstruct relationship records from the `.amr` graph.
+#[napi(object)]
+pub struct EdgeRow {
+    pub target: u32,
+    pub edge_type: u8,
+    pub weight: u8,
+}
+
+/// One page of a streaming record scan: the live records found plus the slot to resume from
+/// (`next_slot` == u32::MAX when the scan is complete). Replaces all-at-once `all_records()`
+/// for large shards — the caller never materializes the whole store in JS heap.
+#[napi(object)]
+pub struct RecordPage {
+    pub rows: Vec<RecordRow>,
+    pub next_slot: u32,
+}
+
 /// A per-org mneme store (wraps one `.amr` shard).
+///
+/// Holds a native id→slot index (u64 hash of the record's JSON `id` → candidate slots) so JS
+/// never needs an in-heap Map of every record — the index costs ~24 bytes/record in Rust
+/// (no GC pressure) vs ~1-2KB/record for parsed JS objects, which was the scale wall.
 #[napi]
 pub struct MnemeStore {
     shard: Shard,
     dim: usize,
+    id_index: HashMap<u64, Vec<u32>>,
 }
 
 #[napi]
 impl MnemeStore {
     /// Open (or create) the shard for `org_id` under `data_root` with embedding dimension `dim`.
+    /// Builds the id→slot index with one mmap scan of live slots.
     #[napi(factory)]
     pub fn open(data_root: String, org_id: String, dim: u32) -> Result<Self> {
         let shard = Shard::open(&PathBuf::from(data_root), &org_id, dim as usize)
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        Ok(MnemeStore {
+        let mut store = MnemeStore {
             shard,
             dim: dim as usize,
-        })
+            id_index: HashMap::new(),
+        };
+        store.rebuild_id_index()?;
+        Ok(store)
+    }
+
+    fn rebuild_id_index(&mut self) -> Result<()> {
+        self.id_index.clear();
+        let seg = self.shard.segment();
+        let n = seg.slot_count();
+        for idx in 0..n {
+            if let Ok(hit) = seg.get(idx) {
+                if let Some(id) = extract_id(&hit.text) {
+                    let h = hash_id(id);
+                    self.id_index.entry(h).or_default().push(idx);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn index_add(&mut self, text: &str, slot: u32) {
+        if let Some(id) = extract_id(text) {
+            let h = hash_id(id);
+            let v = self.id_index.entry(h).or_default();
+            if !v.contains(&slot) {
+                v.push(slot);
+            }
+        }
+    }
+
+    fn index_remove_slot(&mut self, slot: u32) {
+        // Read the slot's text to find its id (cheap single-slot read), then unlink.
+        if let Ok(hit) = self.shard.segment().get(slot) {
+            if let Some(id) = extract_id(&hit.text) {
+                let h = hash_id(id);
+                if let Some(v) = self.id_index.get_mut(&h) {
+                    v.retain(|s| *s != slot);
+                    if v.is_empty() {
+                        self.id_index.remove(&h);
+                    }
+                }
+            }
+        }
     }
 
     /// Insert a memory (text + embedding). `valid_from` is nanoseconds (0 = unspecified).
@@ -48,12 +142,45 @@ impl MnemeStore {
                 self.dim
             )));
         }
-        let mut m = MemoryInput::new(text, v);
+        let mut m = MemoryInput::new(text.clone(), v);
         m.valid_from = valid_from;
-        self.shard
+        let slot = self
+            .shard
             .segment()
             .insert(m)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        self.index_add(&text, slot);
+        Ok(slot)
+    }
+
+    /// Insert tagged with a layer (0=memory, 1=evidence, 2=cognitive). Lets one shard hold all 3
+    /// HIVEMIND layers, separated, for layer-filtered recall.
+    #[napi]
+    pub fn insert_layered(
+        &mut self,
+        text: String,
+        vector: Float32Array,
+        valid_from: i64,
+        layer: u8,
+    ) -> Result<u32> {
+        let v: Vec<f32> = vector.to_vec();
+        if v.len() != self.dim {
+            return Err(Error::from_reason(format!(
+                "vector dim {} != store dim {}",
+                v.len(),
+                self.dim
+            )));
+        }
+        let mut m = MemoryInput::new(text.clone(), v);
+        m.valid_from = valid_from;
+        m.layer = layer;
+        let slot = self
+            .shard
+            .segment()
+            .insert(m)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        self.index_add(&text, slot);
+        Ok(slot)
     }
 
     /// Build the HNSW overlay over all current vectors (call after a bulk load).
@@ -84,19 +211,223 @@ impl MnemeStore {
             .collect())
     }
 
+    /// Layer-filtered recall: `layer` 0=memory, 1=evidence, 2=cognitive; pass -1 for all layers.
+    /// This is how the 3 layers are queried separately from one shard (recall=memory,
+    /// provenance=evidence, synthesis=cognitive), exactly like a Qdrant `layer` filter.
+    #[napi]
+    pub fn recall_layer(
+        &mut self,
+        query: Float32Array,
+        top_k: u32,
+        layer: i32,
+    ) -> Result<Vec<MnemeHit>> {
+        let q: Vec<f32> = query.to_vec();
+        let filter = Filter {
+            layer: if layer < 0 { None } else { Some(layer as u8) },
+            ..Default::default()
+        };
+        let hits = self
+            .shard
+            .segment()
+            .recall(&q, &filter, top_k as usize)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(hits
+            .into_iter()
+            .map(|h| MnemeHit {
+                slot_id: h.slot_id,
+                score: h.score as f64,
+                text: h.text,
+            })
+            .collect())
+    }
+
+    /// Add a typed edge `slot_id` --(edge_type)--> `target` (unbounded; overflows to `.edg`).
+    /// edge_type: 1=Mentions 2=Updates 3=Derives 4=Contradicts 5=PartOf 6=Extends.
+    #[napi]
+    pub fn add_edge(&mut self, slot_id: u32, target: u32, edge_type: u8, weight: u8) -> Result<()> {
+        self.shard
+            .segment()
+            .add_edge(slot_id, target, edge_type, weight)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Typed graph traversal from `seed`, following ONLY `edge_type`, up to `max_hops`. Returns
+    /// reachable slot ids (HIVEMIND `traverse_graph` parity, served from the one shard).
+    #[napi]
+    pub fn traverse_typed(&mut self, seed: u32, edge_type: u8, max_hops: u8) -> Result<Vec<u32>> {
+        self.shard
+            .segment()
+            .traverse_typed(&[seed], edge_type, max_hops)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Bi-temporal point-in-time: the version of a memory current as of transaction time
+    /// `txn_time` (ns), walking the Updates chain from `head_slot`. Returns the slot id, or -1 if
+    /// not yet known (HIVEMIND `hivemind_at` / `timeline` parity).
+    #[napi]
+    pub fn as_of(&mut self, head_slot: u32, txn_time: i64) -> Result<i64> {
+        let r = self
+            .shard
+            .segment()
+            .as_of(head_slot, txn_time)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(r.map(|s| s as i64).unwrap_or(-1))
+    }
+
+    /// Insert with explicit bi-temporal stamps: `created_at` (transaction time — when learned)
+    /// and `valid_from` (valid time — when true), both ns. `created_at` drives `as_of`.
+    #[napi]
+    pub fn insert_at(
+        &mut self,
+        text: String,
+        vector: Float32Array,
+        created_at: i64,
+        valid_from: i64,
+    ) -> Result<u32> {
+        let mut m = MemoryInput::new(text.clone(), vector.to_vec());
+        m.created_at = Some(created_at);
+        m.valid_from = valid_from;
+        let slot = self
+            .shard
+            .segment()
+            .insert(m)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        self.index_add(&text, slot);
+        Ok(slot)
+    }
+
+    /// Update memory `old_slot` with a new version: inserts, auto-links new--Updates-->old, marks
+    /// old superseded. Recall then returns only the latest; `as_of` reaches the history. `created_at`
+    /// is the transaction time of the new version (drives `as_of`). Returns the new slot id.
+    #[napi]
+    pub fn update(
+        &mut self,
+        old_slot: u32,
+        text: String,
+        vector: Float32Array,
+        created_at: i64,
+        valid_from: i64,
+    ) -> Result<u32> {
+        let mut m = MemoryInput::new(text.clone(), vector.to_vec());
+        m.created_at = Some(created_at);
+        m.valid_from = valid_from;
+        // Same record id moves to the new slot — unlink the old mapping first.
+        self.index_remove_slot(old_slot);
+        let slot = self
+            .shard
+            .segment()
+            .update(old_slot, m)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        self.index_add(&text, slot);
+        Ok(slot)
+    }
+
     /// Delete (tombstone) a memory by slot id.
     #[napi]
     pub fn delete(&mut self, slot_id: u32) -> Result<()> {
+        self.index_remove_slot(slot_id);
         self.shard
             .segment()
             .delete(slot_id)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Rewrite a live slot's record TEXT in place (vector/layer/temporal/edges untouched) —
+    /// the durability primitive for metadata-only mutations (tags, recall reinforcement,
+    /// is_latest supersession flips). Old text bytes are reclaimed by `compact()`.
+    #[napi]
+    pub fn rewrite_text(&mut self, slot_id: u32, text: String) -> Result<()> {
+        // The id may (rarely) change with the rewrite — remap defensively.
+        self.index_remove_slot(slot_id);
+        self.shard
+            .segment()
+            .rewrite_text(slot_id, &text)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        self.index_add(&text, slot_id);
+        Ok(())
+    }
+
+    /// Resolve a record's JSON `id` to its live slot, or -1. Served from the native id index
+    /// (hash → candidate slots, exact-verified against slot text) — O(1), no JS-side Map needed.
+    #[napi]
+    pub fn find_by_id(&mut self, id: String) -> Result<i64> {
+        let h = hash_id(&id);
+        let candidates = match self.id_index.get(&h) {
+            Some(v) => v.clone(),
+            None => return Ok(-1),
+        };
+        for slot in candidates {
+            if let Ok(hit) = self.shard.segment().get(slot) {
+                if extract_id(&hit.text) == Some(id.as_str()) {
+                    return Ok(slot as i64);
+                }
+            }
+        }
+        Ok(-1)
+    }
+
+    /// Read one live slot's record text. `Err` for tombstoned/never-used slots.
+    #[napi]
+    pub fn slot_text(&mut self, slot_id: u32) -> Result<String> {
+        self.shard
+            .segment()
+            .get(slot_id)
+            .map(|h| h.text)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Streaming record scan: up to `limit` live records starting at slot `from_slot`, plus the
+    /// slot to resume from (u32::MAX when done). O(page) JS heap instead of O(shard).
+    #[napi]
+    pub fn records_page(&mut self, from_slot: u32, limit: u32) -> Result<RecordPage> {
+        let seg = self.shard.segment();
+        let n = seg.slot_count();
+        let mut rows = Vec::with_capacity(limit as usize);
+        let mut idx = from_slot;
+        while idx < n && rows.len() < limit as usize {
+            if let Ok(hit) = seg.get(idx) {
+                rows.push(RecordRow { slot_id: idx, text: hit.text });
+            }
+            idx += 1;
+        }
+        let next_slot = if idx >= n { u32::MAX } else { idx };
+        Ok(RecordPage { rows, next_slot })
+    }
+
     /// Number of live memories in the shard.
     #[napi]
     pub fn live_count(&mut self) -> u32 {
         self.shard.segment().live_count()
+    }
+
+    /// Read a slot's typed edges (target, type, weight) — for reconstructing relationship records.
+    #[napi]
+    pub fn slot_edges(&mut self, slot: u32) -> Result<Vec<EdgeRow>> {
+        let edges = self
+            .shard
+            .segment()
+            .slot_edges(slot)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(edges
+            .into_iter()
+            .map(|(target, edge_type, weight)| EdgeRow { target, edge_type, weight })
+            .collect())
+    }
+
+    /// Scan every live slot and return its (slot_id, full-record text). The Prisma adapter calls
+    /// this once on open to hydrate all records from `.amr` — making `.amr` the relational store.
+    #[napi]
+    pub fn all_records(&mut self) -> Result<Vec<RecordRow>> {
+        let seg = self.shard.segment();
+        let n = seg.slot_count();
+        let mut out = Vec::with_capacity(n as usize);
+        for idx in 0..n {
+            // get() returns Err for tombstoned/empty slots — skip those, keep the live ones.
+            if let Ok(hit) = seg.get(idx) {
+                out.push(RecordRow { slot_id: idx, text: hit.text });
+            }
+        }
+        Ok(out)
     }
 
     /// Compact the text region, reclaiming bytes of deleted memories. Returns bytes reclaimed.

@@ -9,23 +9,121 @@ export interface MnemeHit {
   score: number
   text: string
 }
-/** A per-org mneme store (wraps one `.amr` shard). */
+/**
+ * One stored record: slot id + its full-record text payload. Used by the Prisma adapter's loader
+ * to hydrate every memory from `.amr` on open (Path B — `.amr` as the relational store).
+ */
+export interface RecordRow {
+  slotId: number
+  text: string
+}
+/**
+ * One typed edge from a slot: target slot, edge type, weight. The relationship backend reads these
+ * back to reconstruct relationship records from the `.amr` graph.
+ */
+export interface EdgeRow {
+  target: number
+  edgeType: number
+  weight: number
+}
+/**
+ * One page of a streaming record scan: the live records found plus the slot to resume from
+ * (`next_slot` == u32::MAX when the scan is complete). Replaces all-at-once `all_records()`
+ * for large shards — the caller never materializes the whole store in JS heap.
+ */
+export interface RecordPage {
+  rows: Array<RecordRow>
+  nextSlot: number
+}
+/**
+ * A per-org mneme store (wraps one `.amr` shard).
+ *
+ * Holds a native id→slot index (u64 hash of the record's JSON `id` → candidate slots) so JS
+ * never needs an in-heap Map of every record — the index costs ~24 bytes/record in Rust
+ * (no GC pressure) vs ~1-2KB/record for parsed JS objects, which was the scale wall.
+ */
 export declare class MnemeStore {
-  /** Open (or create) the shard for `org_id` under `data_root` with embedding dimension `dim`. */
+  /**
+   * Open (or create) the shard for `org_id` under `data_root` with embedding dimension `dim`.
+   * Builds the id→slot index with one mmap scan of live slots.
+   */
   static open(dataRoot: string, orgId: string, dim: number): MnemeStore
   /**
    * Insert a memory (text + embedding). `valid_from` is nanoseconds (0 = unspecified).
    * Returns the stable slot id.
    */
   insert(text: string, vector: Float32Array, validFrom: number): number
+  /**
+   * Insert tagged with a layer (0=memory, 1=evidence, 2=cognitive). Lets one shard hold all 3
+   * HIVEMIND layers, separated, for layer-filtered recall.
+   */
+  insertLayered(text: string, vector: Float32Array, validFrom: number, layer: number): number
   /** Build the HNSW overlay over all current vectors (call after a bulk load). */
   enableHnsw(): void
   /** Recall the top-`top_k` memories for `query`. */
   recall(query: Float32Array, topK: number): Array<MnemeHit>
+  /**
+   * Layer-filtered recall: `layer` 0=memory, 1=evidence, 2=cognitive; pass -1 for all layers.
+   * This is how the 3 layers are queried separately from one shard (recall=memory,
+   * provenance=evidence, synthesis=cognitive), exactly like a Qdrant `layer` filter.
+   */
+  recallLayer(query: Float32Array, topK: number, layer: number): Array<MnemeHit>
+  /**
+   * Add a typed edge `slot_id` --(edge_type)--> `target` (unbounded; overflows to `.edg`).
+   * edge_type: 1=Mentions 2=Updates 3=Derives 4=Contradicts 5=PartOf 6=Extends.
+   */
+  addEdge(slotId: number, target: number, edgeType: number, weight: number): void
+  /**
+   * Typed graph traversal from `seed`, following ONLY `edge_type`, up to `max_hops`. Returns
+   * reachable slot ids (HIVEMIND `traverse_graph` parity, served from the one shard).
+   */
+  traverseTyped(seed: number, edgeType: number, maxHops: number): Array<number>
+  /**
+   * Bi-temporal point-in-time: the version of a memory current as of transaction time
+   * `txn_time` (ns), walking the Updates chain from `head_slot`. Returns the slot id, or -1 if
+   * not yet known (HIVEMIND `hivemind_at` / `timeline` parity).
+   */
+  asOf(headSlot: number, txnTime: number): number
+  /**
+   * Insert with explicit bi-temporal stamps: `created_at` (transaction time — when learned)
+   * and `valid_from` (valid time — when true), both ns. `created_at` drives `as_of`.
+   */
+  insertAt(text: string, vector: Float32Array, createdAt: number, validFrom: number): number
+  /**
+   * Update memory `old_slot` with a new version: inserts, auto-links new--Updates-->old, marks
+   * old superseded. Recall then returns only the latest; `as_of` reaches the history. `created_at`
+   * is the transaction time of the new version (drives `as_of`). Returns the new slot id.
+   */
+  update(oldSlot: number, text: string, vector: Float32Array, createdAt: number, validFrom: number): number
   /** Delete (tombstone) a memory by slot id. */
   delete(slotId: number): void
+  /**
+   * Rewrite a live slot's record TEXT in place (vector/layer/temporal/edges untouched) —
+   * the durability primitive for metadata-only mutations (tags, recall reinforcement,
+   * is_latest supersession flips). Old text bytes are reclaimed by `compact()`.
+   */
+  rewriteText(slotId: number, text: string): void
+  /**
+   * Resolve a record's JSON `id` to its live slot, or -1. Served from the native id index
+   * (hash → candidate slots, exact-verified against slot text) — O(1), no JS-side Map needed.
+   */
+  findById(id: string): number
+  /** Read one live slot's record text. `Err` for tombstoned/never-used slots. */
+  slotText(slotId: number): string
+  /**
+   * Streaming record scan: up to `limit` live records starting at slot `from_slot`, plus the
+   * slot to resume from (u32::MAX when done). O(page) JS heap instead of O(shard).
+   */
+  recordsPage(fromSlot: number, limit: number): RecordPage
   /** Number of live memories in the shard. */
   liveCount(): number
+  /** Read a slot's typed edges (target, type, weight) — for reconstructing relationship records. */
+  slotEdges(slot: number): Array<EdgeRow>
+  /**
+   * Scan every live slot and return its (slot_id, full-record text). The Prisma adapter calls
+   * this once on open to hydrate all records from `.amr` — making `.amr` the relational store.
+   */
+  allRecords(): Array<RecordRow>
   /**
    * Compact the text region, reclaiming bytes of deleted memories. Returns bytes reclaimed.
    * A maintenance op — run when the shard is idle.
