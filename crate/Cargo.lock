@@ -391,6 +391,7 @@ dependencies = [
  "mpq",
  "mseg-format",
  "proptest",
+ "rayon",
  "tempfile",
  "zerocopy",
 ]

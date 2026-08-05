@@ -13,6 +13,8 @@ pub struct MemoryInput {
     pub adjacency: [SlotId; ADJACENCY_LEN],
     pub valid_from: i64,
     pub created_at: Option<i64>,
+    /// Which HIVEMIND layer this memory belongs to: 0=memory (default), 1=evidence, 2=cognitive.
+    pub layer: u8,
 }
 
 impl MemoryInput {
@@ -25,6 +27,7 @@ impl MemoryInput {
             adjacency: [mseg_format::SENTINEL_U32; ADJACENCY_LEN],
             valid_from: 0,
             created_at: None,
+            layer: mseg_format::LAYER_MEMORY,
         }
     }
 }
@@ -51,6 +54,10 @@ pub struct Filter {
     pub created_at_range: Option<(i64, i64)>,
     /// Inclusive `[lo, hi]` nanosecond range on `valid_from`.
     pub valid_from_range: Option<(i64, i64)>,
+    /// If `Some(l)`, only slots whose layer == `l` pass (0=memory, 1=evidence, 2=cognitive).
+    /// Recall sets `memory`; provenance sets `evidence`; synthesis sets `cognitive` — like Qdrant's
+    /// `layer` payload filter, so one `.amr` shard serves all three usages, separated.
+    pub layer: Option<u8>,
 }
 
 impl Filter {
@@ -59,10 +66,16 @@ impl Filter {
         self.entity_mask.is_some()
             || self.created_at_range.is_some()
             || self.valid_from_range.is_some()
+            || self.layer.is_some()
     }
 
-    /// True if `(entity_bitmap, created_at, valid_from)` passes every present condition.
-    pub fn matches(&self, entity_bitmap: u64, created_at: i64, valid_from: i64) -> bool {
+    /// True if `(entity_bitmap, created_at, valid_from, layer)` passes every present condition.
+    pub fn matches(&self, entity_bitmap: u64, created_at: i64, valid_from: i64, layer: u8) -> bool {
+        if let Some(l) = self.layer {
+            if layer != l {
+                return false;
+            }
+        }
         if let Some(m) = self.entity_mask {
             if entity_bitmap & m == 0 {
                 return false;

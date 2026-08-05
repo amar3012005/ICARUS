@@ -8,13 +8,18 @@
 //! invariant allows. This module is the ONLY place index mutation happens; the append path
 //! (`append.rs`) has no edge to it.
 
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
 use mnsw_index::{Candidate, MnswIndex};
 
 use mseg_format::{MsegError, Result};
+
+/// Bounded async-index queue. Past this many pending adds, `enqueue` indexes inline (synchronously)
+/// instead of growing memory unboundedly — backpressure that never drops a vector.
+const QUEUE_CAP: usize = 65_536;
 
 /// Messages to the background indexer thread.
 enum Msg {
@@ -42,31 +47,59 @@ fn ensure_capacity(index: &RwLock<MnswIndex>, need: usize) {
 /// serialize the unsafe `reserve` (write) against concurrent `search`/`add` (read).
 pub(crate) struct AsyncIndexer {
     index: Arc<RwLock<MnswIndex>>,
-    tx: Option<Sender<Msg>>,
+    tx: Option<SyncSender<Msg>>,
+    queued: Arc<AtomicU64>,   // enqueued-but-not-yet-applied = index lag (0 once caught up)
+    failures: Arc<AtomicU64>, // adds that errored; should always be 0, >0 = degraded recall
     handle: Option<JoinHandle<()>>,
+}
+
+/// Apply one add: grow under the write guard, then add under the read guard (concurrent with
+/// searches). A failed add is COUNTED, never silently lost.
+fn apply_add(index: &Arc<RwLock<MnswIndex>>, failures: &AtomicU64, id: u32, v: &[f32]) {
+    let need = index.read().expect("index lock").len() + 1;
+    ensure_capacity(index, need);
+    let g = index.read().expect("index lock");
+    if g.add(id, v).is_err() {
+        failures.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl AsyncIndexer {
     /// Create an empty index of dimension `dim` and start the background add thread.
     pub fn new(dim: usize, capacity: usize) -> Result<AsyncIndexer> {
-        let index = Arc::new(RwLock::new(MnswIndex::new(dim, capacity).map_err(map_err)?));
-        let (tx, rx) = mpsc::channel::<Msg>();
+        Self::from_index(MnswIndex::new(dim, capacity).map_err(map_err)?)
+    }
+
+    /// Load a persisted index from a `.mnsw` file (skips the expensive rebuild) and start the
+    /// background add thread so incremental inserts continue to apply.
+    pub fn load(path: &std::path::Path, dim: usize) -> Result<AsyncIndexer> {
+        Self::from_index(MnswIndex::load(path, dim).map_err(map_err)?)
+    }
+
+    /// Persist the current index to a `.mnsw` file (drains pending async adds first so the saved
+    /// graph is complete).
+    pub fn save(&self, path: &std::path::Path) -> Result<()> {
+        self.drain();
+        self.index.read().expect("index lock").save(path).map_err(map_err)
+    }
+
+    /// Wrap an existing `MnswIndex` (fresh or loaded) and start its background add thread.
+    fn from_index(index: MnswIndex) -> Result<AsyncIndexer> {
+        let index = Arc::new(RwLock::new(index));
+        let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE_CAP); // bounded → backpressure, no RAM blowup
+        let queued = Arc::new(AtomicU64::new(0));
+        let failures = Arc::new(AtomicU64::new(0));
         let worker = index.clone();
+        let w_queued = queued.clone();
+        let w_failures = failures.clone();
         let handle = std::thread::Builder::new()
             .name("mneme-hnsw-indexer".into())
             .spawn(move || {
                 for msg in rx {
                     match msg {
                         Msg::Add(id, v) => {
-                            // grow under the write guard FIRST, then add under the read guard
-                            // (concurrent with searches) — never reserve while searching.
-                            // Read `len` into a LOCAL so the read guard is released before
-                            // ensure_capacity may take the write guard: a read-held-into-write on
-                            // the same thread deadlocks (std RwLock is not reentrant).
-                            let need = worker.read().expect("index lock").len() + 1;
-                            ensure_capacity(&worker, need);
-                            let g = worker.read().expect("index lock");
-                            let _ = g.add(id, &v);
+                            apply_add(&worker, &w_failures, id, &v);
+                            w_queued.fetch_sub(1, Ordering::Relaxed);
                         }
                         Msg::Drain(ack) => {
                             let _ = ack.send(());
@@ -77,15 +110,36 @@ impl AsyncIndexer {
         Ok(AsyncIndexer {
             index,
             tx: Some(tx),
+            queued,
+            failures,
             handle: Some(handle),
         })
     }
 
-    /// Enqueue a vector for asynchronous indexing. Non-blocking; never rebuilds.
+    /// Enqueue a vector for asynchronous indexing. Non-blocking under normal load; if the queue is
+    /// saturated (or the worker died), indexes INLINE so a vector is NEVER dropped — backpressure,
+    /// not data loss.
     pub fn enqueue(&self, slot_id: u32, vector: &[f32]) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(Msg::Add(slot_id, vector.to_vec()));
+            self.queued.fetch_add(1, Ordering::Relaxed);
+            match tx.try_send(Msg::Add(slot_id, vector.to_vec())) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                    self.queued.fetch_sub(1, Ordering::Relaxed);
+                    apply_add(&self.index, &self.failures, slot_id, vector);
+                }
+            }
         }
+    }
+
+    /// Pending adds not yet applied to the graph (index lag). 0 = fully caught up.
+    pub fn index_lag(&self) -> u64 {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    /// Count of adds that errored — should always be 0; >0 means recall may be missing vectors.
+    pub fn add_failures(&self) -> u64 {
+        self.failures.load(Ordering::Relaxed)
     }
 
     /// Bulk-add a batch sequentially in the given order — a DETERMINISTIC graph and thus
@@ -94,7 +148,17 @@ impl AsyncIndexer {
     /// failed add is surfaced (not silently dropped) so a missing vector can't degrade recall.
     pub fn bulk_add_sequential(&self, batch: &[(u32, Vec<f32>)]) -> Result<()> {
         let target = self.len() + batch.len();
-        ensure_capacity(&self.index, target);
+        ensure_capacity(&self.index, target); // reserve the whole batch up front (no per-add race)
+        // MNEME_BUILD_PARALLEL=1 → concurrent add (usearch is thread-safe; ~6× faster build) at
+        // the cost of a nondeterministic graph. Default sequential = deterministic/reproducible.
+        if std::env::var("MNEME_BUILD_PARALLEL").as_deref() == Ok("1") {
+            use rayon::prelude::*;
+            let g = self.index.read().expect("index lock");
+            batch.par_iter().for_each(|(id, v)| {
+                let _ = g.add(*id, v);
+            });
+            return Ok(());
+        }
         let g = self.index.read().expect("index lock");
         for (id, v) in batch {
             g.add(*id, v).map_err(map_err)?;

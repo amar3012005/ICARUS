@@ -63,6 +63,7 @@ impl Segment {
         slot.set_text_len_lz4(tref.text_len_lz4);
         slot.set_text_len_raw(tref.text_len_raw);
         slot.set_entity_bitmap(mem.entity_bitmap);
+        slot.set_layer(mem.layer); // 0=memory default; evidence/cognitive tag the layer bits
         for (i, &adj) in mem.adjacency.iter().enumerate() {
             slot.set_adjacency(i, adj);
         }

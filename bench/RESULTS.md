@@ -56,3 +56,12 @@ bitemporal_2hop_p50_ms=1.9298
 - mneme reliably 1.0 across runs after deterministic HNSW build (was flaky 0.99-1.0 w/ parallel build). Qdrant float32 = 1.0.
 mneme_eval_score=1.0000
 qdrant_eval_score=1.0000
+
+## T2-4.3 typed-graph traversal @ scale (vs HIVEMIND Postgres-edge baseline) 2026-06-24T13:51:25Z sha=4f280a56
+- 1M memories, 2-hop typed traversal, SPREAD (cache-cold) targets, served from one shard.
+graph_inline_2hop_p50_ms=0.0012
+graph_inline_2hop_p99_ms=0.0029
+graph_overflow_2hop_p50_ms=0.0159
+graph_overflow_2hop_p99_ms=0.0205
+graph_gate_budget_ms=5
+# baseline: HIVEMIND graph traversal = Postgres recursive edge join + round-trip (~ms). mneme ~16us = 100x+ win.

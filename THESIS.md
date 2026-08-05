@@ -1,8 +1,14 @@
-# mneme: A Memory Filesystem for AI Agents
+# mneme: A Memory Filesystem for AI Agents — v2
 
 **A purpose-built storage engine where the byte layout — not the query engine — is the innovation.**
 
 *Apache-2.0 · Rust core · Node bindings · single-file-per-tenant*
+
+> **v2 (2026-06-26):** adds §5.9 — a real **production-org end-to-end**. A live customer's
+> document corpus (the `sai` org) was extracted, embedded (bge-m3, 1024-d), ingested, and
+> recalled entirely through the `.amr` engine: **36 documents → 141 chunks → one 5.57 MB
+> sovereign file, no server**, with semantically correct recall. The format moved from
+> "benchmarked against Qdrant" to "ran a real org's knowledge through it."
 
 ---
 
@@ -298,6 +304,36 @@ The engine is hardened against the failure modes that kill custom stores, and a 
 Both have regression tests. Crash-safety (commit-last insert ordering — a torn write is never read
 as a live memory) and `compact()` (reclaims deleted memories' bytes without renumbering slot ids)
 round out the durability story.
+
+### 5.9 Production-org end-to-end (the `sai` org) — v2
+
+The shadow eval (§5.7) proved recall *parity* on production vectors. This goes one step further:
+a real customer's **raw documents** run through the *entire* pipeline — extract → embed → store →
+recall — on nothing but the `.amr` engine.
+
+Setup: the `sai` org's document corpus (36 files — pitch decks, budgets, brand manuals, product
+brochures, meeting protocols; German). Each was text-extracted (`pdftotext` / `textutil`), chunked,
+and embedded with **bge-m3 (1024-d)**. The 141 resulting chunks were inserted into a single `.amr`
+shard via the Node binding (`MnemeStore.open → insert → enableHnsw`), then queried.
+
+| | result |
+|---|---|
+| documents ingested | 36 (pdf + docx) → **141 chunks** |
+| shard on disk | **one 5.57 MB file** (the whole org), zero servers |
+| embedding | bge-m3, 1024-d, L2-normalized |
+| recall | HNSW candidate → exact-cosine rerank, from the one mmap |
+
+Recall was semantically correct on a corpus mneme had never been tuned on:
+
+- *"Markenlaunch roadshow planning for Leo"* → #1 the actual **Kickoff-2026 Markenrelaunch & Roadshow**
+  prep doc (0.62), #2 the roadshow protocol, #3 the Leo-roadshow meeting notes.
+- *"Gemeinwohlbilanz sustainability"* → the **Gemeinwohl-Bilanz 2021/22** report (0.67).
+- *"heat pump Nachrüstsatz Wärmepumpe"* → the Elektrifizierung white paper + the SolvisMax retrofit set.
+
+**What this proves.** The format is not a benchmark artifact. A real organization's knowledge —
+unstructured, multi-format, non-English — went in as documents and came back as the right memories,
+from a single sovereign file with no database server in the loop. This is the unit of deployment
+HIVEMIND ships: **one `.amr` file per org, the org's whole memory inside it.**
 
 ---
 

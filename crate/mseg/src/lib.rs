@@ -6,6 +6,7 @@
 
 mod append;
 mod crud;
+mod graph;
 mod index;
 mod pq;
 mod segment;

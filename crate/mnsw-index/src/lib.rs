@@ -43,21 +43,29 @@ pub struct MnswIndex {
     dim: usize,
 }
 
+fn envn(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 fn opts(dim: usize) -> IndexOptions {
     IndexOptions {
         dimensions: dim,
         metric: MetricKind::Cos,
-        // higher graph connectivity + build/search expansion = better recall (closes the gap
-        // to a float32 baseline). M=48 / ef_construct=256 / ef_search=400 → recall@5 == 1.0.
-        connectivity: 48,
-        expansion_add: 256,
-        expansion_search: 400,
-        // f32 graph for recall parity with a float32 baseline (Qdrant): recall@5 = 1.0 vs
-        // Qdrant's 1.0. The HNSW index is a transient, rebuildable candidate accelerator — like
-        // Qdrant's own — so its size is not the storage story; mneme's compression win is the
-        // persistent .mseg format (~602 B/memory vs ~4.5 KB) + the .mpq PQ primary store (32×).
-        // (int8 graph is a 4×-smaller-index option that trades ~0.5% recall@5 — see FUTURE.md.)
-        quantization: ScalarKind::F32,
+        // Graph connectivity + build/search expansion. Defaults (M=48/efc=256/efs=400) maximize
+        // recall (== float32 baseline) for small/medium orgs. At millions of vectors the high M
+        // makes the build expensive, so MNEME_HNSW_M / _EFC / _EFS tune it down (e.g. M=16) for a
+        // fast build + lower RAM, trading a little recall — the standard scale knob.
+        connectivity: envn("MNEME_HNSW_M", 48),
+        expansion_add: envn("MNEME_HNSW_EFC", 256),
+        expansion_search: envn("MNEME_HNSW_EFS", 400),
+        // HNSW graph quantization. Default f32 for recall parity with a float32 baseline (small/
+        // medium orgs). At scale the f32 graph is the RAM bottleneck (~dim*4 B/vec); set
+        // MNEME_HNSW_QUANT=i8 for a 4×-smaller index (~0.5% recall@5 cost) so millions of vectors
+        // fit in RAM. The exact-rerank over the raw .vec keeps final recall high either way.
+        quantization: match std::env::var("MNEME_HNSW_QUANT").as_deref() {
+            Ok("i8") | Ok("int8") => ScalarKind::I8,
+            _ => ScalarKind::F32,
+        },
         ..Default::default()
     }
 }
