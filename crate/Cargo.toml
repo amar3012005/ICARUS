@@ -8,7 +8,7 @@ members = ["mneme-probe", "mseg-format", "mseg", "mnsw-index", "mpq", "mneme-nod
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/amar3012005/HIVEMIND"
+repository = "https://github.com/amar3012005/ICARUS"
 # 1.77 for stable `core::mem::offset_of!` (used by the spec-lock test).
 rust-version = "1.77"
 
