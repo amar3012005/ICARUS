@@ -39,7 +39,8 @@ fn main() {
     let t0 = Instant::now();
     for i in 0..n {
         let v: Vec<f32> = (0..dim).map(|j| ((i as usize + j) % 7) as f32).collect();
-        seg.insert(MemoryInput::new(String::new(), v)).expect("insert");
+        seg.insert(MemoryInput::new(String::new(), v))
+            .expect("insert");
     }
     eprintln!("inserted {n} in {:.1}s", t0.elapsed().as_secs_f64());
 
@@ -66,14 +67,18 @@ fn main() {
     // warm + timed 2-hop traversal from deterministic, spread-out seeds.
     let seeds: Vec<u32> = (0..500).map(|q| (q * (n / 500).max(1)) % n).collect();
     for &s in seeds.iter().take(50) {
-        let _ = seg.traverse_typed(&[s], EDGE_MENTIONS, hops).expect("traverse");
+        let _ = seg
+            .traverse_typed(&[s], EDGE_MENTIONS, hops)
+            .expect("traverse");
     }
     let mut lat = Vec::new();
     let mut reached_total = 0usize;
     for _ in 0..5 {
         for &s in &seeds {
             let t = Instant::now();
-            let r = seg.traverse_typed(&[s], EDGE_MENTIONS, hops).expect("traverse");
+            let r = seg
+                .traverse_typed(&[s], EDGE_MENTIONS, hops)
+                .expect("traverse");
             lat.push(t.elapsed().as_secs_f64() * 1e3);
             reached_total += r.len();
         }

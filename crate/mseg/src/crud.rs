@@ -148,7 +148,12 @@ impl Segment {
             if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
+            if !filter.matches(
+                slot.entity_bitmap(),
+                slot.created_at(),
+                slot.valid_from(),
+                slot.layer(),
+            ) {
                 continue;
             }
             let v = self.read_vector(idx)?;
@@ -186,7 +191,12 @@ impl Segment {
             if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
+            if !filter.matches(
+                slot.entity_bitmap(),
+                slot.created_at(),
+                slot.valid_from(),
+                slot.layer(),
+            ) {
                 continue;
             }
             let v = self.read_vector(idx)?;
@@ -272,7 +282,12 @@ impl Segment {
             if slot.is_tombstoned() || slot.is_superseded() {
                 continue;
             }
-            if !filter.matches(slot.entity_bitmap(), slot.created_at(), slot.valid_from(), slot.layer()) {
+            if !filter.matches(
+                slot.entity_bitmap(),
+                slot.created_at(),
+                slot.valid_from(),
+                slot.layer(),
+            ) {
                 continue;
             }
             let v = self.read_vector(idx)?;

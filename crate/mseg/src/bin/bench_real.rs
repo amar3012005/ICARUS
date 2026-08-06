@@ -14,7 +14,12 @@ fn load(path: &std::path::Path, dim: usize, max: usize) -> Vec<Vec<f32>> {
         let mut v = Vec::with_capacity(dim);
         for c in 0..dim {
             let o = (r * dim + c) * 4;
-            v.push(f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]));
+            v.push(f32::from_le_bytes([
+                bytes[o],
+                bytes[o + 1],
+                bytes[o + 2],
+                bytes[o + 3],
+            ]));
         }
         out.push(v);
     }
@@ -23,7 +28,11 @@ fn load(path: &std::path::Path, dim: usize, max: usize) -> Vec<Vec<f32>> {
 fn pct(s: &[f64], p: f64) -> f64 {
     let r = (p / 100.0) * ((s.len() - 1) as f64);
     let (lo, hi) = (r.floor() as usize, r.ceil() as usize);
-    if lo == hi { s[lo] } else { s[lo] * (1.0 - (r - lo as f64)) + s[hi] * (r - lo as f64) }
+    if lo == hi {
+        s[lo]
+    } else {
+        s[lo] * (1.0 - (r - lo as f64)) + s[hi] * (r - lo as f64)
+    }
 }
 
 fn main() {
@@ -34,7 +43,12 @@ fn main() {
 
     let corpus = load(std::path::Path::new(&a[1]), dim, n);
     let queries = load(std::path::Path::new(&a[2]), dim, 1000);
-    eprintln!("loaded corpus={} queries={} dim={}", corpus.len(), queries.len(), dim);
+    eprintln!(
+        "loaded corpus={} queries={} dim={}",
+        corpus.len(),
+        queries.len(),
+        dim
+    );
 
     let tmp = std::env::temp_dir().join(format!("mneme_real_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
@@ -42,9 +56,14 @@ fn main() {
 
     let t0 = Instant::now();
     for v in &corpus {
-        seg.insert(MemoryInput::new(String::new(), v.clone())).expect("insert");
+        seg.insert(MemoryInput::new(String::new(), v.clone()))
+            .expect("insert");
     }
-    eprintln!("inserted {} in {:.1}s", corpus.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "inserted {} in {:.1}s",
+        corpus.len(),
+        t0.elapsed().as_secs_f64()
+    );
     let ti = Instant::now();
     seg.enable_hnsw().expect("hnsw");
     seg.index_drain();
@@ -90,7 +109,13 @@ fn main() {
             }
         }
         for q in &queries {
-            topk.push(seg.recall(q, &filter, k).unwrap().iter().map(|h| h.slot_id).collect());
+            topk.push(
+                seg.recall(q, &filter, k)
+                    .unwrap()
+                    .iter()
+                    .map(|h| h.slot_id)
+                    .collect(),
+            );
         }
         lat.sort_by(|x, y| x.partial_cmp(y).unwrap());
         let recall = if di == 0 {

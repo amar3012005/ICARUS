@@ -99,8 +99,11 @@ fn hnsw_index_persists_and_reloads() {
     {
         let mut seg = Segment::create(dir.path(), "g", 4).unwrap();
         for i in 0..200u32 {
-            seg.insert(MemoryInput::new(format!("m{i}"), vec![i as f32, 1.0, 0.0, 0.0]))
-                .unwrap();
+            seg.insert(MemoryInput::new(
+                format!("m{i}"),
+                vec![i as f32, 1.0, 0.0, 0.0],
+            ))
+            .unwrap();
         }
         target = seg
             .insert(MemoryInput::new("needle", vec![999.0, 1.0, 0.0, 0.0]))
@@ -120,7 +123,10 @@ fn hnsw_index_persists_and_reloads() {
     let hits = seg
         .recall(&[999.0, 1.0, 0.0, 0.0], &Filter::default(), 1)
         .unwrap();
-    assert_eq!(hits[0].slot_id, target, "reloaded index must recall the needle");
+    assert_eq!(
+        hits[0].slot_id, target,
+        "reloaded index must recall the needle"
+    );
 }
 
 /// 3-layer separation: one shard holds evidence + memory + cognitive; a layer-filtered recall
@@ -143,12 +149,31 @@ fn layers_are_separated_and_filtered_per_usage() {
 
     let q = [1.0, 0.0, 0.0, 0.0];
     let mut only = |layer: u8| {
-        let f = Filter { layer: Some(layer), ..Default::default() };
-        seg.recall(&q, &f, 10).unwrap().iter().map(|h| h.slot_id).collect::<Vec<_>>()
+        let f = Filter {
+            layer: Some(layer),
+            ..Default::default()
+        };
+        seg.recall(&q, &f, 10)
+            .unwrap()
+            .iter()
+            .map(|h| h.slot_id)
+            .collect::<Vec<_>>()
     };
-    assert_eq!(only(LAYER_EVIDENCE), vec![ev], "evidence filter returns only evidence");
-    assert_eq!(only(LAYER_MEMORY), vec![me], "memory filter returns only memory");
-    assert_eq!(only(LAYER_COGNITIVE), vec![co], "cognitive filter returns only cognitive");
+    assert_eq!(
+        only(LAYER_EVIDENCE),
+        vec![ev],
+        "evidence filter returns only evidence"
+    );
+    assert_eq!(
+        only(LAYER_MEMORY),
+        vec![me],
+        "memory filter returns only memory"
+    );
+    assert_eq!(
+        only(LAYER_COGNITIVE),
+        vec![co],
+        "cognitive filter returns only cognitive"
+    );
     // no filter = all 3 layers present
     let all = seg.recall(&q, &Filter::default(), 10).unwrap().len();
     assert_eq!(all, 3, "unfiltered recall sees all layers");

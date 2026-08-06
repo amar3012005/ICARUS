@@ -48,7 +48,7 @@ fn ensure_capacity(index: &RwLock<MnswIndex>, need: usize) {
 pub(crate) struct AsyncIndexer {
     index: Arc<RwLock<MnswIndex>>,
     tx: Option<SyncSender<Msg>>,
-    queued: Arc<AtomicU64>,   // enqueued-but-not-yet-applied = index lag (0 once caught up)
+    queued: Arc<AtomicU64>, // enqueued-but-not-yet-applied = index lag (0 once caught up)
     failures: Arc<AtomicU64>, // adds that errored; should always be 0, >0 = degraded recall
     handle: Option<JoinHandle<()>>,
 }
@@ -80,7 +80,11 @@ impl AsyncIndexer {
     /// graph is complete).
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
         self.drain();
-        self.index.read().expect("index lock").save(path).map_err(map_err)
+        self.index
+            .read()
+            .expect("index lock")
+            .save(path)
+            .map_err(map_err)
     }
 
     /// Wrap an existing `MnswIndex` (fresh or loaded) and start its background add thread.
@@ -149,8 +153,8 @@ impl AsyncIndexer {
     pub fn bulk_add_sequential(&self, batch: &[(u32, Vec<f32>)]) -> Result<()> {
         let target = self.len() + batch.len();
         ensure_capacity(&self.index, target); // reserve the whole batch up front (no per-add race)
-        // MNEME_BUILD_PARALLEL=1 → concurrent add (usearch is thread-safe; ~6× faster build) at
-        // the cost of a nondeterministic graph. Default sequential = deterministic/reproducible.
+                                              // MNEME_BUILD_PARALLEL=1 → concurrent add (usearch is thread-safe; ~6× faster build) at
+                                              // the cost of a nondeterministic graph. Default sequential = deterministic/reproducible.
         if std::env::var("MNEME_BUILD_PARALLEL").as_deref() == Ok("1") {
             use rayon::prelude::*;
             let g = self.index.read().expect("index lock");

@@ -386,7 +386,10 @@ impl MnemeStore {
         let mut idx = from_slot;
         while idx < n && rows.len() < limit as usize {
             if let Ok(hit) = seg.get(idx) {
-                rows.push(RecordRow { slot_id: idx, text: hit.text });
+                rows.push(RecordRow {
+                    slot_id: idx,
+                    text: hit.text,
+                });
             }
             idx += 1;
         }
@@ -410,7 +413,11 @@ impl MnemeStore {
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(edges
             .into_iter()
-            .map(|(target, edge_type, weight)| EdgeRow { target, edge_type, weight })
+            .map(|(target, edge_type, weight)| EdgeRow {
+                target,
+                edge_type,
+                weight,
+            })
             .collect())
     }
 
@@ -424,7 +431,10 @@ impl MnemeStore {
         for idx in 0..n {
             // get() returns Err for tombstoned/empty slots — skip those, keep the live ones.
             if let Ok(hit) = seg.get(idx) {
-                out.push(RecordRow { slot_id: idx, text: hit.text });
+                out.push(RecordRow {
+                    slot_id: idx,
+                    text: hit.text,
+                });
             }
         }
         Ok(out)

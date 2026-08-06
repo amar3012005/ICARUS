@@ -15,18 +15,24 @@ fn async_index_growth_does_not_deadlock() {
 
     // small seed, then enable HNSW so subsequent inserts go through the async add path.
     for i in 0..16 {
-        seg.insert(MemoryInput::new(format!("seed{i}"), unit(i, 8))).unwrap();
+        seg.insert(MemoryInput::new(format!("seed{i}"), unit(i, 8)))
+            .unwrap();
     }
     seg.enable_hnsw().unwrap();
 
     // insert well past the initial capacity → forces the bg thread to reserve (write lock).
     for i in 16..4000 {
-        seg.insert(MemoryInput::new(format!("m{i}"), unit(i, 8))).unwrap();
+        seg.insert(MemoryInput::new(format!("m{i}"), unit(i, 8)))
+            .unwrap();
     }
     // block until the bg indexer has applied every enqueued add (would never return if wedged).
     seg.index_drain();
 
-    assert!(seg.hnsw_len() >= 3000, "bg indexer dropped adds: {}", seg.hnsw_len());
+    assert!(
+        seg.hnsw_len() >= 3000,
+        "bg indexer dropped adds: {}",
+        seg.hnsw_len()
+    );
     let hits = seg.recall(&unit(100, 8), &Filter::default(), 5).unwrap();
     assert_eq!(hits.len(), 5);
 }

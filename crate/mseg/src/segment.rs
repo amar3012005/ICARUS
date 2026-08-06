@@ -591,6 +591,25 @@ impl Segment {
     pub fn hnsw_len(&self) -> usize {
         self.hnsw.as_ref().map(|ix| ix.len()).unwrap_or(0)
     }
+
+    /// Adds queued but not yet applied to the HNSW graph. 0 = fully caught up.
+    ///
+    /// Indexing is asynchronous, so a vector can be written and durable while still being
+    /// invisible to an HNSW-backed search. Without a way to observe that lag, "the write
+    /// succeeded but recall does not find it" is indistinguishable from a recall bug.
+    pub fn index_lag(&self) -> u64 {
+        self.hnsw.as_ref().map(|ix| ix.index_lag()).unwrap_or(0)
+    }
+
+    /// Adds that ERRORED while being applied to the graph. Must always be 0.
+    ///
+    /// A non-zero value means the segment holds vectors the HNSW graph does not, so recall
+    /// silently returns less than it should — no error surfaces at the call site. That is the
+    /// failure mode this whole engine is most exposed to, so it is observable by design rather
+    /// than inferable from a recall that "feels thin". Operators should alarm on `> 0`.
+    pub fn index_failures(&self) -> u64 {
+        self.hnsw.as_ref().map(|ix| ix.add_failures()).unwrap_or(0)
+    }
 }
 
 impl Drop for Segment {
@@ -632,13 +651,19 @@ mod crash_tests {
         {
             let mut seg = Segment::create(dir.path(), "g", 4).unwrap();
             for i in 0..N {
-                seg.insert(MemoryInput::new(format!("c{i}"), vec![i as f32, 1.0, 0.0, 0.0]))
-                    .unwrap();
+                seg.insert(MemoryInput::new(
+                    format!("c{i}"),
+                    vec![i as f32, 1.0, 0.0, 0.0],
+                ))
+                .unwrap();
             }
             seg.flush().unwrap(); // checkpoint at N
             for i in 0..M {
-                seg.insert(MemoryInput::new(format!("u{i}"), vec![1000.0 + i as f32, 1.0, 0.0, 0.0]))
-                    .unwrap();
+                seg.insert(MemoryInput::new(
+                    format!("u{i}"),
+                    vec![1000.0 + i as f32, 1.0, 0.0, 0.0],
+                ))
+                .unwrap();
             }
             // crash window: slots durable on disk, but committed_count NOT advanced (no flush()).
             seg.mmap.flush().unwrap();
@@ -648,15 +673,23 @@ mod crash_tests {
         }
         // reopen → recovery truncates the uncommitted tail.
         let mut seg = Segment::open(dir.path(), "g").unwrap();
-        assert_eq!(seg.slot_count(), N as u32, "uncommitted tail must be discarded");
+        assert_eq!(
+            seg.slot_count(),
+            N as u32,
+            "uncommitted tail must be discarded"
+        );
         // a query for an uncommitted vector must NOT return one (it's gone, not corrupt).
-        let hits = seg.recall(&[1000.0, 1.0, 0.0, 0.0], &Filter::default(), 5).unwrap();
+        let hits = seg
+            .recall(&[1000.0, 1.0, 0.0, 0.0], &Filter::default(), 5)
+            .unwrap();
         assert!(
             hits.iter().all(|h| (h.slot_id as usize) < N),
             "no recovered hit may reference a discarded slot"
         );
         // committed data is intact + queryable.
-        let ok = seg.recall(&[5.0, 1.0, 0.0, 0.0], &Filter::default(), 1).unwrap();
+        let ok = seg
+            .recall(&[5.0, 1.0, 0.0, 0.0], &Filter::default(), 1)
+            .unwrap();
         assert_eq!(seg.get(ok[0].slot_id).unwrap().text, "c5");
     }
 }
