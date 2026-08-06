@@ -34,21 +34,21 @@ benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amar3012005/mneme/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
 Installs the toolchain if missing, builds the native addon, installs the `mneme` CLI to `~/.mneme`,
 and (optionally) connects your HIVEMIND account. Manual build:
 
 ```bash
-git clone https://github.com/amar3012005/mneme
-cd mneme/crate/mneme-node && npm install && npx napi build --release
+git clone https://github.com/amar3012005/ICARUS
+cd ICARUS/crate/mneme-node && npm install && npx napi build --release
 ```
 
 ## Quickstart (Node)
 
 ```js
-const { MnemeVectorStore } = require('mneme-node'); // drop-in for QdrantVectorStore
+const { MnemeVectorStore } = require('singulance-amr'); // drop-in for QdrantVectorStore
 
 const store = new MnemeVectorStore({ dataRoot: '~/.mneme/data', dim: 1024 });
 await store.upsert('org_acme', [
@@ -60,7 +60,7 @@ const hits = await store.search('org_acme', embed('ui settings'), 5); // [{ id, 
 Low-level engine:
 
 ```js
-const { MnemeStore } = require('mneme-node');
+const { MnemeStore } = require('singulance-amr');
 const s = MnemeStore.open('~/.mneme/data', 'org_acme', 1024);
 const id = s.insert('user prefers dark mode', new Float32Array(vec), Date.now() * 1e6);
 s.enableHnsw();

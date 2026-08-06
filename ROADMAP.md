@@ -9,7 +9,9 @@
 
 ## Current production state (do not regress)
 
-- `singulance-amr@0.1.0` published on npm (macOS arm64). Public repo `github.com/amar3012005/mneme`.
+- `singulance-amr@0.1.0` published on npm (macOS arm64). Repo `github.com/amar3012005/ICARUS` is
+  currently **PRIVATE** — the install instructions below cannot work for anyone outside the org
+  until it is made public.
 - LIVE in HIVEMIND production: org `723f0f5b` (sai@bundb.de) served by `.amr`; **only that org**.
   All other 13 orgs on Qdrant, byte-identical. Verified: routing isolated, recall 5/5 self-top1,
   storage 2.0M vs 23M (11.5×), recall p50 1.16ms vs 1.50ms, parity (upsert-replace/delete/

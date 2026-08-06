@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# mneme installer — curl -fsSL https://raw.githubusercontent.com/amar3012005/mneme/main/install.sh | bash
+# mneme installer — curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 #
 # Installs the mneme memory filesystem locally: ensures toolchain, builds the native addon,
 # installs the `mneme` CLI to ~/.mneme, and (optionally) connects your HIVEMIND account.
 # Idempotent — safe to re-run.
 set -euo pipefail
 
-REPO="${MNEME_REPO:-https://github.com/amar3012005/mneme}"
+REPO="${MNEME_REPO:-https://github.com/amar3012005/ICARUS}"
 BRANCH="${MNEME_BRANCH:-main}"
 HOME_DIR="${MNEME_HOME:-$HOME/.mneme}"
 SRC_DIR="$HOME_DIR/src"

@@ -50,10 +50,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/amar3012005/mneme.git",
+    "url": "git+https://github.com/amar3012005/ICARUS.git",
     "directory": "crate/mneme-node"
   },
-  "homepage": "https://github.com/amar3012005/mneme",
+  "homepage": "https://github.com/amar3012005/ICARUS",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"
   },

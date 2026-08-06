@@ -47,7 +47,7 @@ if (!native) {
 if (!native) {
   throw new Error(
     `singulance-amr: no prebuilt binary for ${process.platform}-${process.arch}. ` +
-      `Build from source: https://github.com/amar3012005/mneme`
+      `Build from source: https://github.com/amar3012005/ICARUS`
   );
 }
 

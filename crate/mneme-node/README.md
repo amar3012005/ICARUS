@@ -19,6 +19,6 @@ npx amr recall "your question" --org acme
 ```
 
 Full docs, design thesis, benchmarks, and the `.amr` format spec:
-**https://github.com/amar3012005/mneme**
+**https://github.com/amar3012005/ICARUS**
 
 Apache-2.0.
