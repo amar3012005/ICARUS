@@ -69,6 +69,23 @@ filter in a vector DB.
 Build the HNSW overlay over current vectors — call after a bulk load. Below the overlay,
 recall is exact brute force (always fresh, sub-ms on small shards).
 
+### `bm25Search(query, topK) -> MnemeHit[]`
+Native lexical search over every live record's stored text. Real document-frequency/IDF
+statistics, not a substring heuristic — standard Okapi BM25 (`k1=1.5`, `b=0.75`).
+Language-neutral tokenization (lowercase, Unicode-alphanumeric split; no stemming, no
+stopwords). Only documents matching at least one query term are returned, ranked best-first.
+
+Corpus-wide per call (O(shard) — two passes: corpus statistics, then scoring), the same cost
+shape as combining this with vector `recall` in application code. Does not currently filter by
+layer (`Hit` doesn't surface it); apply your own layer filter to the returned `slotId`s if you
+need one. A persistent postings index for very large corpora is a natural follow-on, not
+implemented here.
+
+```js
+const hits = store.bm25Search('warranty terms', 10);
+// [{ slotId, score, text }, ...] — best match first, non-matches absent (not zero-scored)
+```
+
 ```ts
 interface MnemeHit { slotId: number; score: number; text: string }
 ```

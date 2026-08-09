@@ -3,6 +3,9 @@
 //! per-org shard held in the JS object; the JS wrapper (MnemeVectorStore) adapts them to the
 //! async `upsert`/`search` interface HIVEMIND expects.
 
+mod bm25;
+
+use bm25::{bm25_search, Bm25Doc, Bm25Params};
 use mseg::{Filter, MemoryInput, Shard};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -395,6 +398,51 @@ impl MnemeStore {
         }
         let next_slot = if idx >= n { u32::MAX } else { idx };
         Ok(RecordPage { rows, next_slot })
+    }
+
+    /// Native BM25 lexical search over every live record's stored text. Full corpus-wide
+    /// document-frequency/IDF statistics (see `bm25.rs`), not a substring or prefix heuristic --
+    /// this is the engine's first lexical search of any kind. `MnemeStore` previously had vector
+    /// recall, graph edges, and temporal operations, and nothing that scored on TEXT at all.
+    ///
+    /// KNOWN LIMITATION, STATED RATHER THAN HIDDEN: `Hit` does not currently surface a record's
+    /// layer, so this scans every live slot regardless of the 0/1/2 layer used by
+    /// `insert_layered`/`recall_layer`. A caller needing "evidence only" or "memory only" lexical
+    /// search must filter the returned ids against a layer lookup of its own for now; adding a
+    /// layer to `Hit` (or a native filtered variant) is the natural follow-up, not done here.
+    ///
+    /// O(shard) per call: two passes over every live record (corpus stats, then scoring), same
+    /// cost shape as the JS-side scan-based lexical lanes this engine's callers already use in
+    /// production. A persistent postings index for O(matching-docs) query cost at very large
+    /// corpora is a further step, not this one.
+    #[napi]
+    pub fn bm25_search(&mut self, query: String, top_k: u32) -> Result<Vec<MnemeHit>> {
+        let seg = self.shard.segment();
+        let n = seg.slot_count();
+        let mut rows: Vec<(u32, String)> = Vec::new();
+        for idx in 0..n {
+            if let Ok(hit) = seg.get(idx) {
+                rows.push((idx, hit.text));
+            }
+        }
+        let docs: Vec<Bm25Doc> = rows
+            .iter()
+            .map(|(id, text)| Bm25Doc { id: *id, text })
+            .collect();
+        let hits = bm25_search(&docs, &query, top_k as usize, Bm25Params::default());
+        // Re-attach each hit's text for a result shape consistent with recall()/recall_layer().
+        let text_by_id: HashMap<u32, &String> = rows.iter().map(|(id, text)| (*id, text)).collect();
+        Ok(hits
+            .into_iter()
+            .map(|h| MnemeHit {
+                slot_id: h.id,
+                score: h.score,
+                text: text_by_id
+                    .get(&h.id)
+                    .map(|t| (*t).clone())
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// Number of live memories in the shard.

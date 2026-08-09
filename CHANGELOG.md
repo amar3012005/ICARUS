@@ -9,6 +9,16 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Native BM25 lexical search** (`MnemeStore.bm25Search(query, topK)`). The engine previously had
+  vector recall, graph edges and temporal operations but no lexical search of any kind. Real
+  document-frequency/IDF statistics (standard non-negative Robertson/Sparck-Jones variant),
+  language-neutral Unicode tokenization (no stemming, no stopword list — those are per-language
+  and exactly the brittle logic this engine avoids elsewhere), 9 unit tests covering ranking
+  correctness, length normalization, and query-term deduplication. Corpus-wide scan per call
+  (same cost shape as this engine's existing JS-side lexical lanes); a persistent postings index
+  for large corpora is a natural follow-up, not part of this change. Known limitation: `Hit` does
+  not yet surface a record's layer, so results are not layer-filterable — stated in the method's
+  doc comment rather than silently assumed away.
 - **Docs for open-source use**: `CONTRIBUTING.md`, `SECURITY.md`, `docs/API.md` (full Node
   API reference generated from `index.d.ts`), `examples/quickstart.mjs`, this changelog.
 
