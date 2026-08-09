@@ -31,11 +31,25 @@ Goal: a *real product* people embed, not a demo. This is the asset that gates ev
       + `.d.ts`. Semver. Document the `.amr` format as an RFC (SPEC.md is the seed).
 - [ ] T1-3: **Filtering parity.** score_threshold (done) + payload field filters + metric choice.
       Enough that an embedder isn't forced back to a server for a basic WHERE.
-- [ ] T1-4: **The killer benchmark — vs LanceDB, not Qdrant.** Same corpus, embedded-to-embedded:
-      storage, recall@10, p50/p99, cold-open time. Publish it. (Honest: include where we lose.)
-- [ ] T1-5: **Node-binding latency.** Today the napi path is slower than the Rust engine at scale
-      (4ms @ 8k). Trim it (narrower ef path / avoid Float32Array re-marshalling) so the embedded
-      win holds past ~10k vectors. Target: binding p50 within 1.5× of native.
+- [x] T1-4: **The killer benchmark — vs LanceDB, not Qdrant.** **Done, published, and it's a loss.**
+      `bench/lancedb/RESULTS.md` — 10k real bge-m3 vectors, embedded-to-embedded, both engines
+      through their real Node bindings. At matched recall@10=1.00, LanceDB (tuned) is **~1.9×
+      faster on query p50** (2.26ms vs mneme's 4.38ms) and **~25% smaller on disk**. Root cause
+      investigated (see T1-5 below, corrected) rather than assumed.
+- [ ] T1-5: **HNSW ef/rerank-depth scaling — corrected diagnosis, was misdiagnosed as binding
+      overhead.** This entry previously blamed the napi marshalling layer ("4ms @ 8k"). That was
+      **checked and disproven**: `crate/mseg/examples/napi_overhead_probe.rs` runs the identical
+      `recall()` call with zero napi/FFI boundary — `native_query_p50_ms=3.82` vs the napi-measured
+      `4.38`. The gap is ~0.56ms, not the multi-ms cost the old wording implied. The real ~3.8ms is
+      native Rust work inside `recall_hnsw()` (`crud.rs`): `ef = (top_k*24).max(256)` and
+      `rerank_depth = (top_k*6).max(64)` are flat floors that don't scale down for small corpora —
+      at 10k records they're wider than recall@10=1.00 needs, and each rerank candidate is a cold
+      `.vec`-file read. Fix: sweep `MNEME_RERANK_DEPTH` and a corpus-size-aware `ef` at 10k to find
+      the smallest values holding recall@10=1.00 (not yet done — see T1-4's RESULTS.md "honest
+      gaps"), then make the floor scale with `slot_count()` instead of using flat constants.
+      Target: native+napi p50 ≤ 2.26ms @ 10k (LanceDB-tuned's number from T1-4) — re-run both
+      `bench/lancedb/bench_mneme.mjs` and `napi_overhead_probe` after the fix to confirm which
+      layer actually moved.
 - [ ] T1-6: **Docs + 3 quickstarts** (Node, CLI, "replace your local Chroma/LanceDB in 5 lines").
 
 ### ADOPTION GATE (hard, 60-day)
@@ -83,4 +97,7 @@ This is the only 10x no *server* DB can follow us into.
 3. **`.amr` stays vectors-only** → we built a faster Qdrant shard the world already has. The probe (T2-PROBE) is the fork between revolution and forgettable optimization.
 
 ## Next move (this week)
-T1-1 (multi-OS publish — token-gated) + T1-4 (LanceDB benchmark). Cheapest path to the adoption gate.
+T1-4 done — and it corrected T1-5's own diagnosis in the process (napi binding was never the
+bottleneck; ef/rerank-depth floors are). Remaining: T1-1 (multi-OS publish — token-gated, needs an
+NPM_TOKEN GH secret only a human can add) + T1-5 (now scoped to a specific, checkable fix with a
+2.26ms p50 @ 10k target).

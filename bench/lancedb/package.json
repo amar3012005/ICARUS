@@ -1,0 +1,9 @@
+{
+  "name": "mneme-vs-lancedb-bench",
+  "private": true,
+  "type": "module",
+  "description": "ROADMAP.md T1-4 — embedded-to-embedded benchmark: mneme (.amr, napi) vs LanceDB.",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.33.0"
+  }
+}
