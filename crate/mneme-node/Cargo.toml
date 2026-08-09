@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mseg = { path = "../mseg" }
+mneme-bm25 = { path = "../mneme-bm25" }
 napi = { version = "2", default-features = false, features = ["napi6"] }
 napi-derive = "2"
 

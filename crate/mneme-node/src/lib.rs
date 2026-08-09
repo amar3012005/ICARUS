@@ -3,9 +3,7 @@
 //! per-org shard held in the JS object; the JS wrapper (MnemeVectorStore) adapts them to the
 //! async `upsert`/`search` interface HIVEMIND expects.
 
-mod bm25;
-
-use bm25::{bm25_search, Bm25Doc, Bm25Params};
+use mneme_bm25::{bm25_search, Bm25Doc, Bm25Params};
 use mseg::{Filter, MemoryInput, Shard};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;

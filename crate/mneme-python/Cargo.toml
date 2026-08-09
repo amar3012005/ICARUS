@@ -1,0 +1,32 @@
+[package]
+name = "mneme-python"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python binding for mneme -- a memory filesystem for AI agents (per-tenant mmap'd vector + temporal + graph store, plus native BM25 lexical search)."
+
+[lib]
+# cdylib for the Python extension module; rlib so `cargo test` can still run against this crate
+# directly without going through the Python interpreter.
+crate-type = ["cdylib", "rlib"]
+name = "mneme_python"
+
+[dependencies]
+# Same engine the Node binding wraps -- one Rust core, two language bindings, identical on-disk
+# format and identical behavior. Not a reimplementation.
+mseg = { path = "../mseg" }
+mneme-bm25 = { path = "../mneme-bm25" }
+# `extension-module` is DELIBERATELY NOT a default feature here. That feature tells pyo3 not to
+# link libpython (Python provides its own symbols at dlopen time) -- correct for a wheel maturin
+# builds, but it means a plain `cargo build`/`cargo test` cannot produce a runnable binary at all
+# (proved live: adding this crate to the workspace with extension-module always-on broke
+# `cargo test --workspace`, the exact command this repo's CI runs). maturin passes the feature in
+# at build time instead (see pyproject.toml's [tool.maturin] features), so workspace-wide cargo
+# commands keep working and only an actual wheel build enables it.
+#
+# abi3-py38: build against Python's stable ABI (3.8+) instead of a specific minor version, so one
+# compiled wheel works across Python 3.8-3.13+ rather than needing a wheel per minor version.
+pyo3 = { version = "0.22", features = ["abi3-py38"] }
+
+[build-dependencies]

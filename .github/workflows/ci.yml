@@ -68,3 +68,44 @@ jobs:
       # instead of one undifferentiated red X across 29 targets.
       - name: Durability suite (crash safety, compaction, invariants)
         run: cargo test -p mseg --test crash_safety --test compact --test invariants
+
+  # Separate job, not folded into `test`: mneme-python's `extension-module` pyo3 feature cannot
+  # link under plain `cargo build`/`cargo test` (Python provides its own symbols at dlopen time,
+  # so a maturin-style build is required) -- proved locally when adding this crate broke the
+  # `test` job's `cargo test --workspace` until extension-module was moved out of the crate's
+  # default features into maturin's own build-time flag. Building the actual wheel and running
+  # real tests against it here is what keeps that fix honest going forward.
+  python:
+    name: python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: crate/mneme-python
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # langchain-core / llama-index-core are installed here so those integration tests actually
+      # run rather than silently skipping via pytest.importorskip.
+      - name: Install maturin, pytest, and the optional integrations
+        run: pip install maturin pytest langchain-core llama-index-core
+
+      - name: Build wheel and install into this environment
+        run: maturin develop --release
+
+      - name: Python tests
+        run: python -m pytest tests/ -v

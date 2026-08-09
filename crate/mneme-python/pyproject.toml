@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "mneme-python"
+description = "Python binding for mneme -- a memory filesystem for AI agents: per-tenant mmap'd vector + temporal + graph store, plus native BM25 lexical search. Same engine and on-disk format the Node binding wraps."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/amar3012005/ICARUS"
+
+# Neither integration is a hard dependency of the core binding -- both are pure-Python adapters
+# that import their framework lazily (see mneme_integrations/*.py), so importing mneme_python
+# itself never requires langchain or llama-index.
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.1"]
+llamaindex = ["llama-index-core>=0.10"]
+test = ["pytest>=7", "langchain-core>=0.1", "llama-index-core>=0.10"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

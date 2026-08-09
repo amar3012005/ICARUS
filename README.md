@@ -6,7 +6,7 @@
 bi-temporal + graph recall from a single read. 13× faster than a REST vector DB at equal recall,
 7.5× smaller storage, 32× vector compression, zero servers.
 
-`Apache-2.0` · Rust core · Node binding · drop-in for Qdrant
+`Apache-2.0` · Rust core · Node + Python bindings · drop-in for Qdrant
 
 </div>
 
@@ -77,6 +77,61 @@ mneme compact --org acme
 mneme status
 ```
 
+## Quickstart (Python)
+
+Same engine, same on-disk format, same behavior as the Node binding — one Rust core, two
+language bindings, not two implementations.
+
+```bash
+pip install mneme-python
+```
+
+```python
+from mneme_python import MnemeStore
+
+store = MnemeStore("/path/to/data", "org_acme", dim=1024)
+store.insert("user prefers dark mode", embed("user prefers dark mode"), valid_from=0)
+hits = store.recall(embed("ui settings"), top_k=5)  # [MnemeHit(slot_id, score, text), ...]
+```
+
+Full guide, layered recall, graph edges, and framework integrations:
+[`crate/mneme-python/README.md`](./crate/mneme-python/README.md).
+
+## Native BM25 lexical search
+
+The engine's first lexical capability — real document-frequency/IDF statistics (standard Okapi
+BM25), not a substring heuristic. One shared implementation (`mneme-bm25`) used identically by
+both bindings, so scores are not just similar across languages, they are the same number for the
+same corpus and query.
+
+```js
+// Node
+const hits = store.bm25Search('warranty terms', 10);
+```
+```python
+# Python
+hits = store.bm25_search("warranty terms", top_k=10)
+```
+
+Only documents matching at least one query term are returned, ranked best-first. Language-neutral
+tokenization (lowercase, Unicode-alphanumeric split — no stemming, no stopword list, the same
+reasoning the rest of this engine uses to avoid per-language brittle logic). **Known
+limitation**: results are not currently layer-filterable (0=memory/1=evidence/2=cognitive) — the
+underlying `Hit` type doesn't surface a record's layer back out yet. A persistent postings index
+for very large corpora is a natural follow-on, not part of this — this is real IDF-weighted
+ranking over the existing corpus-wide scan.
+
+## Framework integrations (Python)
+
+Optional, lazy-imported adapters — neither is a dependency of the core binding.
+
+```bash
+pip install "mneme-python[langchain]"   # LangChain BaseRetriever
+pip install "mneme-python[llamaindex]"  # LlamaIndex vector store
+```
+
+See [`crate/mneme-python/README.md`](./crate/mneme-python/README.md) for both.
+
 ## What it is / isn't
 
 - **Is:** a per-org vector + temporal + graph-adjacency storage engine. Drop-in for the Qdrant
@@ -109,7 +164,9 @@ mneme/
     mseg/            storage engine: segment, CRUD, HNSW overlay, compact, shard
     mnsw-index/      thin usearch HNSW wrapper
     mpq/             product quantization codebook + ADC + drift
+    mneme-bm25/      pure BM25 scoring -- no Shard, no napi, no pyo3; shared by both bindings
     mneme-node/      napi Node binding + MnemeVectorStore drop-in + CLI
+    mneme-python/    pyo3 Python binding + LangChain/LlamaIndex integrations
     mneme-probe/     P1 proof-of-physics probe
   bench/             reproducible benchmark harness + Qdrant baselines
   install.sh         curl | bash installer
@@ -119,9 +176,14 @@ mneme/
 
 ```bash
 cd crate
-cargo test --workspace          # all suites
+cargo test --workspace          # all suites (mneme-python's extension-module target is excluded
+                                 # from plain cargo builds by design -- see its own README)
 cargo clippy --workspace --all-targets -- -D warnings
 bash ../bench/run_p1.sh          # reproduce the headline benchmark vs Qdrant
+
+cd mneme-python
+pip install maturin && maturin develop --release
+pip install -e ".[test]" && pytest tests/ -v
 ```
 
 ## License
