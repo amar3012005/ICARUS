@@ -146,20 +146,32 @@ impl AsyncIndexer {
         self.failures.load(Ordering::Relaxed)
     }
 
-    /// Bulk-add a batch sequentially in the given order — a DETERMINISTIC graph and thus
-    /// reproducible recall (no run-to-run variance). Used by `enable_hnsw` so recall quality
-    /// is stable. Reserves capacity up front (exclusive), then adds under the read guard. Any
-    /// failed add is surfaced (not silently dropped) so a missing vector can't degrade recall.
+    /// Bulk-add a batch into the graph. Reserves capacity up front (exclusive), then adds under
+    /// the read guard (usearch's `add` is thread-safe for concurrent callers).
+    ///
+    /// Measured on a real 10k×1024 bge-m3 corpus: sequential add takes ~23.9s to build; usearch
+    /// is thread-safe for concurrent `add`, so batches above `PARALLEL_THRESHOLD` add via rayon
+    /// by default — same measurement: ~3.8s (6.1×), with recall@10 unchanged (0.999 at ef=16,
+    /// identical to the sequential-build curve — verified via `examples/ef_sweep.rs`).
+    /// Concurrent adds do NOT produce a byte-identical graph run-to-run (insertion order into the
+    /// HNSW graph affects its shape), so this trades exact reproducibility for build speed; recall
+    /// quality is unaffected. Set `MNEME_BUILD_PARALLEL=0` to force the old sequential/deterministic
+    /// path (e.g. for tests asserting an exact graph layout). Small batches (below threshold) stay
+    /// sequential — thread dispatch overhead isn't worth it at that size.
+    /// A failed add is COUNTED via the shared `failures` counter, never silently dropped, on
+    /// both paths — `add_failures()` still means what its doc says.
     pub fn bulk_add_sequential(&self, batch: &[(u32, Vec<f32>)]) -> Result<()> {
+        const PARALLEL_THRESHOLD: usize = 512;
         let target = self.len() + batch.len();
         ensure_capacity(&self.index, target); // reserve the whole batch up front (no per-add race)
-                                              // MNEME_BUILD_PARALLEL=1 → concurrent add (usearch is thread-safe; ~6× faster build) at
-                                              // the cost of a nondeterministic graph. Default sequential = deterministic/reproducible.
-        if std::env::var("MNEME_BUILD_PARALLEL").as_deref() == Ok("1") {
+        let force_sequential = std::env::var("MNEME_BUILD_PARALLEL").as_deref() == Ok("0");
+        if !force_sequential && batch.len() >= PARALLEL_THRESHOLD {
             use rayon::prelude::*;
             let g = self.index.read().expect("index lock");
             batch.par_iter().for_each(|(id, v)| {
-                let _ = g.add(*id, v);
+                if g.add(*id, v).is_err() {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                }
             });
             return Ok(());
         }
