@@ -74,8 +74,14 @@ build_addon() {
   local node_dir="$ROOT/crate/mneme-node"
   ( cd "$node_dir" && npm install --silent && npx napi build --release ) \
     || die "addon build failed"
-  [ -f "$node_dir/mneme.node" ] || die "mneme.node not produced"
-  ok "Built $node_dir/mneme.node"
+  # napi build names the addon from package.json's napi.name ("singulance-amr"), not "mneme" —
+  # glob for whatever .node napi actually produced instead of hardcoding a name that was never
+  # right (this used to always die here after a successful build; see native.js's own resolver
+  # for the same platform-triple convention).
+  local built_addon
+  built_addon="$(ls "$node_dir"/*.node 2>/dev/null | head -1)"
+  [ -n "$built_addon" ] || die "no .node addon produced in $node_dir"
+  ok "Built $built_addon"
 }
 
 # --- 4. install CLI --------------------------------------------------------
@@ -136,7 +142,9 @@ connect_hivemind() {
 # --- 6. verify -------------------------------------------------------------
 verify() {
   info "Verifying"
-  node -e "require('$ROOT/crate/mneme-node/mneme.node'); console.log('addon loads ok')" \
+  # Load through native.js's own platform-triple resolver — the same path mneme-cli.js uses —
+  # instead of a hardcoded filename, so this check tracks whatever napi actually names the addon.
+  node -e "require('$ROOT/crate/mneme-node/native.js'); console.log('addon loads ok')" \
     || die "addon failed to load"
   ok "mneme installed"
 }
