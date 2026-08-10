@@ -16,9 +16,9 @@ fn load_f32(path: &str, dim: usize) -> Vec<Vec<f32>> {
     let mut out = Vec::with_capacity(n);
     for r in 0..n {
         let mut v = vec![0f32; dim];
-        for c in 0..dim {
+        for (c, slot) in v.iter_mut().enumerate() {
             let o = (r * dim + c) * 4;
-            v[c] = f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+            *slot = f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
         }
         out.push(v);
     }

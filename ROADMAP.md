@@ -24,9 +24,10 @@
 
 Goal: a *real product* people embed, not a demo. This is the asset that gates everything else.
 
-- [ ] T1-1: **Multi-OS publish.** Set a Granular/Automation npm token as the GH `NPM_TOKEN` secret →
-      tag → CI publishes linux-x64/arm64 + win-x64 + mac sub-packages. `npm i singulance-amr` works
-      on every OS, zero toolchain. (Builds already pass in CI; only the token blocks it.)
+- [ ] T1-1: **Multi-OS publish.** `NPM_TOKEN` GH secret is set (confirmed: `gh secret list`) and
+      `v0.1.2` tag pushed. Blocked on GitHub Actions billing (`gh run list` shows the release
+      workflow stuck `queued` for hours — a billing-lock issue on the account, not the workflow or
+      the code). Nothing left to fix here until billing is resolved.
 - [ ] T1-2: **Stable public API + types.** Freeze `MnemeVectorStore` (upsert/search/delete/compact)
       + `.d.ts`. Semver. Document the `.amr` format as an RFC (SPEC.md is the seed).
 - [ ] T1-3: **Filtering parity.** score_threshold (done) + payload field filters + metric choice.
@@ -36,20 +37,25 @@ Goal: a *real product* people embed, not a demo. This is the asset that gates ev
       through their real Node bindings. At matched recall@10=1.00, LanceDB (tuned) is **~1.9×
       faster on query p50** (2.26ms vs mneme's 4.38ms) and **~25% smaller on disk**. Root cause
       investigated (see T1-5 below, corrected) rather than assumed.
-- [ ] T1-5: **HNSW ef/rerank-depth scaling — corrected diagnosis, was misdiagnosed as binding
-      overhead.** This entry previously blamed the napi marshalling layer ("4ms @ 8k"). That was
-      **checked and disproven**: `crate/mseg/examples/napi_overhead_probe.rs` runs the identical
-      `recall()` call with zero napi/FFI boundary — `native_query_p50_ms=3.82` vs the napi-measured
-      `4.38`. The gap is ~0.56ms, not the multi-ms cost the old wording implied. The real ~3.8ms is
-      native Rust work inside `recall_hnsw()` (`crud.rs`): `ef = (top_k*24).max(256)` and
-      `rerank_depth = (top_k*6).max(64)` are flat floors that don't scale down for small corpora —
-      at 10k records they're wider than recall@10=1.00 needs, and each rerank candidate is a cold
-      `.vec`-file read. Fix: sweep `MNEME_RERANK_DEPTH` and a corpus-size-aware `ef` at 10k to find
-      the smallest values holding recall@10=1.00 (not yet done — see T1-4's RESULTS.md "honest
-      gaps"), then make the floor scale with `slot_count()` instead of using flat constants.
-      Target: native+napi p50 ≤ 2.26ms @ 10k (LanceDB-tuned's number from T1-4) — re-run both
-      `bench/lancedb/bench_mneme.mjs` and `napi_overhead_probe` after the fix to confirm which
-      layer actually moved.
+- [x] T1-5: **Fixed — after TWO wrong diagnoses, corrected by real measurement each time, not
+      guessed.** First guess: napi binding (~0.56ms, disproven — see history in
+      `bench/lancedb/RESULTS.md`). Second guess: `crud.rs`'s `ef`/`rerank_depth` — also disproven,
+      by a real sweep (`examples/ef_sweep.rs`, ground-truth recall@10 vs brute force): both swept
+      across their full ranges with **zero latency effect**. The real fixed cost was usearch's own
+      `expansion_search` (`MNEME_HNSW_EFS`, default 400) — a separate, index-build-time knob never
+      touched by either earlier guess, tuned once at 1M scale and never re-validated smaller.
+      **Fix**: `mnsw-index::scaled_efs` now scales EFS by corpus size at index-build time (64 for
+      n≤20k — measured, 4x margin over the lossless floor of 16; 128/256 for 100k/500k — reasoned
+      interpolation, not independently measured; unchanged 400 above 500k — the exact gate-proven
+      value, zero regression risk there). Also found and left informational: `rerank_depth` has a
+      real *recall* floor around 16 (depth=4 drops recall@10 to 0.40) — unrelated to latency.
+      **Result** (napi-level, zero env overrides, real default path): p50 4.38ms → **3.02ms**
+      (−31%), recall@10 unchanged at 1.000. Gap to LanceDB-tuned (2.26ms) narrowed 1.9× → 1.34×.
+      Verified: full workspace `cargo test` + `clippy -D warnings` clean; a dedicated
+      `verify_default_recall.rs` confirms recall on the exact code path a caller hits, not just
+      the sweep's instrumented one. Still open: the remaining ~2.5ms native floor below EFS=16
+      wasn't decomposed further, and the 100k/500k tiers are unmeasured — see
+      `bench/lancedb/RESULTS.md` for the full sweep table and honest gaps.
 - [ ] T1-6: **Docs + 3 quickstarts** (Node, CLI, "replace your local Chroma/LanceDB in 5 lines").
 
 ### ADOPTION GATE (hard, 60-day)
@@ -97,7 +103,9 @@ This is the only 10x no *server* DB can follow us into.
 3. **`.amr` stays vectors-only** → we built a faster Qdrant shard the world already has. The probe (T2-PROBE) is the fork between revolution and forgettable optimization.
 
 ## Next move (this week)
-T1-4 done — and it corrected T1-5's own diagnosis in the process (napi binding was never the
-bottleneck; ef/rerank-depth floors are). Remaining: T1-1 (multi-OS publish — token-gated, needs an
-NPM_TOKEN GH secret only a human can add) + T1-5 (now scoped to a specific, checkable fix with a
-2.26ms p50 @ 10k target).
+T1-1 (multi-OS npm publish) has an `NPM_TOKEN` GitHub secret now — only the GitHub Actions billing
+lock blocks it, not code (see `.github/workflows/release.yml`, already correct). T1-4 and T1-5 are
+both done: the LanceDB benchmark, published honest, drove two rounds of real-measurement-corrected
+diagnosis before landing the actual fix (usearch's `expansion_search`, not the napi binding, not
+`crud.rs`'s own ef/rerank). Remaining Tier-1 item: T1-6 (docs/quickstarts, partially covered by
+README already).

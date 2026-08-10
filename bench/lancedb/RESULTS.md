@@ -79,6 +79,56 @@ these floors).
 specific, evidence-backed one (see ROADMAP.md T1-5, corrected). The LanceDB-tuned p50 (2.26ms) is
 still the number to beat; the fix path just changed from "binding" to "ef/rerank-depth scaling."
 
+## T1-5 resolved — and the "ef/rerank-depth" hypothesis above was ALSO wrong
+
+**Second correction in this document, same discipline as the first.** The "Why" section above
+predicted the fix was scaling `crud.rs`'s `ef`/`rerank_depth` (256/64) down for small corpora.
+That was checked with a real sweep (`crate/mseg/examples/ef_sweep.rs`, ground-truth recall@10 vs
+brute force, not assumed) before writing any fix — and it's wrong too:
+
+```
+hnsw_efs,ef_floor,rerank_depth,recall_at_k,query_p50_us
+400,64,64,1.0000,3631        <- original defaults, matches napi_overhead_probe's 3816us
+400,256,64,1.0000,3631       <- ef_floor swept 32->256: NO EFFECT on latency
+16,64,64,1.0000,2660         <- rerank_depth swept 1->64 at fixed EFS: NO EFFECT either
+16,64,16,1.0000,2503         <- but EFS (usearch's OWN param) swept 400->16: real, ~30% drop
+16,64,4 ,0.4000,2515         <- and rerank_depth<16 DOES cost recall (not latency) — real floor found
+```
+
+Neither `ef` nor `rerank_depth` in `crud.rs` moved latency at all across their full swept ranges.
+The real fixed cost was `MNEME_HNSW_EFS` — usearch's own internal search-expansion parameter
+(`expansion_search`, default 400), a **separate, index-build-time** knob from anything in
+`crud.rs`, never touched by the T1-4 investigation. It was tuned once, at 1M scale (P3 gate:
+recall@10=99.25%), and never re-validated at smaller corpora, where a 400-candidate graph
+expansion over only 10k nodes is enormous overkill.
+
+**Fix shipped** (`mnsw-index/src/lib.rs::scaled_efs`): EFS now scales with corpus size at
+index-build time — 64 for n≤20k (the only tier directly measured; 4x the measured-lossless floor
+of 16, as margin since only one corpus/dim was swept), 128/256 for the 100k/500k tiers (reasoned
+interpolation, not independently measured — re-sweep before trusting those as tightly as the 10k
+number), and **unchanged at 400 above 500k** — the exact value the 1M-scale gate already proved,
+deliberately untouched, zero regression risk there. `MNEME_HNSW_EFS` still overrides explicitly.
+Also found: `rerank_depth` has a real *recall* floor around 16 (not the existing 64 default) —
+depth=4 drops recall@10 to 0.40 — informational, left at 64 since it costs nothing to keep the
+margin (only EFS affects latency).
+
+**Result, napi-level, same benchmark as above, zero env overrides (real default path)**:
+
+| Metric | Before | After | LanceDB-tuned |
+|---|---|---|---|
+| query p50 | 4.38 ms | **3.02 ms** (−31%) | 2.26 ms |
+| recall@10 | 1.000 | **1.000** (unchanged) | 1.000 |
+
+Gap to LanceDB-tuned narrowed from 1.9× to 1.34×. Verified: `cargo test --workspace` +
+`cargo clippy --workspace --all-targets -- -D warnings` both clean after the change; a dedicated
+`examples/verify_default_recall.rs` confirms recall@10=1.0000 on the exact zero-override code path
+a real caller hits, not just the sweep's instrumented one.
+
+**Still open**: the ~2.5ms native floor remaining even at EFS=16 wasn't further decomposed — likely
+inherent usearch graph-traversal cost or per-call fixed overhead below EFS's floor of usefulness.
+The 100k/500k EFS tiers are unmeasured interpolation. LanceDB-tuned (2.26ms) is still faster;
+closing the remaining ~0.76ms gap needs a different investigation, not more of this one.
+
 ## Honest gaps in this run (not hidden)
 
 - Single run, not averaged/repeated — noise band unmeasured.

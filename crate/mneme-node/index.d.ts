@@ -115,6 +115,24 @@ export declare class MnemeStore {
    * slot to resume from (u32::MAX when done). O(page) JS heap instead of O(shard).
    */
   recordsPage(fromSlot: number, limit: number): RecordPage
+  /**
+   * Native BM25 lexical search over every live record's stored text. Full corpus-wide
+   * document-frequency/IDF statistics (see `bm25.rs`), not a substring or prefix heuristic --
+   * this is the engine's first lexical search of any kind. `MnemeStore` previously had vector
+   * recall, graph edges, and temporal operations, and nothing that scored on TEXT at all.
+   *
+   * KNOWN LIMITATION, STATED RATHER THAN HIDDEN: `Hit` does not currently surface a record's
+   * layer, so this scans every live slot regardless of the 0/1/2 layer used by
+   * `insert_layered`/`recall_layer`. A caller needing "evidence only" or "memory only" lexical
+   * search must filter the returned ids against a layer lookup of its own for now; adding a
+   * layer to `Hit` (or a native filtered variant) is the natural follow-up, not done here.
+   *
+   * O(shard) per call: two passes over every live record (corpus stats, then scoring), same
+   * cost shape as the JS-side scan-based lexical lanes this engine's callers already use in
+   * production. A persistent postings index for O(matching-docs) query cost at very large
+   * corpora is a further step, not this one.
+   */
+  bm25Search(query: string, topK: number): Array<MnemeHit>
   /** Number of live memories in the shard. */
   liveCount(): number
   /** Read a slot's typed edges (target, type, weight) — for reconstructing relationship records. */

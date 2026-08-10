@@ -73,6 +73,30 @@ fn opts(dim: usize) -> IndexOptions {
     }
 }
 
+/// T1-5 (ICARUS ROADMAP.md) — usearch's own `expansion_search` (query-time HNSW graph
+/// traversal width) was a flat 400 regardless of corpus size. That default was tuned and
+/// gate-proven at 1M scale (P3: recall@10=99.25%, 1.33ms p50) but never re-validated smaller.
+/// Measured directly (`examples/ef_sweep.rs`, real bge-m3 corpus, ground-truth recall@10 vs
+/// brute force): at 10k vectors, EFS=16 already holds recall@10=1.0000 and EFS=40 cuts p50
+/// from ~3.6ms to ~2.5ms (~30%) with zero recall loss down to EFS=16. `scaled_efs` uses 64 for
+/// that tier — 4x the measured-lossless floor, since only one corpus/dim was swept and a size
+/// tier this small warrants margin, not the exact minimum. The 100k/500k breakpoints are a
+/// reasoned interpolation, NOT independently measured — re-run the sweep at those scales before
+/// trusting them as tightly as the 10k tier. Above 500k, EFS stays at the original 400: that is
+/// the exact value the 1M-scale gate validated, deliberately untouched, zero regression risk.
+/// `MNEME_HNSW_EFS` still overrides unconditionally when set (manual tuning / this sweep tool).
+fn scaled_efs(n: usize) -> usize {
+    if n <= 20_000 {
+        64
+    } else if n <= 100_000 {
+        128
+    } else if n <= 500_000 {
+        256
+    } else {
+        400
+    }
+}
+
 impl MnswIndex {
     /// Create an empty index of dimension `dim`, reserving room for `capacity` vectors.
     pub fn new(dim: usize, capacity: usize) -> Result<MnswIndex> {
@@ -80,6 +104,9 @@ impl MnswIndex {
         index
             .reserve(capacity.max(1))
             .map_err(|e| MnswError::Usearch(e.to_string()))?;
+        if std::env::var("MNEME_HNSW_EFS").is_err() {
+            index.change_expansion_search(scaled_efs(capacity));
+        }
         Ok(MnswIndex { index, dim })
     }
 
@@ -170,6 +197,11 @@ impl MnswIndex {
                     .ok_or_else(|| MnswError::Usearch("non-utf8 path".into()))?,
             )
             .map_err(|e| MnswError::Usearch(e.to_string()))?;
+        // Same T1-5 size-scaled EFS as MnswIndex::new — capacity isn't known until after load(),
+        // so it's applied here via the runtime setter instead of at construction.
+        if std::env::var("MNEME_HNSW_EFS").is_err() {
+            index.change_expansion_search(scaled_efs(index.size()));
+        }
         Ok(MnswIndex { index, dim })
     }
 }

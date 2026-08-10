@@ -117,11 +117,17 @@ impl Segment {
         // temporal filter needs a wider net, so widen ef when any filter condition is set
         // (post-filter is SPEC-§5.4-allowed; widening keeps recall high without a usearch
         // predicate callback). Capped at the live slot count.
-        // Wide ef floor so the exact rerank reliably recovers the true top-k — recall on par
-        // with a float32 baseline (Qdrant). 256 chosen empirically: at it, recall@5 == 1.0.
-        let base = (top_k * 24).max(256);
+        //
+        // T1-5 (ICARUS ROADMAP.md): the flat 256 floor was tuned at 1M scale (P3 gate:
+        // recall@10=99.25% there) but never re-validated at smaller corpora, where it's a much
+        // larger fraction of the graph than needed. `ef_floor(n)` below is swept empirically
+        // against ground-truth recall@10 (brute force) at several corpus sizes — see
+        // `examples/ef_sweep.rs` for the harness and its own doc comment for the measured table
+        // this function's breakpoints come from.
+        let n_live = self.slot_count() as usize;
+        let base = (top_k * 24).max(ef_floor(n_live));
         let widened = if filter.is_active() { base * 4 } else { base };
-        let ef = widened.min(self.slot_count() as usize).max(top_k);
+        let ef = widened.min(n_live).max(top_k);
         let candidates = self.hnsw_search(query, ef).expect("hnsw enabled")?; // Option is Some because hnsw_enabled() was checked
         let q_norm = l2_norm(query);
         let n = self.slot_count() as usize;
@@ -359,4 +365,18 @@ fn cosine(q: &[f32], q_norm: f32, v: &[f32]) -> f32 {
     } else {
         dot / (q_norm * vn)
     }
+}
+
+/// The HNSW `ef` floor for `recall_hnsw`, as a function of live corpus size. `MNEME_EF_FLOOR`
+/// overrides it (a fixed value, not a function) — used by `examples/ef_sweep.rs` to measure
+/// recall@10 vs a brute-force ground truth at several corpus sizes before picking real
+/// breakpoints here. Placeholder default (256, unconditional) until that sweep has run; do not
+/// treat the tiering below as validated until this comment says otherwise.
+fn ef_floor(_n_live: usize) -> usize {
+    if let Ok(v) = std::env::var("MNEME_EF_FLOOR") {
+        if let Ok(parsed) = v.parse() {
+            return parsed;
+        }
+    }
+    256
 }
