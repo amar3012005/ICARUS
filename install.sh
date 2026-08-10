@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# mneme installer — curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
+# ICARUS installer — curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 #
-# Installs the mneme memory filesystem locally: ensures toolchain, builds the native addon,
-# installs the `mneme` CLI to ~/.mneme, and (optionally) connects your HIVEMIND account.
+# Installs ICARUS (the .amr memory filesystem) locally: ensures toolchain, builds the native
+# addon, installs the `icarus` CLI to ~/.icarus, and (optionally) connects your HIVEMIND account.
 # Idempotent — safe to re-run.
+#
+# One name, on purpose: the product is ICARUS end to end — the command you type, the install
+# dir, the env vars below. "mneme" only remains as an internal engine/crate name under the hood
+# (crate/mneme-node etc.) — nothing a user runs or configures should say it.
 set -euo pipefail
 
-REPO="${MNEME_REPO:-https://github.com/amar3012005/ICARUS}"
-BRANCH="${MNEME_BRANCH:-main}"
-HOME_DIR="${MNEME_HOME:-$HOME/.mneme}"
+REPO="${ICARUS_REPO:-https://github.com/amar3012005/ICARUS}"
+BRANCH="${ICARUS_BRANCH:-main}"
+HOME_DIR="${ICARUS_HOME:-$HOME/.icarus}"
 SRC_DIR="$HOME_DIR/src"
 ROOT="$SRC_DIR" # dir containing crate/ — set by fetch_src (monorepo: $SRC_DIR/mneme, standalone: $SRC_DIR)
 DATA_DIR="$HOME_DIR/data"
@@ -22,12 +26,12 @@ die()  { c "31" "✗ $1"; exit 1; }
 
 banner() {
   c "35" "
-   ███╗   ███╗███╗   ██╗███████╗███╗   ███╗███████╗
-   ████╗ ████║████╗  ██║██╔════╝████╗ ████║██╔════╝
-   ██╔████╔██║██╔██╗ ██║█████╗  ██╔████╔██║█████╗
-   ██║╚██╔╝██║██║╚██╗██║██╔══╝  ██║╚██╔╝██║██╔══╝
-   ██║ ╚═╝ ██║██║ ╚████║███████╗██║ ╚═╝ ██║███████╗
-   ╚═╝     ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝╚══════╝
+   ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗
+   ██║██╔════╝██╔══██╗██╔══██╗██║   ██║██╔════╝
+   ██║██║     ███████║██████╔╝██║   ██║███████╗
+   ██║██║     ██╔══██║██╔══██╗██║   ██║╚════██║
+   ██║╚██████╗██║  ██║██║  ██║╚██████╔╝███████║
+   ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
    memory filesystem for AI agents — one file per tenant"
 }
 
@@ -87,12 +91,12 @@ build_addon() {
 # --- 4. install CLI --------------------------------------------------------
 install_cli() {
   local node_dir="$ROOT/crate/mneme-node"
-  cat > "$BIN_DIR/mneme" <<EOF
+  cat > "$BIN_DIR/icarus" <<EOF
 #!/usr/bin/env bash
 exec node "$node_dir/mneme-cli.js" "\$@"
 EOF
-  chmod +x "$BIN_DIR/mneme"
-  ok "Installed CLI → $BIN_DIR/mneme"
+  chmod +x "$BIN_DIR/icarus"
+  ok "Installed CLI → $BIN_DIR/icarus"
 
   # add to PATH if not present
   local rc; rc="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && rc="$HOME/.bashrc"
@@ -127,15 +131,15 @@ connect_hivemind() {
   # only prompt when interactive; piping `| bash` is non-interactive, so skip gracefully.
   if [ ! -t 0 ]; then
     warn "Non-interactive install — skipping HIVEMIND connect."
-    echo "    Run later:  mneme connect"
+    echo "    Run later:  icarus connect"
     return 0
   fi
   printf '\n'
-  c "36" "Connect your HIVEMIND account now? mneme can sync recall with HIVEMIND."
+  c "36" "Connect your HIVEMIND account now? ICARUS can sync recall with HIVEMIND."
   read -r -p "  Connect? [y/N] " ans
   case "$ans" in
     y|Y) node "$ROOT/crate/mneme-node/mneme-cli.js" connect ;;
-    *)   echo "    Skipped. Run later:  mneme connect" ;;
+    *)   echo "    Skipped. Run later:  icarus connect" ;;
   esac
 }
 
@@ -146,7 +150,7 @@ verify() {
   # instead of a hardcoded filename, so this check tracks whatever napi actually names the addon.
   node -e "require('$ROOT/crate/mneme-node/native.js'); console.log('addon loads ok')" \
     || die "addon failed to load"
-  ok "mneme installed"
+  ok "ICARUS installed"
 }
 
 main() {
@@ -159,7 +163,7 @@ main() {
   verify
   connect_hivemind
   printf '\n'
-  c "32" "Done. Try:  mneme status"
+  c "32" "Done. Try:  icarus status"
   c "90" "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
 }
 

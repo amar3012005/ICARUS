@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// mneme CLI — ingest folders, recall, compact, status, connect HIVEMIND.
+// icarus CLI — ingest folders, recall, compact, status, connect HIVEMIND.
+// (Filename/dir stay "mneme" — the internal engine/crate name — but every string a user sees
+// says "icarus", matching the CLI binary install.sh actually installs.)
 // Zero npm deps beyond the native addon; embeddings via the configured LiteLLM gateway (bge-m3).
 
 const fs = require('fs');
@@ -9,7 +11,7 @@ const os = require('os');
 const readline = require('readline');
 const { MnemeStore } = require('./index.js');
 
-const HOME = process.env.MNEME_HOME || path.join(os.homedir(), '.mneme');
+const HOME = process.env.ICARUS_HOME || process.env.MNEME_HOME || path.join(os.homedir(), '.icarus');
 const CFG_PATH = path.join(HOME, 'config.json');
 
 function loadCfg() {
@@ -81,7 +83,7 @@ function walkText(dir) {
 async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
-  if (!dir) throw new Error('usage: mneme ingest <dir> --org <name>');
+  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name>');
   const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
   const files = walkText(dir);
   console.log(`ingesting ${files.length} files → org "${org}"`);
@@ -107,7 +109,7 @@ async function cmdRecall(flags, cfg) {
   const q = flags._[0];
   const org = flags.org || 'default';
   const k = Number(flags.k || 5);
-  if (!q) throw new Error('usage: mneme recall "<query>" --org <name>');
+  if (!q) throw new Error('usage: icarus recall "<query>" --org <name>');
   const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
   const [qv] = await embed([q], cfg);
   store.enableHnsw();
@@ -120,13 +122,13 @@ async function cmdRecall(flags, cfg) {
 }
 
 function cmdStatus(_flags, cfg) {
-  console.log(`mneme  data: ${cfg.dataRoot}  dim: ${cfg.dim}`);
+  console.log(`icarus  data: ${cfg.dataRoot}  dim: ${cfg.dim}`);
   console.log(`HIVEMIND: ${cfg.hivemind && cfg.hivemind.connected ? 'connected' : 'not connected'}`);
   let orgs = [];
   try {
     orgs = fs.readdirSync(cfg.dataRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
   } catch (_) {}
-  if (!orgs.length) return console.log('no shards yet — run: mneme ingest <dir> --org <name>');
+  if (!orgs.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
   console.log(`\nshards:`);
   for (const o of orgs) {
     const dir = path.join(cfg.dataRoot, o.name);
@@ -152,8 +154,8 @@ function ask(q) {
 
 async function cmdConnect(_flags, cfg) {
   const base = process.env.HIVEMIND_URL || 'https://hivemind.blaiq.ai';
-  console.log(`\nConnect mneme ↔ HIVEMIND`);
-  console.log(`  1. Open: ${base}/settings/connections (authorize "mneme local")`);
+  console.log(`\nConnect ICARUS ↔ HIVEMIND`);
+  console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!token) return console.log('  skipped.');
@@ -174,15 +176,15 @@ async function main() {
       case 'compact': cmdCompact(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
       default:
-        console.log(`amr — SINGULANCE memory filesystem CLI
+        console.log(`icarus — memory filesystem CLI (the .amr engine)
 
-  amr ingest <dir> --org <name>     extract + embed + store a folder
-  amr recall "<query>" --org <name> [--k 5]
-  amr compact --org <name>          reclaim deleted memories' bytes
-  amr status                        shards + disk usage
-  amr connect                       link your HIVEMIND account
+  icarus ingest <dir> --org <name>     extract + embed + store a folder
+  icarus recall "<query>" --org <name> [--k 5]
+  icarus compact --org <name>          reclaim deleted memories' bytes
+  icarus status                        shards + disk usage
+  icarus connect                       link your HIVEMIND account
 
-  env: LITELLM_API_KEY (embeddings), MNEME_HOME (default ~/.mneme)`);
+  env: LITELLM_API_KEY (embeddings), ICARUS_HOME (default ~/.icarus)`);
     }
   } catch (e) {
     console.error('✗', e.message);
