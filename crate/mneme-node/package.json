@@ -5,7 +5,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "bin": {
-    "amr": "mneme-cli.js"
+    "icarus": "mneme-cli.js"
   },
   "files": [
     "index.js",
