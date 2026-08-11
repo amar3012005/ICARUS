@@ -28,7 +28,19 @@ function platformPackages() {
 }
 
 let native;
-for (const p of localCandidates()) {
+// Bun single-file executables (`bun build --compile`) can only embed a native addon that's
+// required via a LITERAL string — Bun's bundler statically scans for exactly that pattern, and
+// the dynamic existsSync/require(p) loop below is invisible to it. This branch is a no-op under
+// plain Node (`typeof Bun` is undefined there), so the existing npm/node resolution below is
+// completely unchanged for every non-Bun caller.
+if (typeof Bun !== 'undefined') {
+  try {
+    native = require('./singulance-amr.node');
+  } catch (_) {
+    /* fall through to the normal resolution below (e.g. running under Bun but not compiled) */
+  }
+}
+for (const p of native ? [] : localCandidates()) {
   if (existsSync(p)) {
     native = require(p);
     break;

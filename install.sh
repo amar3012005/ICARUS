@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # ICARUS installer — curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 #
-# Installs ICARUS (the .amr memory filesystem) locally: ensures toolchain, builds the native
-# addon, installs the `icarus` CLI to ~/.icarus, and (optionally) connects your HIVEMIND account.
+# Installs ICARUS (the .amr memory filesystem) locally. On a platform with a prebuilt release
+# binary, this downloads ONE self-contained executable (Rust engine + Node runtime bundled via
+# `bun build --compile`) and runs it directly — no git, no Node.js, no Rust/cargo required on
+# the target machine at all. On any other platform it falls back to the original source-build
+# path (needs git + Node >=18, auto-installs Rust via rustup if missing).
 # Idempotent — safe to re-run.
 #
 # One name, on purpose: the product is ICARUS end to end — the command you type, the install
@@ -12,11 +15,13 @@ set -euo pipefail
 
 REPO="${ICARUS_REPO:-https://github.com/amar3012005/ICARUS}"
 BRANCH="${ICARUS_BRANCH:-main}"
+RELEASE_TAG="${ICARUS_RELEASE_TAG:-latest}"
 HOME_DIR="${ICARUS_HOME:-$HOME/.icarus}"
 SRC_DIR="$HOME_DIR/src"
 ROOT="$SRC_DIR" # dir containing crate/ — set by fetch_src (monorepo: $SRC_DIR/mneme, standalone: $SRC_DIR)
 DATA_DIR="$HOME_DIR/data"
 BIN_DIR="$HOME_DIR/bin"
+USED_BINARY=0 # 1 once the prebuilt-binary path succeeds — later steps skip the source build
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 info() { c "36" "▸ $1"; }
@@ -35,9 +40,55 @@ banner() {
    memory filesystem for AI agents — one file per tenant"
 }
 
-# --- 1. preflight ----------------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1; }
 
+# --- 0. prebuilt single-binary path (preferred) -----------------------------
+# Asset naming: icarus-<os>-<arch>  (e.g. icarus-linux-x64, icarus-darwin-arm64)
+binary_asset_name() {
+  local os arch
+  case "$(uname -s)" in
+    Linux)  os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) return 1 ;; # Windows/other: no prebuilt binary yet, fall back to source build
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) return 1 ;;
+  esac
+  echo "icarus-${os}-${arch}"
+}
+
+try_binary_install() {
+  local asset url
+  asset="$(binary_asset_name)" || { warn "no prebuilt binary for $(uname -s)/$(uname -m) — building from source"; return 1; }
+  if [ "$RELEASE_TAG" = "latest" ]; then
+    url="${REPO}/releases/latest/download/${asset}"
+  else
+    url="${REPO}/releases/download/${RELEASE_TAG}/${asset}"
+  fi
+  info "Downloading prebuilt binary ($asset)"
+  mkdir -p "$HOME_DIR" "$DATA_DIR" "$BIN_DIR"
+  if ! curl -fsSL "$url" -o "$BIN_DIR/icarus.tmp"; then
+    warn "prebuilt binary not available at $url — building from source instead"
+    rm -f "$BIN_DIR/icarus.tmp"
+    return 1
+  fi
+  chmod +x "$BIN_DIR/icarus.tmp"
+  # sanity check before committing to this path — a corrupt/incompatible download must not
+  # silently replace a working install
+  if ! "$BIN_DIR/icarus.tmp" status >/dev/null 2>&1; then
+    warn "downloaded binary failed to run — building from source instead"
+    rm -f "$BIN_DIR/icarus.tmp"
+    return 1
+  fi
+  mv "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus"
+  ok "Installed CLI → $BIN_DIR/icarus (single binary, no toolchain needed)"
+  USED_BINARY=1
+  return 0
+}
+
+# --- 1. preflight (source-build fallback only) ------------------------------
 ensure_toolchain() {
   info "Checking toolchain"
   if ! need git; then die "git is required (install it first)"; fi
@@ -55,7 +106,7 @@ ensure_toolchain() {
   ok "git $(git --version | awk '{print $3}'), node $(node -v), cargo $(cargo --version | awk '{print $2}')"
 }
 
-# --- 2. fetch source -------------------------------------------------------
+# --- 2. fetch source (source-build fallback only) ---------------------------
 fetch_src() {
   mkdir -p "$HOME_DIR" "$DATA_DIR" "$BIN_DIR"
   if [ -d "$SRC_DIR/.git" ]; then
@@ -72,7 +123,7 @@ fetch_src() {
   ok "Source at $SRC_DIR"
 }
 
-# --- 3. build addon --------------------------------------------------------
+# --- 3. build addon (source-build fallback only) ----------------------------
 build_addon() {
   info "Building native addon (this takes ~1-2 min the first time)"
   local node_dir="$ROOT/crate/mneme-node"
@@ -88,7 +139,7 @@ build_addon() {
   ok "Built $built_addon"
 }
 
-# --- 4. install CLI --------------------------------------------------------
+# --- 4. install CLI (source-build fallback only) ----------------------------
 install_cli() {
   local node_dir="$ROOT/crate/mneme-node"
   cat > "$BIN_DIR/icarus" <<EOF
@@ -97,20 +148,9 @@ exec node "$node_dir/mneme-cli.js" "\$@"
 EOF
   chmod +x "$BIN_DIR/icarus"
   ok "Installed CLI → $BIN_DIR/icarus"
-
-  # add to PATH if not present
-  local rc; rc="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && rc="$HOME/.bashrc"
-  if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    if [ -w "$rc" ] || [ ! -e "$rc" ]; then
-      echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$rc"
-      warn "Added $BIN_DIR to PATH in $rc — run: source $rc"
-    else
-      warn "Add to PATH manually: export PATH=\"$BIN_DIR:\$PATH\""
-    fi
-  fi
 }
 
-# --- 5. config + HIVEMIND OAuth (optional) ---------------------------------
+# --- 5. config + PATH + HIVEMIND OAuth (both paths) -------------------------
 write_config() {
   local cfg="$HOME_DIR/config.json"
   [ -f "$cfg" ] || cat > "$cfg" <<EOF
@@ -127,6 +167,18 @@ EOF
   ok "Config → $cfg"
 }
 
+ensure_path() {
+  local rc; rc="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && rc="$HOME/.bashrc"
+  if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
+    if [ -w "$rc" ] || [ ! -e "$rc" ]; then
+      echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$rc"
+      warn "Added $BIN_DIR to PATH in $rc — run: source $rc"
+    else
+      warn "Add to PATH manually: export PATH=\"$BIN_DIR:\$PATH\""
+    fi
+  fi
+}
+
 connect_hivemind() {
   # only prompt when interactive; piping `| bash` is non-interactive, so skip gracefully.
   if [ ! -t 0 ]; then
@@ -138,33 +190,49 @@ connect_hivemind() {
   c "36" "Connect your HIVEMIND account now? ICARUS can sync recall with HIVEMIND."
   read -r -p "  Connect? [y/N] " ans
   case "$ans" in
-    y|Y) node "$ROOT/crate/mneme-node/mneme-cli.js" connect ;;
+    y|Y) "$BIN_DIR/icarus" connect ;;
     *)   echo "    Skipped. Run later:  icarus connect" ;;
   esac
 }
 
-# --- 6. verify -------------------------------------------------------------
+# --- 6. verify (both paths) --------------------------------------------------
 verify() {
   info "Verifying"
-  # Load through native.js's own platform-triple resolver — the same path mneme-cli.js uses —
-  # instead of a hardcoded filename, so this check tracks whatever napi actually names the addon.
-  node -e "require('$ROOT/crate/mneme-node/native.js'); console.log('addon loads ok')" \
-    || die "addon failed to load"
+  if [ "$USED_BINARY" = "1" ]; then
+    "$BIN_DIR/icarus" status >/dev/null 2>&1 || die "binary failed to run"
+  else
+    # Load through native.js's own platform-triple resolver — the same path mneme-cli.js uses —
+    # instead of a hardcoded filename, so this check tracks whatever napi actually names the addon.
+    node -e "require('$ROOT/crate/mneme-node/native.js'); console.log('addon loads ok')" \
+      || die "addon failed to load"
+  fi
   ok "ICARUS installed"
 }
 
 main() {
   banner
-  ensure_toolchain
-  fetch_src
-  build_addon
-  install_cli
-  write_config
-  verify
-  connect_hivemind
+  if try_binary_install; then
+    write_config
+    ensure_path
+    verify
+    connect_hivemind
+  else
+    ensure_toolchain
+    fetch_src
+    build_addon
+    install_cli
+    write_config
+    ensure_path
+    verify
+    connect_hivemind
+  fi
   printf '\n'
   c "32" "Done. Try:  icarus status"
-  c "90" "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
+  if [ "$USED_BINARY" = "1" ]; then
+    c "90" "Docs: ${REPO}#readme"
+  else
+    c "90" "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
+  fi
 }
 
 main "$@"
