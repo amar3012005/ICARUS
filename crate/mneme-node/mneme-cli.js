@@ -1,35 +1,22 @@
 #!/usr/bin/env node
 'use strict';
-// icarus CLI — ingest folders, recall, compact, status, connect HIVEMIND.
+// icarus CLI — ingest folders, recall, compact, status, connect HIVEMIND, MCP server.
 // (Filename/dir stay "mneme" — the internal engine/crate name — but every string a user sees
 // says "icarus", matching the CLI binary install.sh actually installs.)
-// Zero npm deps beyond the native addon; embeddings via the configured LiteLLM gateway (bge-m3).
-
+// Zero npm deps beyond the native addon (and @modelcontextprotocol/sdk for `mcp-serve` only);
+// embeddings via the configured LiteLLM gateway (bge-m3).
+//
+// Shared config/embed/ingest/recall logic lives in cli-lib.js — mcp-serve.js requires the SAME
+// module, so the CLI and the MCP server can never silently drift onto two different behaviors.
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const readline = require('readline');
-const { MnemeStore } = require('./index.js');
-
-const HOME = process.env.ICARUS_HOME || process.env.MNEME_HOME || path.join(os.homedir(), '.icarus');
-const CFG_PATH = path.join(HOME, 'config.json');
-
-function loadCfg() {
-  try {
-    return JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
-  } catch (_) {
-    return {
-      dataRoot: path.join(HOME, 'data'),
-      dim: 1024,
-      embeddings: { endpoint: process.env.LITELLM_BASE_URL || 'https://api.blaiq.ai/v1', model: 'bge-m3' },
-      hivemind: { connected: false },
-    };
-  }
-}
-function saveCfg(cfg) {
-  fs.mkdirSync(HOME, { recursive: true });
-  fs.writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2));
-}
+// Lazy: `mcp install`/`status`/`connect` never touch a shard, so they must not be forced to
+// load the native addon just because this file was required.
+function getMnemeStore() { return require('./index.js').MnemeStore; }
+const {
+  CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, statusReport,
+} = require('./cli-lib.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
 // original "consume the next token as this flag's value" behavior unchanged, so `--k 5`,
@@ -56,51 +43,11 @@ function parseFlags(args) {
   return out;
 }
 
-async function embed(texts, cfg) {
-  const key = process.env.LITELLM_API_KEY;
-  if (!key) throw new Error('set LITELLM_API_KEY for embeddings (bge-m3 gateway)');
-  const res = await fetch(`${cfg.embeddings.endpoint}/embeddings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: cfg.embeddings.model, input: texts }),
-  });
-  if (!res.ok) throw new Error(`embedding API ${res.status}: ${await res.text()}`);
-  const j = await res.json();
-  return j.data.map((d) => {
-    const v = Float32Array.from(d.embedding);
-    let n = 0;
-    for (const x of v) n += x * x;
-    n = Math.sqrt(n) || 1;
-    for (let i = 0; i < v.length; i++) v[i] /= n; // L2-normalize for cosine
-    return v;
-  });
-}
-
-function chunk(text, size = 900) {
-  const words = text.split(/\s+/);
-  const out = [];
-  for (let i = 0; i < words.length; i += size) out.push(words.slice(i, i + size).join(' '));
-  return out.filter((c) => c.trim().length > 20);
-}
-
-function walkText(dir) {
-  const exts = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.log']);
-  const files = [];
-  (function rec(d) {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) rec(p);
-      else if (exts.has(path.extname(e.name).toLowerCase())) files.push(p);
-    }
-  })(dir);
-  return files;
-}
-
 async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
   if (!dir) throw new Error('usage: icarus ingest <dir> --org <name>');
-  const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   const files = walkText(dir);
   console.log(`ingesting ${files.length} files → org "${org}"`);
   let n = 0;
@@ -127,7 +74,7 @@ async function cmdRecall(flags, cfg) {
   const k = Number(flags.k || 5);
   const usePq = flags.pq !== undefined;
   if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--pq]');
-  const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   // Check --pq's precondition BEFORE spending an embedding API call on a request that's
   // going to fail anyway.
   if (usePq && !store.pqTrained()) {
@@ -149,27 +96,19 @@ async function cmdRecall(flags, cfg) {
 }
 
 function cmdStatus(_flags, cfg) {
-  console.log(`icarus  data: ${cfg.dataRoot}  dim: ${cfg.dim}`);
-  console.log(`HIVEMIND: ${cfg.hivemind && cfg.hivemind.connected ? 'connected' : 'not connected'}`);
-  let orgs = [];
-  try {
-    orgs = fs.readdirSync(cfg.dataRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
-  } catch (_) {}
-  if (!orgs.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
+  const s = statusReport(cfg);
+  console.log(`icarus  data: ${s.dataRoot}  dim: ${s.dim}`);
+  console.log(`HIVEMIND: ${s.hivemindConnected ? 'connected' : 'not connected'}`);
+  if (!s.shards.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
   console.log(`\nshards:`);
-  for (const o of orgs) {
-    const dir = path.join(cfg.dataRoot, o.name);
-    let bytes = 0;
-    for (const f of fs.readdirSync(dir)) {
-      try { bytes += fs.statSync(path.join(dir, f)).size; } catch (_) {}
-    }
-    console.log(`  ${o.name.padEnd(24)} ${(bytes / 1e6).toFixed(2)} MB on disk`);
+  for (const sh of s.shards) {
+    console.log(`  ${sh.org.padEnd(24)} ${(sh.bytesOnDisk / 1e6).toFixed(2)} MB on disk`);
   }
 }
 
 function cmdCompact(flags, cfg) {
   const org = flags.org || 'default';
-  const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   const reclaimed = store.compact();
   console.log(`✓ compacted ${org}: reclaimed ${(reclaimed / 1e3).toFixed(1)} KB`);
 }
@@ -181,7 +120,7 @@ function cmdCompact(flags, cfg) {
 function cmdTrainPq(flags, cfg) {
   const org = flags.org || 'default';
   const seed = Number(flags.seed || 42);
-  const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   const live = store.liveCount();
   if (!live) throw new Error(`org "${org}" has no memories yet — nothing to train on`);
   console.log(`training PQ codebook for "${org}" (${live} live vectors, seed=${seed})...`);
@@ -207,6 +146,16 @@ async function cmdConnect(_flags, cfg) {
   console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
 }
 
+async function cmdMcpServe(_flags, _cfg) {
+  // Lazy require: @modelcontextprotocol/sdk is only needed for this one subcommand, so every
+  // other command (ingest/recall/status/...) stays dependency-free at require-time.
+  await require('./mcp-serve.js').run();
+}
+
+async function cmdMcpInstall(flags, _cfg) {
+  await require('./mcp-install.js').run(flags);
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
@@ -219,6 +168,14 @@ async function main() {
       case 'compact': cmdCompact(flags, cfg); break;
       case 'train-pq': cmdTrainPq(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
+      case 'mcp-serve': await cmdMcpServe(flags, cfg); break;
+      case 'mcp': {
+        const sub = flags._[0];
+        if (sub === 'install') await cmdMcpInstall(flags, cfg);
+        else if (sub === 'serve') await cmdMcpServe(flags, cfg);
+        else throw new Error('usage: icarus mcp <install|serve>');
+        break;
+      }
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -229,6 +186,10 @@ async function main() {
                                         train PQ codebook -> enables --pq recall (see below)
   icarus status                        shards + disk usage
   icarus connect                       link your HIVEMIND account
+  icarus mcp install                   register icarus as an MCP server in every coding
+                                        agent found on this machine (Claude Code, Codex, Cursor)
+  icarus mcp serve                     run the MCP server directly (stdio) — what the agents
+                                        installed above actually launch
 
   --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
   upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW

@@ -1,7 +1,7 @@
 {
   "name": "singulance-amr",
   "version": "0.1.1",
-  "description": "SINGULANCE AMR \u2014 a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store in the .amr format. Drop-in for Qdrant.",
+  "description": "SINGULANCE AMR — a memory filesystem for AI agents. Per-tenant mmap'd vector + temporal + graph store in the .amr format. Drop-in for Qdrant.",
   "main": "index.js",
   "types": "index.d.ts",
   "bin": {
@@ -12,6 +12,9 @@
     "index.d.ts",
     "native.js",
     "mneme-cli.js",
+    "cli-lib.js",
+    "mcp-serve.js",
+    "mcp-install.js",
     "*.node",
     "README.md"
   ],
@@ -58,10 +61,14 @@
     "@napi-rs/cli": "^2.18.4"
   },
   "optionalDependencies": {
-    "singulance-amr-win32-x64-msvc": "0.1.0",
-    "singulance-amr-darwin-x64": "0.1.0",
-    "singulance-amr-linux-x64-gnu": "0.1.0",
     "singulance-amr-darwin-arm64": "0.1.0",
-    "singulance-amr-linux-arm64-gnu": "0.1.0"
+    "singulance-amr-darwin-x64": "0.1.0",
+    "singulance-amr-linux-arm64-gnu": "0.1.0",
+    "singulance-amr-linux-x64-gnu": "0.1.0",
+    "singulance-amr-win32-x64-msvc": "0.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
   }
 }
