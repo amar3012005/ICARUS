@@ -168,7 +168,17 @@ EOF
 }
 
 ensure_path() {
-  local rc; rc="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && rc="$HOME/.bashrc"
+  # `curl | bash` always runs THIS script under bash, regardless of the user's actual login
+  # shell — so checking $BASH_VERSION here checks the wrong thing and picks .bashrc even for a
+  # zsh user (the macOS default since Catalina), leaving `icarus` silently unreachable after a
+  # "successful" install. $SHELL is the user's configured login shell, inherited from the
+  # parent process that ran this pipe — check THAT instead.
+  local rc
+  case "$(basename "${SHELL:-}")" in
+    zsh) rc="$HOME/.zshrc" ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *) rc="$HOME/.profile" ;;
+  esac
   if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
     if [ -w "$rc" ] || [ ! -e "$rc" ]; then
       echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$rc"
