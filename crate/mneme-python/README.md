@@ -48,6 +48,20 @@ hits = store.bm25_search("warranty terms", top_k=10)
 # [MnemeHit(slot_id=.., score=.., text=..), ...] -- best match first, non-matches absent
 ```
 
+### PQ/ADC recall — an alternative to HNSW, not a universal upgrade
+
+```python
+store.train_pq(seed=42)       # one-time, blocks for its duration -- call after a bulk load
+hits = store.recall_pq(query_vec, top_k=5)  # raises ValueError if train_pq() hasn't run
+```
+
+Real, measured tradeoff (bge-m3, see `mneme/bench/RESULTS.md`): at 10k vectors PQ beats
+`enable_hnsw()` on both build time and query latency at equal recall; at 100k it still builds
+~6x faster but queries ~3x slower at equal recall (PQ scans every live code at O(n) with a cheap
+per-item cost; HNSW's near-O(log n) traversal wins once the shard grows). Good fit: shards you
+rebuild often — dev/test, small orgs, frequently-retrained data. Measure your own shard size
+before reaching for this over `enable_hnsw()` at real scale.
+
 ### Layers, graph edges, lifecycle
 
 ```python

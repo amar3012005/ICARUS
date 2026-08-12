@@ -121,6 +121,53 @@ impl MnemeStore {
         self.shard.segment().enable_hnsw().map_err(to_py_err)
     }
 
+    /// Train this shard's PQ (Product Quantization) codebook and encode every live vector into
+    /// its compact code, enabling `recall_pq()`. Deterministic given `seed` (same seed -> same
+    /// codebook -> same recall_pq results). No implicit auto-train — this is the only way to
+    /// make `pq_trained()` true, so a caller always knows exactly when the training cost was
+    /// paid. Blocks for its full duration (k-means over every live vector) — call it after a
+    /// bulk load or from a background job, not on a per-request path.
+    ///
+    /// Real, measured tradeoff (bge-m3, see mneme/bench/RESULTS.md) vs `enable_hnsw()`: at 10k
+    /// vectors PQ wins BOTH build time and query latency at equal recall; at 100k it still
+    /// builds ~6x faster but queries ~3x slower at equal recall (PQ stays O(n) per query with a
+    /// cheap per-item cost; HNSW's near-O(log n) traversal wins as the shard grows). Good fit:
+    /// shards you rebuild often (dev/test, small orgs). Measure your own shard size before
+    /// choosing this over `enable_hnsw()` at real scale.
+    fn train_pq(&mut self, seed: u64) -> PyResult<()> {
+        self.shard.segment().train_pq(seed).map_err(to_py_err)?;
+        Ok(())
+    }
+
+    /// True if `train_pq()` has run at least once for this shard.
+    fn pq_trained(&mut self) -> bool {
+        self.shard.segment().pq_trained()
+    }
+
+    /// PQ/ADC-backed recall — see `train_pq()`'s docstring for the real tradeoff before
+    /// reaching for this over `recall()`. FAILS CLOSED: raises `ValueError` if `train_pq()`
+    /// hasn't run yet, rather than silently falling back to a different search.
+    fn recall_pq(&mut self, query: Vec<f32>, top_k: usize) -> PyResult<Vec<MnemeHit>> {
+        if !self.shard.segment().pq_trained() {
+            return Err(PyValueError::new_err(
+                "recall_pq: no PQ codebook trained yet -- call train_pq() first (see pq_trained())",
+            ));
+        }
+        let hits = self
+            .shard
+            .segment()
+            .recall_pq(&query, &MsegFilter::default(), top_k)
+            .map_err(to_py_err)?;
+        Ok(hits
+            .into_iter()
+            .map(|h| MnemeHit {
+                slot_id: h.slot_id,
+                score: h.score as f64,
+                text: h.text,
+            })
+            .collect())
+    }
+
     /// Recall the top-`top_k` memories for `query` (a raw embedding vector).
     fn recall(&mut self, query: Vec<f32>, top_k: usize) -> PyResult<Vec<MnemeHit>> {
         let hits = self

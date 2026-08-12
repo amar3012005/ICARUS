@@ -115,3 +115,25 @@ def test_reopening_the_same_shard_preserves_data():
         assert s2.live_count() == 1
         hits = s2.bm25_search("durable", 5)
         assert len(hits) == 1
+
+
+def test_recall_pq_fails_before_training(store):
+    store.insert("first memory", ZERO, 0)
+    assert not store.pq_trained()
+    with pytest.raises(ValueError):
+        store.recall_pq(ZERO, 3)
+
+
+def test_recall_pq_after_training_finds_the_right_memory(store):
+    for i in range(20):
+        v = [0.0] * DIM
+        v[i % DIM] = 1.0
+        store.insert(f"memory {i}", v, 0)
+    store.train_pq(seed=42)
+    assert store.pq_trained()
+
+    q = [0.0] * DIM
+    q[2] = 1.0
+    hits = store.recall_pq(q, 3)
+    assert hits
+    assert hits[0].text == "memory 2"
