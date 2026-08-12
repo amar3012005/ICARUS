@@ -37,8 +37,10 @@ benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
-Installs the toolchain if missing, builds the native addon, installs the `mneme` CLI to `~/.mneme`,
-and (optionally) connects your HIVEMIND account. Manual build:
+On linux-x64/darwin-arm64 this downloads one self-contained binary — no Node/Rust/npm needed on
+the target machine. Everywhere else it falls back to: checks the toolchain, builds the native
+addon, installs the `icarus` CLI to `~/.icarus`, and (optionally) connects your HIVEMIND account.
+Manual build:
 
 ```bash
 git clone https://github.com/amar3012005/ICARUS
@@ -50,7 +52,7 @@ cd ICARUS/crate/mneme-node && npm install && npx napi build --release
 ```js
 const { MnemeVectorStore } = require('singulance-amr'); // drop-in for QdrantVectorStore
 
-const store = new MnemeVectorStore({ dataRoot: '~/.mneme/data', dim: 1024 });
+const store = new MnemeVectorStore({ dataRoot: '~/.icarus/data', dim: 1024 });
 await store.upsert('org_acme', [
   { id: 'm1', vector: embed('user prefers dark mode'), payload: { kind: 'preference' } },
 ]);
@@ -61,7 +63,7 @@ Low-level engine:
 
 ```js
 const { MnemeStore } = require('singulance-amr');
-const s = MnemeStore.open('~/.mneme/data', 'org_acme', 1024);
+const s = MnemeStore.open('~/.icarus/data', 'org_acme', 1024);
 const id = s.insert('user prefers dark mode', new Float32Array(vec), Date.now() * 1e6);
 s.enableHnsw();
 const hits = s.recall(new Float32Array(queryVec), 5); // [{ slotId, score, text }]
@@ -71,10 +73,10 @@ s.compact(); // reclaim deleted memories' bytes
 ## CLI
 
 ```bash
-mneme ingest <dir> --org acme     # extract + embed + store a folder of docs
-mneme recall "your question" --org acme
-mneme compact --org acme
-mneme status
+icarus ingest <dir> --org acme     # extract + embed + store a folder of docs
+icarus recall "your question" --org acme
+icarus compact --org acme
+icarus status
 ```
 
 ## Quickstart (Python)
