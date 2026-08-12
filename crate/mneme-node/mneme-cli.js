@@ -31,11 +31,27 @@ function saveCfg(cfg) {
   fs.writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2));
 }
 
+// Flags that are pure on/off switches (no value token follows) — everything else keeps the
+// original "consume the next token as this flag's value" behavior unchanged, so `--k 5`,
+// `--org acme`, `--seed 7` etc. are byte-identical to before this set existed. A heuristic
+// ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
+// user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
+// fallback default — a worse failure than the boolean-flag bug it would have fixed.
+const BOOLEAN_FLAGS = new Set(['pq']);
+
 function parseFlags(args) {
   const out = { _: [] };
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith('--')) out[args[i].slice(2)] = args[++i];
-    else out._.push(args[i]);
+    if (args[i].startsWith('--')) {
+      const name = args[i].slice(2);
+      if (BOOLEAN_FLAGS.has(name)) {
+        out[name] = true;
+      } else {
+        out[name] = args[++i];
+      }
+    } else {
+      out._.push(args[i]);
+    }
   }
   return out;
 }
@@ -109,12 +125,23 @@ async function cmdRecall(flags, cfg) {
   const q = flags._[0];
   const org = flags.org || 'default';
   const k = Number(flags.k || 5);
-  if (!q) throw new Error('usage: icarus recall "<query>" --org <name>');
+  const usePq = flags.pq !== undefined;
+  if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--pq]');
   const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  // Check --pq's precondition BEFORE spending an embedding API call on a request that's
+  // going to fail anyway.
+  if (usePq && !store.pqTrained()) {
+    throw new Error(`no PQ codebook trained for org "${org}" yet — run: icarus train-pq --org ${org}`);
+  }
   const [qv] = await embed([q], cfg);
-  store.enableHnsw();
-  const hits = store.recall(qv, k);
-  console.log(`\ntop ${hits.length} for "${q}":\n`);
+  let hits;
+  if (usePq) {
+    hits = store.recallPq(qv, k);
+  } else {
+    store.enableHnsw();
+    hits = store.recall(qv, k);
+  }
+  console.log(`\ntop ${hits.length} for "${q}"${usePq ? ' (PQ/ADC recall)' : ''}:\n`);
   hits.forEach((h, i) => {
     const txt = h.text.replace(/\s+/g, ' ').slice(0, 160);
     console.log(`  ${i + 1}. [${h.score.toFixed(4)}] ${txt}`);
@@ -147,6 +174,22 @@ function cmdCompact(flags, cfg) {
   console.log(`✓ compacted ${org}: reclaimed ${(reclaimed / 1e3).toFixed(1)} KB`);
 }
 
+// PQ (Product Quantization) is a real alternative to HNSW, not a universal upgrade — see
+// trainPq()'s doc comment in amr-store.mjs for the measured tradeoff (fast build always, fast
+// QUERY only at small/medium shard sizes). This command is what makes it reachable without
+// writing code — before this, train_pq/recall_pq only existed in the Rust crate.
+function cmdTrainPq(flags, cfg) {
+  const org = flags.org || 'default';
+  const seed = Number(flags.seed || 42);
+  const store = MnemeStore.open(cfg.dataRoot, org, cfg.dim);
+  const live = store.liveCount();
+  if (!live) throw new Error(`org "${org}" has no memories yet — nothing to train on`);
+  console.log(`training PQ codebook for "${org}" (${live} live vectors, seed=${seed})...`);
+  const t0 = Date.now();
+  store.trainPq(seed);
+  console.log(`✓ trained in ${((Date.now() - t0) / 1000).toFixed(1)}s — try: icarus recall "..." --org ${org} --pq`);
+}
+
 function ask(q) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((res) => rl.question(q, (a) => { rl.close(); res(a.trim()); }));
@@ -174,15 +217,23 @@ async function main() {
       case 'recall': await cmdRecall(flags, cfg); break;
       case 'status': cmdStatus(flags, cfg); break;
       case 'compact': cmdCompact(flags, cfg); break;
+      case 'train-pq': cmdTrainPq(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
   icarus ingest <dir> --org <name>     extract + embed + store a folder
-  icarus recall "<query>" --org <name> [--k 5]
+  icarus recall "<query>" --org <name> [--k 5] [--pq]
   icarus compact --org <name>          reclaim deleted memories' bytes
+  icarus train-pq --org <name> [--seed 42]
+                                        train PQ codebook -> enables --pq recall (see below)
   icarus status                        shards + disk usage
   icarus connect                       link your HIVEMIND account
+
+  --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
+  upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW
+  only on small/medium shards (recall_pq loses to HNSW's query latency as shard size grows).
+  Good fit: shards you rebuild often. Run train-pq once first, or --pq errors with that reminder.
 
   env: LITELLM_API_KEY (embeddings), ICARUS_HOME (default ~/.icarus)`);
     }

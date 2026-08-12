@@ -60,6 +60,35 @@ export declare class MnemeStore {
   insertLayered(text: string, vector: Float32Array, validFrom: number, layer: number): number
   /** Build the HNSW overlay over all current vectors (call after a bulk load). */
   enableHnsw(): void
+  /**
+   * Train this shard's PQ (Product Quantization) codebook and encode every live vector into
+   * its compact `vector_pq` code, enabling `recall_pq()`. Deterministic given `seed` (same
+   * seed -> same codebook -> same recall_pq results, useful for reproducible tests). This is
+   * the ONLY way to make `pq_trained()` true / `recall_pq()` usable — there is no implicit
+   * auto-train, so a caller always knows exactly when the (real, one-time) training cost was
+   * paid. Blocks the event loop for its duration (k-means over every live vector) — like
+   * `enable_hnsw()`/`compact()`, call it after a bulk load or from a background job, not on a
+   * per-request path. Safe to call again later (e.g. after significant growth) to retrain.
+   */
+  trainPq(seed: number): void
+  /** True if `train_pq()` has run at least once for this shard. */
+  pqTrained(): boolean
+  /**
+   * PQ/ADC-backed recall — an alternative to `recall()`'s HNSW/brute path with a different
+   * tradeoff: fast to build always, fast to QUERY only at small/medium shard sizes (measured
+   * on real bge-m3 data: at 10k vectors it beats HNSW on both build time and query latency at
+   * equal recall; at 100k it still builds ~6x faster but queries ~3x slower than HNSW at
+   * equal recall — PQ stays O(n) per query with a cheap per-item cost, HNSW's near-O(log n)
+   * traversal wins as the shard grows). Good fit: shards you rebuild often (dev/test, small
+   * orgs, frequently-retrained data) where build time matters more than the last few ms of
+   * query latency. NOT a drop-in replacement for `recall()` at real scale — measure your own
+   * shard size before choosing this over HNSW.
+   *
+   * FAILS CLOSED, not silently wrong: throws a clear error if `train_pq()` hasn't run yet,
+   * rather than falling back to some other path a caller didn't ask for — a correctness
+   * primitive should never guess which search the caller wanted.
+   */
+  recallPq(query: Float32Array, topK: number): Array<MnemeHit>
   /** Recall the top-`top_k` memories for `query`. */
   recall(query: Float32Array, topK: number): Array<MnemeHit>
   /**
