@@ -47,6 +47,7 @@ pub struct Segment {
     edg_len: u64,
     capacity: usize,                          // slots the current maps can hold
     hnsw: Option<crate::index::AsyncIndexer>, // optional async HNSW overlay (P3)
+    pq_cache: Option<mpq::PqCodebook>, // lazily-loaded `.mpq` codebook (P4 ADC recall — pq.rs/crud.rs)
 }
 
 #[inline]
@@ -134,6 +135,7 @@ impl Segment {
             edg_len: 0,
             capacity: INITIAL_SLOTS,
             hnsw: None,
+            pq_cache: None,
         };
         seg.flush()?;
         Ok(seg)
@@ -190,6 +192,7 @@ impl Segment {
             edg_len,
             capacity,
             hnsw: None,
+            pq_cache: None,
         };
         seg.recover_if_needed()?;
         Ok(seg)
@@ -236,6 +239,14 @@ impl Segment {
     }
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Crate-internal accessors for the lazily-loaded PQ codebook cache (pq.rs/crud.rs).
+    pub(crate) fn pq_cache_ref(&self) -> Option<&mpq::PqCodebook> {
+        self.pq_cache.as_ref()
+    }
+    pub(crate) fn set_pq_cache(&mut self, cb: mpq::PqCodebook) {
+        self.pq_cache = Some(cb);
     }
 
     /// Read-only view of the file header.

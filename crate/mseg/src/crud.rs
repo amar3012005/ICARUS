@@ -172,6 +172,73 @@ impl Segment {
         self.hydrate_all(scored)
     }
 
+    /// ADC (Asymmetric Distance Computation) recall over PQ-coded slots — an alternative to
+    /// `recall_hnsw` that needs no graph and no third-party ANN library: still an O(n) scan of
+    /// every live slot like `recall_brute`, but each slot's distance is `M` table lookups against
+    /// its 128-byte `vector_pq` code (mpq::AdcTable::distance) instead of a `dim`-length f32 dot
+    /// product — far cheaper per slot and far better cache behavior (128B code vs 4KB raw vector
+    /// at dim=1024), at the cost of staying linear in corpus size rather than HNSW's sublinear
+    /// search. Requires `train_pq()` to have run first (`Err` otherwise — callers check
+    /// `pq_trained()`). Same over-fetch-then-exact-rerank pattern as `recall_hnsw`: ADC distance
+    /// picks the widened candidate set, then real f32 cosine over the raw `.vec` decides final
+    /// ranking — ADC approximation error never reaches the returned scores.
+    pub fn recall_pq(&mut self, query: &[f32], filter: &Filter, top_k: usize) -> Result<Vec<Hit>> {
+        if query.len() != self.dim() {
+            return Err(MsegError::DimMismatch {
+                segment: self.dim(),
+                got: query.len(),
+            });
+        }
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let cb = self.pq_codebook()?;
+        let table = cb.adc_table(query);
+        let m = cb.params().m;
+        let n = self.slot_count() as usize;
+        let rerank_depth = std::env::var("MNEME_PQ_RERANK_DEPTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((top_k * 8).max(128));
+
+        // Pass 1: ADC distance over every live, filter-matching, PQ-coded slot — ascending
+        // (lower squared-L2 == closer), keep the smallest `rerank_depth`. A max-heap of that
+        // bounded size would avoid holding all n candidates, but n is already being scanned in
+        // full either way (same as recall_brute) and a plain sort is simplest to keep correct.
+        let mut candidates: Vec<(f32, usize)> = Vec::with_capacity(n.min(rerank_depth * 4));
+        for idx in 0..n {
+            let slot = self.slot(idx)?;
+            if slot.is_tombstoned() || slot.is_superseded() {
+                continue;
+            }
+            if !slot.has_flag(flags::PQ_TRAINED) {
+                continue; // inserted after training, no code yet — recall_pq can't see it
+            }
+            if !filter.matches(
+                slot.entity_bitmap(),
+                slot.created_at(),
+                slot.valid_from(),
+                slot.layer(),
+            ) {
+                continue;
+            }
+            let code = &slot.vector_pq()[..m];
+            candidates.push((table.distance(code), idx));
+        }
+        candidates.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.truncate(rerank_depth);
+
+        // Pass 2: exact cosine rerank of the survivors — identical tail to recall_hnsw.
+        let q_norm = l2_norm(query);
+        let mut scored: Vec<(f32, usize)> = Vec::with_capacity(candidates.len());
+        for (_, idx) in candidates {
+            let v = self.read_vector(idx)?;
+            scored.push((cosine(query, q_norm, &v), idx));
+        }
+        sort_take(&mut scored, top_k);
+        self.hydrate_all(scored)
+    }
+
     /// Exact brute-force cosine recall over every live slot — the correctness oracle and the
     /// fallback when no HNSW overlay is enabled.
     pub fn recall_brute(

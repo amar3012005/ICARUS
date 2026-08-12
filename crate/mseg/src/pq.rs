@@ -66,11 +66,30 @@ impl Segment {
         mpq::save(&cb, &path, 0).map_err(|e| MsegError::Index(e.to_string()))?;
         self.with_header_mut(|h| h.set_pq_codebook_off(1)); // non-zero = "PQ trained" (SPEC §3.3)
         self.flush()?;
+        self.set_pq_cache(cb.clone()); // avoid an immediate reload-from-disk on the next recall_pq
         Ok(cb)
     }
 
     /// True if this segment has a trained PQ codebook (header `pq_codebook_off != 0`).
     pub fn pq_trained(&self) -> bool {
         self.header().pq_codebook_off() != 0
+    }
+
+    /// The trained codebook, loading `<name>.mpq` from disk on first access after open()
+    /// (train_pq() populates the cache immediately, so a fresh train avoids the reload). Errors
+    /// if `pq_trained()` is false — callers must check that first (recall_pq does).
+    pub fn pq_codebook(&mut self) -> Result<&PqCodebook> {
+        if self.pq_cache_ref().is_none() {
+            if !self.pq_trained() {
+                return Err(MsegError::Corrupt(
+                    "pq_codebook: segment has no trained PQ codebook".into(),
+                ));
+            }
+            let path = self.dir().join(format!("{}.mpq", self.name()));
+            let cb =
+                mpq::load(&path).map_err(|e| MsegError::Corrupt(format!("mpq load: {e}")))?;
+            self.set_pq_cache(cb);
+        }
+        Ok(self.pq_cache_ref().expect("just populated above"))
     }
 }
