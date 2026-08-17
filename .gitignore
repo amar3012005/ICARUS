@@ -37,3 +37,5 @@ crate/mneme-node/npm-debug.log
 bench/shadow/*.jsonl
 bench/shadow/*.err
 bench/shadow/mneme-shard/
+examples/__pycache__/
+__pycache__/

@@ -1,28 +1,65 @@
 <div align="center">
 
-# mneme
+# ICARUS
 
 **A memory filesystem for AI agents.** One memory-mapped file per tenant. Semantic + entity +
 bi-temporal + graph recall from a single read. 13× faster than a REST vector DB at equal recall,
 7.5× smaller storage, 32× vector compression, zero servers.
 
-`Apache-2.0` · Rust core · Node + Python bindings · drop-in for Qdrant
+`Apache-2.0` · Rust core (internal engine name: `mneme`) · Node + Python bindings · drop-in for Qdrant
+
+[![npm](https://img.shields.io/npm/v/singulance-amr?label=npm)](https://www.npmjs.com/package/singulance-amr)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
 </div>
 
 ---
 
+## Zero to agent memory, right now
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
+icarus mcp install    # optional: auto-registers with Claude Code / Codex / Cursor if found
+```
+
+```bash
+npm install singulance-amr      # Node — real, published, works today
+```
+
+Python: **not on PyPI yet** (`pip install mneme-python` doesn't work — checked live, no release
+exists under that name; the automated publish is blocked on an unrelated GitHub Actions billing
+issue, see [`LIMITATIONS.md`](./LIMITATIONS.md)). Build from source with
+[maturin](https://www.maturin.rs/) — real, verified-working, three commands:
+[`crate/mneme-python/README.md`](./crate/mneme-python/README.md#install).
+
+**[`examples/demo-60s.mjs`](./examples/demo-60s.mjs)** — the whole API, zero setup, zero API key,
+runs in under a second:
+
+```bash
+node examples/demo-60s.mjs
+```
+```
+1. Open a shard — one memory-mapped file, no server, no account.
+2. Ingest a few memories.
+3. Recall by similarity.
+   [0.530] the user prefers dark mode in every app
+Done in 50ms.
+```
+
+Real numbers, real methodology, real limitations — not just this README's word for it:
+[`BENCHMARKS.md`](./BENCHMARKS.md) · [`LIMITATIONS.md`](./LIMITATIONS.md) ·
+[`THESIS.md`](./THESIS.md) (full design) · [`SPEC.md`](./SPEC.md) (frozen format RFC)
+
 ## Why
 
 General-purpose vector databases are built for document search. Agent *memory* needs
 **similarity + entity filter + bi-temporal range + graph hop — in one shot, per tenant, in
-milliseconds.** mneme bakes that access pattern into a byte layout (`.amr`) instead of stitching a
-vector DB to a relational DB across a network. See [`THESIS.md`](./THESIS.md) for the full design +
-benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
+milliseconds.** ICARUS bakes that access pattern into a byte layout (`.amr`) instead of stitching a
+vector DB to a relational DB across a network.
 
 ## Numbers (real `bge-m3` embeddings, vs Qdrant 1.18.2)
 
-| | mneme | Qdrant |
+| | ICARUS | Qdrant |
 |---|---|---|
 | recall@10 @ 1M | **1.33 ms** | 2.06 ms (REST) |
 | recall quality (recall@5 vs exact) | **1.00** | 1.00 |
@@ -30,6 +67,8 @@ benchmarks, and [`SPEC.md`](./SPEC.md) for the frozen format RFC.
 | storage / memory | **~600 B** | ~4,500 B |
 | vector compression | **32×** (PQ) | 4× (int8) |
 | infra | one file | cluster |
+
+How these were produced, and how to reproduce them yourself: [`BENCHMARKS.md`](./BENCHMARKS.md).
 
 ## Install
 
@@ -84,8 +123,11 @@ icarus status
 Same engine, same on-disk format, same behavior as the Node binding — one Rust core, two
 language bindings, not two implementations.
 
+Not on PyPI yet — build from source ([real, verified steps](./crate/mneme-python/README.md#install)):
+
 ```bash
-pip install mneme-python
+git clone https://github.com/amar3012005/ICARUS && cd ICARUS/crate/mneme-python
+pip install maturin && maturin develop --release
 ```
 
 ```python
@@ -127,12 +169,21 @@ ranking over the existing corpus-wide scan.
 
 Optional, lazy-imported adapters — neither is a dependency of the core binding.
 
-```bash
-pip install "mneme-python[langchain]"   # LangChain BaseRetriever
-pip install "mneme-python[llamaindex]"  # LlamaIndex vector store
-```
+After building from source above, `pip install langchain-core` / `pip install llama-index-core`
+gets you each adapter — no separate build step, they're lazy-imported extras.
 
-See [`crate/mneme-python/README.md`](./crate/mneme-python/README.md) for both.
+See [`crate/mneme-python/README.md`](./crate/mneme-python/README.md) for both, or run the
+runnable examples directly (all three work with zero API key — see
+[`examples/toy_embed.py`](./examples/toy_embed.py) for why, and `BENCHMARKS.md` for what a real
+embedding model actually measures):
+
+```bash
+cd examples
+pip install langchain-core llama-index-core   # (after building mneme-python from source above)
+python langchain_example.py       # ICARUS as a LangChain BaseRetriever
+python llamaindex_example.py      # ICARUS as a LlamaIndex VectorStore
+python minimal_agent_loop.py      # no framework — the smallest recall-then-store agent loop
+```
 
 ## What it is / isn't
 
@@ -158,20 +209,22 @@ Per-org shard = one directory: `shard.amr` (64-byte header + 202-byte slots), `s
 ## Repo layout
 
 ```
-mneme/
-  SPEC.md            frozen .amr format RFC (the moat)
-  THESIS.md          design + benchmarks + DB comparison
-  crate/
-    mseg-format/     pure byte layout (spec-locked, offset_of! asserts)
-    mseg/            storage engine: segment, CRUD, HNSW overlay, compact, shard
-    mnsw-index/      thin usearch HNSW wrapper
-    mpq/             product quantization codebook + ADC + drift
-    mneme-bm25/      pure BM25 scoring -- no Shard, no napi, no pyo3; shared by both bindings
-    mneme-node/      napi Node binding + MnemeVectorStore drop-in + CLI
-    mneme-python/    pyo3 Python binding + LangChain/LlamaIndex integrations
-    mneme-probe/     P1 proof-of-physics probe
-  bench/             reproducible benchmark harness + Qdrant baselines
-  install.sh         curl | bash installer
+SPEC.md              frozen .amr format RFC (the moat)
+THESIS.md            full design + benchmarks + DB comparison
+BENCHMARKS.md         how every number in this README was produced, and how to reproduce it
+LIMITATIONS.md        every real gap, honestly, in one place
+examples/            demo-60s.mjs, langchain/llamaindex/minimal-agent-loop, all runnable
+crate/
+  mseg-format/       pure byte layout (spec-locked, offset_of! asserts)
+  mseg/              storage engine: segment, CRUD, HNSW overlay, compact, shard
+  mnsw-index/        thin usearch HNSW wrapper
+  mpq/               product quantization codebook + ADC + drift
+  mneme-bm25/        pure BM25 scoring -- no Shard, no napi, no pyo3; shared by both bindings
+  mneme-node/        napi Node binding + MnemeVectorStore drop-in + CLI + MCP server
+  mneme-python/      pyo3 Python binding + LangChain/LlamaIndex integrations
+  mneme-probe/       P1 proof-of-physics probe
+bench/               reproducible benchmark harness + Qdrant baselines
+install.sh           curl | bash installer
 ```
 
 ## Build / test

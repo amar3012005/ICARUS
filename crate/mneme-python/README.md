@@ -7,11 +7,10 @@ bindings, identical behavior and identical `.amr` files. Not a reimplementation.
 
 ## Install
 
-```bash
-pip install mneme-python
-```
-
-Or from source, using [maturin](https://www.maturin.rs/):
+**Not yet published to PyPI** — `pip install mneme-python` doesn't work today (checked live: no
+release exists under that name). The automated release pipeline is blocked on an unrelated GitHub
+Actions billing issue — see the main [`LIMITATIONS.md`](../../LIMITATIONS.md). Build from source
+with [maturin](https://www.maturin.rs/) — this is the real, verified-working path:
 
 ```bash
 git clone https://github.com/amar3012005/ICARUS
@@ -84,9 +83,8 @@ of `mneme-python` itself.
 
 ### LangChain
 
-```bash
-pip install "mneme-python[langchain]"
-```
+Not on PyPI yet (see Install above) — after building from source, `pip install langchain-core`
+alongside it gets you this adapter (it's a lazy-imported extra, no separate build step):
 
 ```python
 from mneme_python import MnemeStore
@@ -99,9 +97,7 @@ docs = retriever.invoke("what's our warranty policy?")
 
 ### LlamaIndex
 
-```bash
-pip install "mneme-python[llamaindex]"
-```
+Same story — `pip install llama-index-core` after building from source:
 
 ```python
 from mneme_python import MnemeStore
