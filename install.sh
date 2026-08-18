@@ -158,8 +158,10 @@ write_config() {
   "dataRoot": "$DATA_DIR",
   "dim": 1024,
   "embeddings": {
+    "disabled": false,
     "endpoint": "${LITELLM_BASE_URL:-https://api.blaiq.ai/v1}",
-    "model": "bge-m3"
+    "model": "bge-m3",
+    "apiKey": null
   },
   "hivemind": { "connected": false }
 }
@@ -205,6 +207,31 @@ connect_hivemind() {
   esac
 }
 
+connect_embeddings() {
+  # ICARUS works with zero embedding provider — BM25 lexical search needs no vector at all.
+  # This is an OFFER, not a requirement; default is no, and that default is a fully working tool.
+  # `export LITELLM_API_KEY=...` before running this installer is ALSO enough on its own,
+  # .env-style, no interactive step needed either way — same pattern TencentDB Agent Memory's
+  # own setup uses (fill in the env vars, it just works).
+  if [ -n "${LITELLM_API_KEY:-}" ]; then
+    ok "LITELLM_API_KEY found in the environment — vector recall is already enabled, no setup needed."
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    warn "Non-interactive install, no LITELLM_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
+    echo "    Add a provider later:  icarus connect-embeddings   (or just export LITELLM_API_KEY and re-run)"
+    return 0
+  fi
+  printf '\n'
+  c "36" "Connect an external embedding provider now? Without one, ICARUS still works — ingest/recall"
+  c "36" "just run lexical-only (BM25 keyword search), not semantic. You can add one anytime."
+  read -r -p "  Connect an embedding provider? [y/N] " ans
+  case "$ans" in
+    y|Y) "$BIN_DIR/icarus" connect-embeddings ;;
+    *)   echo "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
+  esac
+}
+
 # --- 6. verify (both paths) --------------------------------------------------
 verify() {
   info "Verifying"
@@ -225,6 +252,7 @@ main() {
     write_config
     ensure_path
     verify
+    connect_embeddings
     connect_hivemind
   else
     ensure_toolchain
@@ -234,6 +262,7 @@ main() {
     write_config
     ensure_path
     verify
+    connect_embeddings
     connect_hivemind
   fi
   printf '\n'

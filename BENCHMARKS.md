@@ -33,11 +33,12 @@ inserted into both systems, same queries, same machine, same run.
 
 ```bash
 cd crate
-bash ../bench/run_p1.sh          # the headline number, mneme vs Qdrant, on your own machine
+bash ../bench/run_p1.sh
 ```
 
-Nothing in `bench/` requires network access beyond the initial embedding fetch (the corpus is
-cached after the first run) — reproduce the exact numbers on your own hardware, not just ours.
+This reproduces the headline number, mneme vs Qdrant, on your own machine. Nothing in `bench/`
+requires network access beyond the initial embedding fetch (the corpus is cached after the first
+run) — reproduce the exact numbers on your own hardware, not just ours.
 
 ## What's measured vs what's asserted
 

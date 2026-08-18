@@ -23,14 +23,18 @@ Node **18+**.
 
 ```bash
 cd crate
-cargo test --workspace          # engine + format tests, incl. the spec-lock test
+cargo test --workspace
 cargo build --release
 
 cd mneme-node
 npm install
-npm run build                   # napi build --release -> native addon + index.d.ts
-npm run build:debug             # faster, unoptimised
+npm run build
+npm run build:debug
 ```
+
+`cargo test --workspace` runs the engine + format tests, including the spec-lock test.
+`npm run build` runs `napi build --release`, producing the native addon + `index.d.ts`; `npm run
+build:debug` is the same but faster and unoptimised.
 
 ## The format is a contract
 

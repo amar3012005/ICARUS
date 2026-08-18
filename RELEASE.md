@@ -35,17 +35,21 @@ CI builds all platform binaries, runs the wrapper test, and publishes `mneme-nod
 the prebuilt binaries bundled. Users then get a zero-toolchain install:
 
 ```bash
-npm install mneme-node      # downloads the prebuilt .node for their platform
+npm install mneme-node
 ```
 
+This downloads the prebuilt `.node` for the user's platform.
+
 ## 4. Publish the Rust crates (optional) **(needs your account)**
+
+Publish in this exact order — `mseg` depends on the other three, so it must go last, after they're live:
 
 ```bash
 cd crate
 cargo publish -p mseg-format
 cargo publish -p mnsw-index
 cargo publish -p mpq
-cargo publish -p mseg          # after the above are live (it depends on them)
+cargo publish -p mseg
 ```
 
 (Path deps must be replaced with version deps before publishing the dependent crates; or use a

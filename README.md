@@ -19,11 +19,19 @@ bi-temporal + graph recall from a single read. 13× faster than a REST vector DB
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
-icarus mcp install    # optional: auto-registers with Claude Code / Codex / Cursor if found
 ```
 
+Optional — auto-registers ICARUS as an MCP server in every coding agent found on this machine
+(Claude Code, Codex, Cursor):
+
 ```bash
-npm install singulance-amr      # Node — real, published, works today
+icarus mcp install
+```
+
+Node — real, published on npm, works today:
+
+```bash
+npm install singulance-amr
 ```
 
 Python: **not on PyPI yet** (`pip install mneme-python` doesn't work — checked live, no release
@@ -112,11 +120,13 @@ s.compact(); // reclaim deleted memories' bytes
 ## CLI
 
 ```bash
-icarus ingest <dir> --org acme     # extract + embed + store a folder of docs
+icarus ingest <dir> --org acme
 icarus recall "your question" --org acme
 icarus compact --org acme
 icarus status
 ```
+
+`icarus ingest` extracts, embeds, and stores every text/markdown/json/csv/log file under `<dir>`.
 
 ## Quickstart (Python)
 
@@ -177,13 +187,19 @@ runnable examples directly (all three work with zero API key — see
 [`examples/toy_embed.py`](./examples/toy_embed.py) for why, and `BENCHMARKS.md` for what a real
 embedding model actually measures):
 
+After building `mneme-python` from source above:
+
 ```bash
 cd examples
-pip install langchain-core llama-index-core   # (after building mneme-python from source above)
-python langchain_example.py       # ICARUS as a LangChain BaseRetriever
-python llamaindex_example.py      # ICARUS as a LlamaIndex VectorStore
-python minimal_agent_loop.py      # no framework — the smallest recall-then-store agent loop
+pip install langchain-core llama-index-core
+python langchain_example.py
+python llamaindex_example.py
+python minimal_agent_loop.py
 ```
+
+`langchain_example.py` uses ICARUS as a LangChain `BaseRetriever`, `llamaindex_example.py` as a
+LlamaIndex `VectorStore`, and `minimal_agent_loop.py` needs no framework at all — the smallest
+possible recall-then-store agent loop.
 
 ## What it is / isn't
 
@@ -231,15 +247,18 @@ install.sh           curl | bash installer
 
 ```bash
 cd crate
-cargo test --workspace          # all suites (mneme-python's extension-module target is excluded
-                                 # from plain cargo builds by design -- see its own README)
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-bash ../bench/run_p1.sh          # reproduce the headline benchmark vs Qdrant
+bash ../bench/run_p1.sh
 
 cd mneme-python
 pip install maturin && maturin develop --release
 pip install -e ".[test]" && pytest tests/ -v
 ```
+
+`cargo test --workspace` runs all suites (`mneme-python`'s extension-module target is excluded
+from plain cargo builds by design — see its own README). `bash ../bench/run_p1.sh` reproduces the
+headline benchmark against Qdrant, on your own machine.
 
 ## License
 

@@ -11,8 +11,7 @@
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
-function getMnemeStore() { return require('./index.js').MnemeStore; }
-const { loadCfg, ingestDir, recallQuery, statusReport } = require('./cli-lib.js');
+const { loadCfg, ingestDir, recallQuery, statusReport, openStore } = require('./cli-lib.js');
 
 function textResult(obj) {
   return { content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] };
@@ -40,7 +39,7 @@ async function run() {
     'icarus_ingest',
     {
       title: 'Ingest a folder into ICARUS',
-      description: 'Extract, embed, and store every text/markdown/json/csv/log file under a directory into an org\'s memory shard.',
+      description: 'Extract and store every text/markdown/json/csv/log file under a directory into an org\'s memory shard. If an embedding provider is configured (icarus connect-embeddings), stores real vectors for semantic recall. If not, stores text only for lexical (BM25) recall -- this never errors just because no embedding provider exists, it degrades gracefully.',
       inputSchema: {
         dir: z.string().describe('Absolute path to the directory to ingest'),
         org: z.string().default('default').describe('Org/shard name to store into'),
@@ -55,7 +54,7 @@ async function run() {
     'icarus_recall',
     {
       title: 'Recall memories from ICARUS',
-      description: 'Semantic recall over a previously ingested org\'s memory shard. Set usePq=true only if train_pq has already run for that org (see icarus_train_pq) — it is NOT a universal upgrade over the default HNSW recall, see icarus_train_pq\'s description.',
+      description: 'Recall over a previously ingested org\'s memory shard. Semantic (HNSW/PQ) if an embedding provider is configured, lexical (BM25) if not -- automatic, not a caller decision. Set usePq=true only if train_pq has already run for that org AND an embedding provider is configured (see icarus_train_pq) -- it is NOT a universal upgrade over the default HNSW recall, see icarus_train_pq\'s description.',
       inputSchema: {
         query: z.string().describe('Natural-language query'),
         org: z.string().default('default'),
@@ -85,7 +84,7 @@ async function run() {
     async ({ org, seed }) => {
       try {
         const cfg = loadCfg();
-        const store = getMnemeStore().open(cfg.dataRoot, org || "default", cfg.dim);
+        const store = openStore(cfg, org || "default");
         const live = store.liveCount();
         if (!live) throw new Error(`org "${org || 'default'}" has no memories yet — nothing to train on`);
         const t0 = Date.now();
@@ -105,7 +104,7 @@ async function run() {
     async ({ org }) => {
       try {
         const cfg = loadCfg();
-        const store = getMnemeStore().open(cfg.dataRoot, org || "default", cfg.dim);
+        const store = openStore(cfg, org || "default");
         const reclaimed = store.compact();
         return textResult({ org: org || 'default', reclaimedBytes: Number(reclaimed) || 0 });
       } catch (e) { return errorResult(e); }
