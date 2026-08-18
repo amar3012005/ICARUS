@@ -112,6 +112,92 @@ function detectAgents() {
   ];
 }
 
+// `icarus prune`'s uninstall counterpart to installClaudeCode/installCursor/installCodex — each
+// removes ONLY the icarus key (plus a stray "code-review-graph" entry, in case an earlier
+// session of this tool registered one before that concept was dropped in favor of icarus's own
+// native graph tools) and leaves every other entry in the file completely untouched. Detection
+// only, no writing, so `icarus prune` can show the user what WOULD be removed before doing it.
+const REMOVABLE_NAMES = ['icarus', 'code-review-graph'];
+
+function detectClaudeCode() {
+  const p = path.join(HOME, '.claude.json');
+  if (!fs.existsSync(p)) return { agent: 'claude-code', found: false };
+  const cfg = readJsonSafe(p);
+  const present = REMOVABLE_NAMES.filter((n) => cfg?.mcpServers?.[n]);
+  return { agent: 'claude-code', found: present.length > 0, path: p, entries: present };
+}
+function removeClaudeCode() {
+  const p = path.join(HOME, '.claude.json');
+  const cfg = readJsonSafe(p);
+  if (!cfg?.mcpServers) return { agent: 'claude-code', removed: false };
+  let removed = false;
+  for (const n of REMOVABLE_NAMES) {
+    if (cfg.mcpServers[n]) { delete cfg.mcpServers[n]; removed = true; }
+  }
+  if (removed) writeJsonPreserving(p, cfg);
+  return { agent: 'claude-code', removed, path: p };
+}
+
+function detectCursor() {
+  const p = path.join(HOME, '.cursor', 'mcp.json');
+  if (!fs.existsSync(p)) return { agent: 'cursor', found: false };
+  const cfg = readJsonSafe(p);
+  const present = REMOVABLE_NAMES.filter((n) => cfg?.mcpServers?.[n]);
+  return { agent: 'cursor', found: present.length > 0, path: p, entries: present };
+}
+function removeCursor() {
+  const p = path.join(HOME, '.cursor', 'mcp.json');
+  const cfg = readJsonSafe(p);
+  if (!cfg?.mcpServers) return { agent: 'cursor', removed: false };
+  let removed = false;
+  for (const n of REMOVABLE_NAMES) {
+    if (cfg.mcpServers[n]) { delete cfg.mcpServers[n]; removed = true; }
+  }
+  if (removed) writeJsonPreserving(p, cfg);
+  return { agent: 'cursor', removed, path: p };
+}
+
+function detectCodex() {
+  const p = path.join(HOME, '.codex', 'config.toml');
+  if (!fs.existsSync(p)) return { agent: 'codex', found: false };
+  const text = fs.readFileSync(p, 'utf8');
+  const present = REMOVABLE_NAMES.filter((n) => new RegExp(`^\\[mcp_servers\\.${n}\\]`, 'm').test(text));
+  return { agent: 'codex', found: present.length > 0, path: p, entries: present };
+}
+// Surgical block removal: from a `[mcp_servers.<name>]` header LINE to (but not including) the
+// next line that starts a new section header, or EOF — the exact inverse of installCodex's
+// append. Line-based on purpose: a character-class regex stopping at the next literal `[` broke
+// on `args = ["mcp-serve"]`, since `[` also appears inside TOML array syntax, not just section
+// headers — caught by actually running removal against a real generated config and diffing the
+// result (it left a garbled `["mcp-serve"]` orphan behind). Only whole lines are ever dropped.
+function removeCodex() {
+  const p = path.join(HOME, '.codex', 'config.toml');
+  if (!fs.existsSync(p)) return { agent: 'codex', removed: false };
+  const lines = fs.readFileSync(p, 'utf8').split('\n');
+  let removed = false;
+  for (const n of REMOVABLE_NAMES) {
+    const headerRe = new RegExp(`^\\[mcp_servers\\.${n}\\]\\s*$`);
+    const startIdx = lines.findIndex((l) => headerRe.test(l));
+    if (startIdx === -1) continue;
+    let endIdx = lines.length;
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      if (/^\[/.test(lines[i])) { endIdx = i; break; }
+    }
+    lines.splice(startIdx, endIdx - startIdx);
+    removed = true;
+  }
+  if (removed) {
+    // collapse any run of 2+ blank lines left behind by the splice, and drop a leading blank
+    // line at the very top of the file — cosmetic only, never touches surviving content.
+    const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+    fs.writeFileSync(p, text);
+  }
+  return { agent: 'codex', removed, path: p };
+}
+
+function detectRemovable() { return [detectClaudeCode(), detectCodex(), detectCursor()]; }
+function removeAll() { return [removeClaudeCode(), removeCodex(), removeCursor()]; }
+
 async function run(_flags) {
   const command = resolveIcarusCommand();
   const results = [installClaudeCode(command), installCodex(command), installCursor(command)];
@@ -136,4 +222,5 @@ async function run(_flags) {
 
 module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
+  detectRemovable, removeAll,
 };

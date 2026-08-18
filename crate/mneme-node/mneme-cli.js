@@ -9,12 +9,14 @@
 // Shared config/embed/ingest/recall logic lives in cli-lib.js — mcp-serve.js requires the SAME
 // module, so the CLI and the MCP server can never silently drift onto two different behaviors.
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const readline = require('readline');
 // Lazy: `mcp install`/`status`/`connect` never touch a shard, so they must not be forced to
 // load the native addon just because this file was required.
 function getMnemeStore() { return require('./index.js').MnemeStore; }
 const {
-  CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
+  HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
   llmConfigured, skillSave, skillList,
 } = require('./cli-lib.js');
 
@@ -24,7 +26,7 @@ const {
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -334,6 +336,72 @@ async function cmdSkill(flags, cfg) {
   throw new Error('usage: icarus skill <save [file] --org <name> | list --org <name>>');
 }
 
+// The PATH line install.sh's ensure_path() appends — same literal string, so removal matches
+// exactly what was added, never a fuzzy/regex guess at "any icarus-looking PATH export" that
+// could delete something a user wrote themselves.
+function pathLine() {
+  return `export PATH="${path.join(HOME, 'bin')}:$PATH"`;
+}
+function shellRcFiles() {
+  const h = os.homedir();
+  return [path.join(h, '.zshrc'), path.join(h, '.bashrc'), path.join(h, '.profile')].filter((p) => fs.existsSync(p));
+}
+
+function dirSizeMb(dir) {
+  let bytes = 0;
+  try {
+    (function rec(d) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) rec(p);
+        else { try { bytes += fs.statSync(p).size; } catch (_) { /* race */ } }
+      }
+    })(dir);
+  } catch (_) { /* dir vanished mid-walk, or never existed */ }
+  return (bytes / 1e6).toFixed(1);
+}
+
+// Real uninstall — everything install.sh/setup ever wrote, and nothing else. Detect-then-confirm-
+// then-remove, same shape as the rest of this CLI's destructive-adjacent commands: show exactly
+// what will happen before doing it, `--yes` skips the prompt for scripted use.
+async function cmdPrune(flags, _cfg) {
+  const { detectRemovable, removeAll } = require('./mcp-install.js');
+  const icarusExists = fs.existsSync(HOME);
+  const line = pathLine();
+  const rcHits = shellRcFiles().filter((rc) => fs.readFileSync(rc, 'utf8').includes(line));
+  const mcpHits = detectRemovable().filter((r) => r.found);
+
+  console.log('icarus prune — this will remove:\n');
+  if (icarusExists) console.log(`  ✓ ${HOME} (${dirSizeMb(HOME)} MB — bin, config, data, src)`);
+  else console.log(`  · ${HOME} — not found, nothing to remove`);
+  for (const rc of rcHits) console.log(`  ✓ PATH line in ${rc}`);
+  for (const r of mcpHits) console.log(`  ✓ MCP entr${r.entries.length > 1 ? 'ies' : 'y'} (${r.entries.join(', ')}) in ${r.path}`);
+  if (!icarusExists && !rcHits.length && !mcpHits.length) {
+    return console.log('\nNothing found — icarus is already fully removed.');
+  }
+  console.log('\nData in ~/.icarus/data (ingested memories) and any HIVEMIND connection token go with it — this is not reversible.');
+
+  if (!flags.yes) {
+    const ask = makePrompter();
+    const ans = (await ask('\nProceed? [y/N] ')).trim().toLowerCase();
+    ask.close();
+    if (ans !== 'y' && ans !== 'yes') return console.log('Aborted — nothing removed.');
+  }
+
+  const removed = removeAll();
+  for (const r of removed) if (r.removed) console.log(`  ✓ removed icarus MCP registration from ${r.path}`);
+  for (const rc of rcHits) {
+    const content = fs.readFileSync(rc, 'utf8');
+    fs.writeFileSync(rc, content.split('\n').filter((l) => l.trim() !== line).join('\n'));
+    console.log(`  ✓ removed PATH line from ${rc}`);
+  }
+  if (icarusExists) {
+    fs.rmSync(HOME, { recursive: true, force: true });
+    console.log(`  ✓ removed ${HOME}`);
+  }
+  console.log('\nicarus fully removed from this machine. Restart any open Claude Code/Cursor/Codex session to drop the MCP registration.');
+}
+
 async function cmdMcpServe(_flags, _cfg) {
   // Lazy require: @modelcontextprotocol/sdk is only needed for this one subcommand, so every
   // other command (ingest/recall/status/...) stays dependency-free at require-time.
@@ -379,6 +447,7 @@ async function main() {
         break;
       }
       case 'daemon': await cmdDaemon(flags, cfg); break;
+      case 'prune': await cmdPrune(flags, cfg); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       default:
@@ -423,6 +492,11 @@ async function main() {
                                         process reached over http://127.0.0.1:<port>.
   icarus daemon stop
   icarus daemon status
+  icarus prune [--yes]                 remove EVERYTHING icarus installed: ~/.icarus (bin,
+                                        config, data, src), the PATH line install.sh added, and
+                                        its MCP registration from Claude Code/Cursor/Codex. Shows
+                                        exactly what will be removed and asks first, unless
+                                        --yes. Not reversible — ingested data goes with it.
 
   --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
   upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW
