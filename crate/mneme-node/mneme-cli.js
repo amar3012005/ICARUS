@@ -19,6 +19,7 @@ const {
   HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
   llmConfigured, skillSave, skillList, parseClaudeTranscript,
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
+  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
 } = require('./cli-lib.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -27,7 +28,7 @@ const {
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'full']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -46,10 +47,22 @@ function parseFlags(args) {
   return out;
 }
 
+// "ICARUS v3" routing: a HIVEMIND-connected workspace (icarus connect) sends ingest through
+// HIVEMIND's real hosted API instead of the local v2 engine — automatic, no separate command,
+// per the explicit design choice for this feature. `--local` is the escape hatch for anyone who
+// wants the local engine even with HIVEMIND connected (e.g. testing, or content that should
+// stay off a shared server); `--full` requests HIVEMIND's own memory-generation pipeline
+// (ingestMode=both) instead of the default evidence-only mode this was built for.
 async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
-  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name>');
+  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--full]');
+  if (hivemindConfigured(cfg) && !flags.local) {
+    console.log(`ingesting into HIVEMIND workspace, org tag "icarus-org:${org}" (${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`);
+    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${n} files`), { fullMemoryGeneration: !!flags.full });
+    console.log(`\n✓ HIVEMIND ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments (mode=${result.mode})`);
+    return;
+  }
   if (!embeddingsConfigured(cfg)) {
     console.log('no embedding provider configured — ingesting lexical-only (BM25, no semantic recall).');
     console.log('run `icarus connect-embeddings` to add one, then re-ingest for vector recall.\n');
@@ -64,7 +77,16 @@ async function cmdRecall(flags, cfg) {
   const org = flags.org || 'default';
   const k = Number(flags.k || 5);
   const usePq = flags.pq !== undefined;
-  if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq]');
+  if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]');
+  if (hivemindConfigured(cfg) && !flags.local) {
+    const hits = await hivemindRecallQuery(q, org, cfg, k);
+    console.log(`\ntop ${hits.length} for "${q}" (HIVEMIND — dense+lexical+entity+temporal, fused server-side):\n`);
+    hits.forEach((h, i) => {
+      const txt = (h.text || '').replace(/\s+/g, ' ').slice(0, 160);
+      console.log(`  ${i + 1}. [${(h.score ?? 0).toFixed(4)}] (${h.mode}) ${txt}`);
+    });
+    return;
+  }
   const hits = await recallQuery(q, org, cfg, k, usePq);
   const modeLabel = hits[0]?.mode === 'lexical' ? ' (lexical/BM25 — no embedding provider configured)'
     : usePq ? ' (PQ/ADC recall)' : '';
@@ -167,21 +189,44 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // one read at a time.
   if (flags.token !== undefined) {
     if (!flags.token) return console.log('  skipped.');
-    cfg.hivemind = { connected: true, url: base, token: flags.token, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: base, token: flags.token, apiUrl: flags['api-url'] || cfg.hivemind?.apiUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
-    return console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
+    console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
+    if (!cfg.hivemind.apiUrl) console.log('  (no --api-url given — icarus ingest/recall will use the local engine until you set one: icarus connect --api-url <url>)');
+    return;
   }
   console.log(`\nConnect ICARUS ↔ HIVEMIND`);
-  console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
-  console.log(`  2. Copy the access token shown after authorizing.\n`);
   // A caller (icarus setup) that's already mid-wizard passes its own prompter through, so this
   // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
   // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
   const ask = sharedAsk || makePrompter();
+  // Deliberately asked FIRST and separately from the console URL above — that's an OAuth/
+  // authorize page, not necessarily the same host as the REST API base (a real TLS failure was
+  // hit earlier assuming they were interchangeable; see cli-lib.js's hivemindApiBase()). Needed
+  // up front regardless of which auth path follows: OAuth discovery needs it to know where to
+  // look, and manual-token entry needs it to know where to send requests.
+  const apiUrl = await ask('  Memory server REST API base URL (e.g. https://your-server.example.com, or blank to stay local-only for now): ');
+  if (!apiUrl) { if (!sharedAsk) ask.close(); return console.log('  skipped — staying on the local engine.'); }
+
+  // Try real OAuth first (authorization-code + PKCE + dynamic client registration — see
+  // attemptHivemindOAuth's own doc comment for why this never throws and what it needs from the
+  // server). Only on failure does this fall to the manual paste-your-own-token flow below —
+  // exactly the "first run redirect oauth, fallback is api key" order this was built for.
+  console.log('  Trying OAuth...');
+  const oauth = await attemptHivemindOAuth(apiUrl);
+  if (oauth) {
+    if (!sharedAsk) ask.close();
+    cfg.hivemind = { connected: true, url: base, token: oauth.token, refreshToken: oauth.refreshToken, apiUrl, connectedAt: new Date().toISOString() };
+    saveCfg(cfg);
+    return console.log('  ✓ HIVEMIND connected via OAuth. Token stored in', CFG_PATH);
+  }
+  console.log('  OAuth isn\'t available for this server (or the flow didn\'t complete) — falling back to a manual token.');
+  console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
+  console.log(`  2. Copy the access token shown after authorizing.\n`);
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
   if (!token) return console.log('  skipped.');
-  cfg.hivemind = { connected: true, url: base, token, connectedAt: new Date().toISOString() };
+  cfg.hivemind = { connected: true, url: base, token, apiUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
   console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
 }
@@ -612,8 +657,14 @@ async function main() {
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
-  icarus ingest <dir> --org <name>     extract + embed + store a folder
-  icarus recall "<query>" --org <name> [--k 5] [--pq]
+  icarus ingest <dir> --org <name>     extract + embed + store a folder. If icarus connect has a
+                                        HIVEMIND token, routes through HIVEMIND's real API
+                                        instead of the local engine (evidence-only: lexical +
+                                        semantic, no memory generation, unless --full).
+                                        --local forces the local .amr engine even if connected.
+                                        --full requests HIVEMIND's own memory generation instead.
+  icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]
+                                        same HIVEMIND-if-connected routing as ingest above.
   icarus compact --org <name>          reclaim deleted memories' bytes
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)

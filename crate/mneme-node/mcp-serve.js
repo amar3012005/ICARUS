@@ -11,7 +11,10 @@
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
-const { loadCfg, ingestDir, recallQuery, statusReport, openStore } = require('./cli-lib.js');
+const {
+  loadCfg, ingestDir, recallQuery, statusReport, openStore,
+  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery,
+} = require('./cli-lib.js');
 
 function textResult(obj) {
   return { content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] };
@@ -39,14 +42,22 @@ async function run() {
     'icarus_ingest',
     {
       title: 'Ingest a folder into ICARUS',
-      description: 'Extract and store every text/markdown/json/csv/log file under a directory into an org\'s memory shard. If an embedding provider is configured (icarus connect-embeddings), stores real vectors for semantic recall. If not, stores text only for lexical (BM25) recall -- this never errors just because no embedding provider exists, it degrades gracefully.',
+      description: 'Extract and store every text/markdown/json/csv/log file under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead (evidence-only: lexical + semantic, no memory generation, unless fullMemoryGeneration) -- set local=true to force the local .amr engine even when connected. Otherwise: real vectors if an embedding provider is configured (icarus connect-embeddings), text-only lexical (BM25) if not -- never errors just because no embedding provider exists, it degrades gracefully.',
       inputSchema: {
         dir: z.string().describe('Absolute path to the directory to ingest'),
         org: z.string().default('default').describe('Org/shard name to store into'),
+        local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
+        fullMemoryGeneration: z.boolean().default(false).describe('When routed through HIVEMIND, request its own memory-generation pipeline (ingestMode=both) instead of evidence-only'),
       },
     },
-    async ({ dir, org }) => {
-      try { return textResult(await ingestDir(dir, org || 'default', loadCfg())); } catch (e) { return errorResult(e); }
+    async ({ dir, org, local, fullMemoryGeneration }) => {
+      try {
+        const cfg = loadCfg();
+        if (hivemindConfigured(cfg) && !local) {
+          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { fullMemoryGeneration: !!fullMemoryGeneration }));
+        }
+        return textResult(await ingestDir(dir, org || 'default', cfg));
+      } catch (e) { return errorResult(e); }
     },
   );
 
@@ -54,17 +65,22 @@ async function run() {
     'icarus_recall',
     {
       title: 'Recall memories from ICARUS',
-      description: 'Recall over a previously ingested org\'s memory shard. Semantic (HNSW/PQ) if an embedding provider is configured, lexical (BM25) if not -- automatic, not a caller decision. Set usePq=true only if train_pq has already run for that org AND an embedding provider is configured (see icarus_train_pq) -- it is NOT a universal upgrade over the default HNSW recall, see icarus_train_pq\'s description.',
+      description: 'Recall over a previously ingested org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real /api/recall (dense+lexical+entity+temporal, fused server-side) unless local=true. Otherwise: semantic (HNSW/PQ) if an embedding provider is configured, lexical (BM25) if not -- automatic, not a caller decision. Set usePq=true only if train_pq has already run for that org AND an embedding provider is configured (see icarus_train_pq) -- it is NOT a universal upgrade over the default HNSW recall, see icarus_train_pq\'s description.',
       inputSchema: {
         query: z.string().describe('Natural-language query'),
         org: z.string().default('default'),
         topK: z.number().int().positive().max(200).default(5),
         usePq: z.boolean().default(false).describe('Use PQ/ADC recall instead of the default HNSW/brute recall — requires icarus_train_pq to have run first for this org'),
+        local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
       },
     },
-    async ({ query, org, topK, usePq }) => {
+    async ({ query, org, topK, usePq, local }) => {
       try {
-        const hits = await recallQuery(query, org || 'default', loadCfg(), topK || 5, !!usePq);
+        const cfg = loadCfg();
+        if (hivemindConfigured(cfg) && !local) {
+          return textResult(await hivemindRecallQuery(query, org || 'default', cfg, topK || 5));
+        }
+        const hits = await recallQuery(query, org || 'default', cfg, topK || 5, !!usePq);
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
