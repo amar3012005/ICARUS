@@ -15,6 +15,7 @@
     "cli-lib.js",
     "mcp-serve.js",
     "mcp-install.js",
+    "daemon.js",
     "*.node",
     "README.md"
   ],

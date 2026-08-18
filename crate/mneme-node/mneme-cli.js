@@ -200,6 +200,17 @@ async function cmdMcpInstall(flags, _cfg) {
   await require('./mcp-install.js').run(flags);
 }
 
+async function cmdDaemon(flags, _cfg) {
+  // Lazy require: daemon.js's own deps (http, child_process) are core Node, but keep the
+  // require lazy anyway for consistency — the daemon subcommands are the only callers.
+  const daemon = require('./daemon.js');
+  const sub = flags._[0];
+  if (sub === 'start') return daemon.start(flags);
+  if (sub === 'stop') return daemon.stop();
+  if (sub === 'status') return daemon.status();
+  throw new Error('usage: icarus daemon <start|stop|status> [--port 8137]');
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
@@ -221,6 +232,7 @@ async function main() {
         else throw new Error('usage: icarus mcp <install|serve>');
         break;
       }
+      case 'daemon': await cmdDaemon(flags, cfg); break;
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -239,6 +251,14 @@ async function main() {
                                         agent found on this machine (Claude Code, Codex, Cursor)
   icarus mcp serve                     run the MCP server directly (stdio) — what the agents
                                         installed above actually launch
+  icarus daemon start [--port 8137]    run ICARUS as a persistent local HTTP service (a shared
+                                        process anything on this machine can call — editors,
+                                        scripts, a future local panel — instead of each spawning
+                                        its own icarus process). Separate from mcp serve: that's
+                                        stdio, one per agent session; this is one long-running
+                                        process reached over http://127.0.0.1:<port>.
+  icarus daemon stop
+  icarus daemon status
 
   --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
   upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW
