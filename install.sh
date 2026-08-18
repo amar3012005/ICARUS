@@ -67,9 +67,14 @@ try_binary_install() {
   else
     url="${REPO}/releases/download/${RELEASE_TAG}/${asset}"
   fi
-  info "Downloading prebuilt binary ($asset)"
+  info "Downloading prebuilt binary ($asset, ~65MB)"
   mkdir -p "$HOME_DIR" "$DATA_DIR" "$BIN_DIR"
-  if ! curl -fsSL "$url" -o "$BIN_DIR/icarus.tmp"; then
+  # -s (silent) hides curl's own progress entirely -- on a slow connection this ~65MB download
+  # can run a minute or more with ZERO screen output, indistinguishable from a hang (a real user
+  # report: "stuck here" right after this line, when it was actually still downloading at ~50%).
+  # --progress-bar keeps -f/-S/-L (fail-fast, show real errors, follow redirects) but prints a
+  # single updating progress line instead of pure silence.
+  if ! curl -fSL --progress-bar "$url" -o "$BIN_DIR/icarus.tmp"; then
     warn "prebuilt binary not available at $url — building from source instead"
     rm -f "$BIN_DIR/icarus.tmp"
     return 1
