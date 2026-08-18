@@ -17,6 +17,9 @@ napi = { version = "2", default-features = false, features = ["napi6"] }
 napi-derive = "2"
 ml-dsa = "0.1.1"
 signature = "3"
+slh-dsa = "0.2.0-rc.5"
+rand_core = "0.10"
+getrandom = "0.4"
 
 [build-dependencies]
 napi-build = "2"

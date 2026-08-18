@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 // Lazy: some callers of this module (icarus mcp install, icarus status) never touch a shard,
 // so they must not be forced to load the native addon just because this file was required.
 function getMnemeStore() { return require('./index.js').MnemeStore; }
@@ -150,6 +151,120 @@ function verifySlot(slotId, cfg, org) {
     valid = false;
   }
   return { signed: true, valid, signedAt: entry.signed_at };
+}
+
+// Audit trail — SLH-DSA-SHA2-128s (FIPS 205) hash-chained checkpoints over an append-only log of
+// write events. A DIFFERENT property from signSlot()/verifySlot() above: signing proves "this
+// memory's content matches what was signed"; the audit trail proves "the SEQUENCE of write
+// events itself hasn't been edited, reordered, or had entries deleted" — e.g. someone splicing
+// out an entire insert event from history, which a per-memory signature alone can't catch (the
+// remaining memories would still verify fine individually). Real crypto library: `slh-dsa`
+// (RustCrypto, same org as `ml-dsa` above) — a SEPARATE algorithm/keypair from the per-memory
+// ML-DSA-65 signing on purpose, so the audit trail's trust doesn't rest on the same cryptographic
+// assumption as the memory signatures it's meant to independently corroborate.
+const AUDIT_SK_PATH = path.join(SIGN_KEYS_DIR, 'slh-dsa-sk');
+const AUDIT_VK_PATH = path.join(SIGN_KEYS_DIR, 'slh-dsa-pk');
+const GENESIS_HASH = '0'.repeat(64);
+
+function auditChainPath(cfg, org) { return path.join(cfg.dataRoot, org, 'audit.jsonl'); }
+function checkpointsPath(cfg, org) { return path.join(cfg.dataRoot, org, 'checkpoints.jsonl'); }
+
+function ensureAuditKeys() {
+  if (fs.existsSync(AUDIT_SK_PATH) && fs.existsSync(AUDIT_VK_PATH)) {
+    return { signingKey: fs.readFileSync(AUDIT_SK_PATH), verifyingKey: fs.readFileSync(AUDIT_VK_PATH) };
+  }
+  const kp = getNative().generateAuditKeypair();
+  fs.mkdirSync(SIGN_KEYS_DIR, { recursive: true });
+  fs.writeFileSync(AUDIT_SK_PATH, kp.signingKey, { mode: 0o600 });
+  fs.writeFileSync(AUDIT_VK_PATH, kp.verifyingKey, { mode: 0o644 });
+  return { signingKey: kp.signingKey, verifyingKey: kp.verifyingKey };
+}
+
+function readJsonl(p) {
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => {
+    try { return JSON.parse(l); } catch (_) { return null; }
+  }).filter(Boolean);
+}
+
+/** The exact bytes hashed into the chain for one entry — MUST stay stable, same reasoning as
+ * canonicalPayload() above: this format IS the contract a verifier reconstructs independently. */
+function entryHashInput(prevHash, seq, event, slotId, at) {
+  return `${prevHash}|${seq}|${event}|${slotId}|${at}`;
+}
+
+/** Append one hash-chained event to org's audit trail. Never throws past logging — same
+ * fail-open posture as signSlot(): an audit-trail write failure must not turn a successful
+ * insert into a failed one. */
+function appendAuditEntry(cfg, org, event, slotId) {
+  try {
+    const p = auditChainPath(cfg, org);
+    const entries = readJsonl(p);
+    const prevHash = entries.length ? entries[entries.length - 1].hash : GENESIS_HASH;
+    const seq = entries.length;
+    const at = new Date().toISOString();
+    const hash = crypto.createHash('sha256').update(entryHashInput(prevHash, seq, event, slotId, at)).digest('hex');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify({ seq, event, slot_id: slotId, prev_hash: prevHash, hash, at }) + '\n');
+    return true;
+  } catch (e) {
+    console.error(`icarus: audit trail append failed (${e.message}) — write itself still succeeded.`);
+    return false;
+  }
+}
+
+/** Sign the audit chain's CURRENT tip with SLH-DSA. Anyone holding the public verifying key can
+ * later confirm the chain really was in this exact state at this time — a checkpoint doesn't
+ * protect entries written after it (the next checkpoint does), which is why `verifyAuditChain`
+ * below reports how many entries sit unattested past the latest checkpoint. */
+function checkpointAudit(cfg, org) {
+  const entries = readJsonl(auditChainPath(cfg, org));
+  if (!entries.length) throw new Error(`org "${org}" has no audit entries yet — nothing to checkpoint`);
+  const tip = entries[entries.length - 1];
+  const { signingKey } = ensureAuditKeys();
+  const payload = Buffer.from(`checkpoint|${tip.seq}|${tip.hash}`, 'utf8');
+  const signature = getNative().auditSignBytes(signingKey, payload);
+  const record = { seq: tip.seq, hash: tip.hash, signature: signature.toString('base64'), signed_at: new Date().toISOString() };
+  fs.appendFileSync(checkpointsPath(cfg, org), JSON.stringify(record) + '\n');
+  return record;
+}
+
+/** Full independent verification: (1) replay the ENTIRE chain from genesis, recomputing each
+ * entry's hash from its own recorded fields and confirming it matches both the entry's own
+ * `hash` AND the next entry's `prev_hash` — this is what catches a deleted/reordered/edited
+ * entry anywhere in history, not just at the tip. (2) verify the latest checkpoint's SLH-DSA
+ * signature against its recorded (seq, hash) — proving that exact state was cryptographically
+ * attested, not just internally self-consistent. */
+function verifyAuditChain(cfg, org) {
+  const entries = readJsonl(auditChainPath(cfg, org));
+  if (!entries.length) return { entries: 0, chainValid: true, checkpoint: null };
+  let prevHash = GENESIS_HASH;
+  let chainValid = true;
+  let brokenAt = null;
+  for (const e of entries) {
+    const recomputed = crypto.createHash('sha256').update(entryHashInput(prevHash, e.seq, e.event, e.slot_id, e.at)).digest('hex');
+    if (recomputed !== e.hash || e.prev_hash !== prevHash) {
+      chainValid = false;
+      brokenAt = e.seq;
+      break;
+    }
+    prevHash = e.hash;
+  }
+  const checkpoints = readJsonl(checkpointsPath(cfg, org));
+  let checkpoint = null;
+  if (checkpoints.length) {
+    const cp = checkpoints[checkpoints.length - 1];
+    const { verifyingKey } = ensureAuditKeys();
+    const payload = Buffer.from(`checkpoint|${cp.seq}|${cp.hash}`, 'utf8');
+    let sigValid;
+    try {
+      sigValid = getNative().auditVerifyBytes(verifyingKey, payload, Buffer.from(cp.signature, 'base64'));
+    } catch (_) {
+      sigValid = false;
+    }
+    checkpoint = { seq: cp.seq, signedAt: cp.signed_at, valid: sigValid, unattestedSince: cp.seq + 1, entriesSinceCheckpoint: entries.length - 1 - cp.seq };
+  }
+  return { entries: entries.length, chainValid, brokenAt, checkpoint };
 }
 
 function loadCfg() {
@@ -484,6 +599,7 @@ async function ingestDir(dir, org, cfg, onProgress) {
           const text = `${path.basename(f)}\n${t}`;
           const slotId = store.insert(text, vecs[j], 0);
           if (signMode && signSlot(slotId, text, cfg, org)) signed++;
+          appendAuditEntry(cfg, org, 'insert', slotId);
           n++;
         });
       }
@@ -492,6 +608,7 @@ async function ingestDir(dir, org, cfg, onProgress) {
         const text = `${path.basename(f)}\n${t}`;
         const slotId = store.insert(text, zero, 0);
         if (signMode && signSlot(slotId, text, cfg, org)) signed++;
+        appendAuditEntry(cfg, org, 'insert', slotId);
         n++;
       }
     }
@@ -558,4 +675,5 @@ module.exports = {
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
+  ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
 };

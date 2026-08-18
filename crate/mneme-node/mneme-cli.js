@@ -18,7 +18,7 @@ function getMnemeStore() { return require('./index.js').MnemeStore; }
 const {
   HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
   llmConfigured, skillSave, skillList, parseClaudeTranscript,
-  signingEnabled, verifySlot,
+  signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
 } = require('./cli-lib.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -80,6 +80,7 @@ function cmdStatus(_flags, cfg) {
   console.log(`icarus  data: ${s.dataRoot}  dim: ${s.dim}`);
   console.log(`HIVEMIND: ${s.hivemindConnected ? 'connected' : 'not connected'}`);
   console.log(`Signing: ${signingEnabled(cfg) ? 'ML-DSA-65 (FIPS 204), on' : 'disabled'}`);
+  console.log(`Audit trail: SLH-DSA-SHA2-128s (FIPS 205), on — icarus audit checkpoint/verify`);
   if (!s.shards.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
   console.log(`\nshards:`);
   for (const sh of s.shards) {
@@ -404,6 +405,42 @@ function cmdVerify(flags, cfg) {
   process.exitCode = 1;
 }
 
+// `icarus audit checkpoint|verify` — the hash-chain audit trail (SLH-DSA-SHA2-128s, FIPS 205),
+// a DIFFERENT property from `icarus verify` above: that checks one memory's content against its
+// own signature; this checks that the SEQUENCE of write events hasn't been edited, reordered, or
+// had entries spliced out — real tamper detection verified this session by deleting an audit
+// entry directly and confirming the chain correctly reports broken, at the right position.
+function cmdAudit(flags, cfg) {
+  const sub = flags._[0];
+  const org = flags.org || 'default';
+  if (sub === 'checkpoint') {
+    const cp = checkpointAudit(cfg, org);
+    return console.log(`✓ checkpoint signed for "${org}" at seq ${cp.seq} (${cp.signed_at}).`);
+  }
+  if (sub === 'verify') {
+    const r = verifyAuditChain(cfg, org);
+    if (!r.entries) return console.log(`org "${org}": no audit entries yet.`);
+    console.log(`${r.entries} audit entries for "${org}".`);
+    if (!r.chainValid) {
+      console.log(`✗ CHAIN BROKEN at seq ${r.brokenAt} — an entry was edited, reordered, or deleted.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`✓ hash chain intact (genesis → tip, no gaps).`);
+    if (!r.checkpoint) {
+      console.log(`  no checkpoint signed yet — run: icarus audit checkpoint --org ${org}`);
+      return;
+    }
+    console.log(`  latest checkpoint: seq ${r.checkpoint.seq}, signature ${r.checkpoint.valid ? 'valid' : 'INVALID'} (${r.checkpoint.signedAt})`);
+    if (r.checkpoint.entriesSinceCheckpoint > 0) {
+      console.log(`  ${r.checkpoint.entriesSinceCheckpoint} entries since the last checkpoint are hash-chained but not yet signed — run: icarus audit checkpoint --org ${org}`);
+    }
+    if (!r.checkpoint.valid) process.exitCode = 1;
+    return;
+  }
+  throw new Error('usage: icarus audit <checkpoint|verify> --org <name>');
+}
+
 // `icarus hook session-end` — the automatic-skill-generation counterpart to `icarus skill save`,
 // wired as a real Claude Code SessionEnd hook (verified against actual Claude Code hook docs,
 // not guessed): Claude Code writes {session_id, transcript_path, cwd, hook_event_name} as JSON on
@@ -571,6 +608,7 @@ async function main() {
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
+      case 'audit': cmdAudit(flags, cfg); break;
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -626,6 +664,14 @@ async function main() {
                                         its current stored content — real tamper detection, not
                                         just a checksum. Every icarus ingest signs on by default;
                                         keys live at ~/.icarus/keys (0600), generated on first use.
+  icarus audit checkpoint --org <name> sign the audit trail's current tip with SLH-DSA-SHA2-128s
+                                        (FIPS 205) — a real, separate algorithm from icarus verify
+                                        above, attesting the SEQUENCE of writes hasn't been
+                                        edited/reordered/spliced, not just one memory's content.
+  icarus audit verify --org <name>     replay the full hash chain from genesis + verify the
+                                        latest checkpoint's signature. Reports exactly where a
+                                        broken chain diverges, and how many entries since the
+                                        last checkpoint are chained but not yet signed.
 
   --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
   upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW

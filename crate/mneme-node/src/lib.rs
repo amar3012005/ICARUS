@@ -632,3 +632,87 @@ mod sign {
     }
 }
 pub use sign::{generate_signing_keypair, sign_bytes, verify_bytes, SigningKeypair};
+
+// SLH-DSA-SHA2-128s (FIPS 205 / SPHINCS+) — the audit-trail checkpoint signer. Deliberately a
+// SEPARATE keypair and algorithm from `sign` module's ML-DSA-65: ML-DSA signs individual memories
+// (many signatures, smaller ~3.3KB each); SLH-DSA here signs periodic CHECKPOINTS over an
+// append-only hash chain of write events (few signatures, larger ~7.9KB each, but SLH-DSA's
+// security rests on hash-function assumptions alone — a genuinely different, more conservative
+// trust basis than ML-DSA's lattice assumptions, which is the actual point of using a second,
+// different algorithm for the audit trail rather than reusing the same one). The hash chain
+// itself, its storage, and checkpoint scheduling all live in cli-lib.js — this module is only
+// the cryptographic primitive, same split as the `sign` module above.
+mod audit_sign {
+    use slh_dsa::{Sha2_128s, SigningKey, VerifyingKey};
+    use signature::{Keypair, Signer, Verifier};
+    use rand_core::{TryCryptoRng, TryRng};
+    use std::convert::Infallible;
+    use napi::bindgen_prelude::*;
+    use napi_derive::napi;
+
+    /// A minimal CryptoRng backed by the OS's own randomness (`getrandom`), written by hand
+    /// instead of pulling in the `rand`/`rand_core` "os_rng" feature: rand_core 0.10's own
+    /// feature-flag surface for this turned out fragmented across crate versions when actually
+    /// tried (a real dead end hit building this — `rand_core::OsRng` wasn't resolvable through
+    /// any combination of `signature`'s or `rand_core`'s own feature flags in this dependency
+    /// graph), while implementing the trait directly over `getrandom::fill` is ~15 lines and has
+    /// no such ambiguity.
+    struct SysRng;
+    impl TryRng for SysRng {
+        type Error = Infallible;
+        // Explicit `core::result::Result` here — the module-level `use napi::bindgen_prelude::*`
+        // shadows the prelude `Result` with napi's own alias (`Result<T, napi::Error>`-shaped),
+        // which doesn't accept `Infallible` as the error type. A real compile error hit writing
+        // this, not a stylistic choice.
+        fn try_next_u32(&mut self) -> core::result::Result<u32, Infallible> {
+            let mut buf = [0u8; 4];
+            getrandom::fill(&mut buf).expect("OS randomness source failed");
+            Ok(u32::from_ne_bytes(buf))
+        }
+        fn try_next_u64(&mut self) -> core::result::Result<u64, Infallible> {
+            let mut buf = [0u8; 8];
+            getrandom::fill(&mut buf).expect("OS randomness source failed");
+            Ok(u64::from_ne_bytes(buf))
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> core::result::Result<(), Infallible> {
+            getrandom::fill(dst).expect("OS randomness source failed");
+            Ok(())
+        }
+    }
+    impl TryCryptoRng for SysRng {}
+
+    #[napi(object)]
+    pub struct AuditKeypair {
+        pub signing_key: Buffer,
+        pub verifying_key: Buffer,
+    }
+
+    #[napi]
+    pub fn generate_audit_keypair() -> Result<AuditKeypair> {
+        let mut rng = SysRng;
+        let sk = SigningKey::<Sha2_128s>::new(&mut rng);
+        let vk = sk.verifying_key();
+        Ok(AuditKeypair {
+            signing_key: sk.to_bytes().to_vec().into(),
+            verifying_key: vk.to_bytes().to_vec().into(),
+        })
+    }
+
+    #[napi]
+    pub fn audit_sign_bytes(signing_key_bytes: Buffer, payload: Buffer) -> Result<Buffer> {
+        let sk = SigningKey::<Sha2_128s>::try_from(signing_key_bytes.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid audit signing key: {e}")))?;
+        let sig = sk.sign(&payload);
+        Ok(sig.to_bytes().to_vec().into())
+    }
+
+    #[napi]
+    pub fn audit_verify_bytes(verifying_key_bytes: Buffer, payload: Buffer, signature: Buffer) -> Result<bool> {
+        let vk = VerifyingKey::<Sha2_128s>::try_from(verifying_key_bytes.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid audit verifying key: {e}")))?;
+        let sig = slh_dsa::Signature::<Sha2_128s>::try_from(signature.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid audit signature encoding: {e}")))?;
+        Ok(vk.verify(&payload, &sig).is_ok())
+    }
+}
+pub use audit_sign::{generate_audit_keypair, audit_sign_bytes, audit_verify_bytes, AuditKeypair};

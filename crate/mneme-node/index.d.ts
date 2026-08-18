@@ -60,6 +60,13 @@ export declare function signBytes(signingKeySeed: Buffer, payload: Buffer): Buff
  * authentic" wants a clean boolean for the common tamper case, not exception-handling for it.
  */
 export declare function verifyBytes(verifyingKeyBytes: Buffer, payload: Buffer, signature: Buffer): boolean
+export interface AuditKeypair {
+  signingKey: Buffer
+  verifyingKey: Buffer
+}
+export declare function generateAuditKeypair(): AuditKeypair
+export declare function auditSignBytes(signingKeyBytes: Buffer, payload: Buffer): Buffer
+export declare function auditVerifyBytes(verifyingKeyBytes: Buffer, payload: Buffer, signature: Buffer): boolean
 /**
  * A per-org mneme store (wraps one `.amr` shard).
  *
