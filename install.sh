@@ -209,18 +209,39 @@ ensure_path() {
   fi
 }
 
+# `curl -fsSL ... | bash` makes bash's OWN stdin the pipe FROM curl, not the user's keyboard —
+# `[ -t 0 ]` is always false there even when the user is sitting at a real interactive terminal.
+# That's exactly why this installer used to silently skip straight to "run later" messages after
+# a `curl | bash` install (a real user reported it as looking "stuck"/abandoned) instead of
+# actually guiding them. /dev/tty is the real fix every major curl-pipe installer uses (rustup,
+# nvm, homebrew): it's the controlling terminal device, reachable independently of stdin, so
+# reads against it work even mid-pipe. Only genuinely non-interactive contexts (CI, a script
+# with no controlling terminal at all) fail this check — a real curl|bash-in-a-terminal user
+# does not.
+#
+# `[ -r /dev/tty ] && [ -w /dev/tty ]` alone is NOT enough: those check the device node's
+# permission BITS, which can be readable/writable even when nothing is actually attached to open
+# it as a controlling terminal — a genuinely detached process (found testing this exact script:
+# a sandboxed tool context with no session TTY) passes that check and then fails with "device
+# not configured" the moment something actually tries to read/write it. Attempt a real, harmless
+# open-for-read instead and trust its exit status, not the permission bits. The `2>/dev/null`
+# MUST be on the braced group, not the inner command — bash reports a failed redirection's own
+# setup error before a same-command stderr redirect can catch it (confirmed by testing: the
+# inner-command form leaked a raw "Device not configured" line straight to the terminal even
+# with `2>/dev/null` right there — exactly the scary-looking noise this function exists to avoid).
+has_tty() { { : < /dev/tty; } 2>/dev/null; }
+
 connect_hivemind() {
-  # only prompt when interactive; piping `| bash` is non-interactive, so skip gracefully.
-  if [ ! -t 0 ]; then
-    warn "Non-interactive install — skipping HIVEMIND connect."
+  if ! has_tty; then
+    warn "No controlling terminal — skipping HIVEMIND connect."
     echo "    Run later:  icarus connect"
     return 0
   fi
   printf '\n'
   c "36" "Connect your HIVEMIND account now? ICARUS can sync recall with HIVEMIND."
-  read -r -p "  Connect? [y/N] " ans
+  read -r -p "  Connect? [y/N] " ans < /dev/tty
   case "$ans" in
-    y|Y) "$BIN_DIR/icarus" connect ;;
+    y|Y) "$BIN_DIR/icarus" connect < /dev/tty ;;
     *)   echo "    Skipped. Run later:  icarus connect" ;;
   esac
 }
@@ -236,17 +257,17 @@ connect_embeddings() {
     ok "API key found in the environment — vector recall is already enabled, no setup needed."
     return 0
   fi
-  if [ ! -t 0 ]; then
-    warn "Non-interactive install, no OPENROUTER_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
+  if ! has_tty; then
+    warn "No controlling terminal, no OPENROUTER_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
     echo "    Add a provider later:  icarus connect-embeddings   (or just export OPENROUTER_API_KEY and re-run)"
     return 0
   fi
   printf '\n'
   c "36" "Connect an external embedding provider now? Without one, ICARUS still works — ingest/recall"
   c "36" "just run lexical-only (BM25 keyword search), not semantic. You can add one anytime."
-  read -r -p "  Connect an embedding provider? [y/N] " ans
+  read -r -p "  Connect an embedding provider? [y/N] " ans < /dev/tty
   case "$ans" in
-    y|Y) "$BIN_DIR/icarus" connect-embeddings ;;
+    y|Y) "$BIN_DIR/icarus" connect-embeddings < /dev/tty ;;
     *)   echo "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
   esac
 }
@@ -271,8 +292,6 @@ main() {
     write_config
     ensure_path
     verify
-    connect_embeddings
-    connect_hivemind
   else
     ensure_toolchain
     fetch_src
@@ -281,9 +300,25 @@ main() {
     write_config
     ensure_path
     verify
+  fi
+
+  # A real controlling terminal exists (see has_tty's comment) -> run the FULL guided wizard
+  # (agent MCP registration, memory generation, embeddings, HIVEMIND — all four, one after
+  # another) instead of the old separate connect_embeddings/connect_hivemind calls, which only
+  # ever covered two of those four and left the user to run `icarus mcp install`/`icarus
+  # connect-llm` manually afterward. No controlling terminal (CI, a fully detached script) ->
+  # unchanged silent-skip-with-instructions behavior; nothing to read from either way.
+  if has_tty; then
+    printf '\n'
+    c "36" "Continuing with guided setup (agents, memory generation, embeddings, HIVEMIND)."
+    c "36" "Press Ctrl+C at any point to stop — nothing beyond this point is required, and"
+    c "36" "whatever step you're on can always be re-run later with: icarus setup"
+    "$BIN_DIR/icarus" setup < /dev/tty || true
+  else
     connect_embeddings
     connect_hivemind
   fi
+
   printf '\n'
   c "32" "Done. Try:  icarus status"
   if [ "$USED_BINARY" = "1" ]; then
