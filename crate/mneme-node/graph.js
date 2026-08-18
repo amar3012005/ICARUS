@@ -17,7 +17,7 @@ async function run(flags) {
     return;
   }
   if (sub === 'status') {
-    const s = graph.status(repo);
+    const s = await graph.status(repo);
     if (!s) return console.log(`no graph built yet for ${repo} — run: icarus graph build --repo ${repo}`);
     console.log(`Nodes: ${s.nodes}\nEdges: ${s.edges}\nFiles: ${s.files}\nLanguages: ${s.languages.join(', ')}\nLast updated: ${s.lastUpdated}`);
     return;
@@ -26,7 +26,7 @@ async function run(flags) {
     const kind = flags.kind;
     const name = flags.name || flags._[1];
     if (!kind || !name) throw new Error('usage: icarus graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]');
-    const rows = graph.query(repo, kind, name);
+    const rows = await graph.query(repo, kind, name);
     console.log(JSON.stringify(rows, null, 2));
     return;
   }

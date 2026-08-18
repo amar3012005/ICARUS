@@ -131,7 +131,7 @@ async function run() {
       inputSchema: { repo: z.string().describe('Absolute path to the codebase root') },
     },
     async ({ repo }) => {
-      try { return textResult(require('./graph-native.js').status(repo)); } catch (e) { return errorResult(e); }
+      try { return textResult(await require('./graph-native.js').status(repo)); } catch (e) { return errorResult(e); }
     },
   );
 
@@ -147,7 +147,7 @@ async function run() {
       },
     },
     async ({ repo, kind, name }) => {
-      try { return textResult(require('./graph-native.js').query(repo, kind, name)); } catch (e) { return errorResult(e); }
+      try { return textResult(await require('./graph-native.js').query(repo, kind, name)); } catch (e) { return errorResult(e); }
     },
   );
 

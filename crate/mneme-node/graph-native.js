@@ -272,79 +272,126 @@ function dbPath(repoDir) {
   return path.join(repoDir, '.icarus-graph', 'graph.db');
 }
 
-function openDb(repoDir) {
-  const Database = require('better-sqlite3');
+// sql.js (WASM SQLite, via Emscripten — no native addon) instead of better-sqlite3: confirmed by
+// actually compiling both through `bun build --compile` that better-sqlite3 crashes Bun's own
+// N-API compatibility shim ("NAPI FATAL ERROR... Bun has crashed" — a real Bun bug, not fixable
+// from here), while sql.js survives the same compile+run cleanly. Same reasoning as choosing
+// web-tree-sitter/WASM over native tree-sitter bindings for the parser above: WASM has no ABI to
+// break across a native-addon boundary, whether that's grammar-vs-core version skew or an
+// addon-vs-runtime skew inside a bundled single-executable.
+//
+// Real tradeoff this brings: sql.js's Database is IN-MEMORY ONLY — there is no file-backed mode.
+// Persistence is manual: export() the whole DB to a byte buffer and write it to disk after every
+// write, read it back into a fresh in-memory Database on open. Fine at this project's real scale
+// (a single codebase's symbol graph, exercised at up to ~76 files / 539 nodes / 4913 edges during
+// testing, well under a size where "hold the whole DB in memory" is a real cost) — would need a
+// different design at a scale sql.js was never meant for (a monorepo with 100k+ files).
+let _SQLPromise = null;
+function getSQL() {
+  if (!_SQLPromise) _SQLPromise = require('sql.js')();
+  return _SQLPromise;
+}
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT,
+    start_line INTEGER, end_line INTEGER, language TEXT
+  );
+  CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT, source_qualified TEXT, target_qualified TEXT, file_path TEXT, line INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
+  CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+  CREATE INDEX IF NOT EXISTS idx_nodes_qn ON nodes(qualified_name);
+  CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_qualified);
+  CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_qualified);
+`;
+
+async function openDb(repoDir) {
+  const SQL = await getSQL();
   const dir = path.join(repoDir, '.icarus-graph');
   fs.mkdirSync(dir, { recursive: true });
-  const db = new Database(dbPath(repoDir));
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS nodes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT,
-      start_line INTEGER, end_line INTEGER, language TEXT
-    );
-    CREATE TABLE IF NOT EXISTS edges (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kind TEXT, source_qualified TEXT, target_qualified TEXT, file_path TEXT, line INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
-    CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
-    CREATE INDEX IF NOT EXISTS idx_nodes_qn ON nodes(qualified_name);
-    CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_qualified);
-    CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_qualified);
-  `);
+  const p = dbPath(repoDir);
+  const db = fs.existsSync(p) ? new SQL.Database(fs.readFileSync(p)) : new SQL.Database();
+  db.run(SCHEMA);
   return db;
+}
+function saveDb(db, repoDir) {
+  fs.writeFileSync(dbPath(repoDir), Buffer.from(db.export()));
+}
+// sql.js has no `.all()`/`.get()` convenience — step() the prepared statement manually and
+// collect rows as plain objects. One small helper so every call site below reads the same as it
+// did against better-sqlite3's API, rather than repeating this loop everywhere.
+function queryAll(db, sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+function run(db, sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  stmt.step();
+  stmt.free();
 }
 
 async function buildAndStore(repoDir) {
   const result = await build(repoDir);
-  const db = openDb(repoDir);
-  db.exec('DELETE FROM nodes; DELETE FROM edges;'); // full rebuild for v1 — no incremental update yet
-  const insNode = db.prepare('INSERT INTO nodes (kind,name,qualified_name,file_path,start_line,end_line,language) VALUES (?,?,?,?,?,?,?)');
-  const insEdge = db.prepare('INSERT INTO edges (kind,source_qualified,target_qualified,file_path,line) VALUES (?,?,?,?,?)');
-  const tx = db.transaction(() => {
-    for (const n of result.nodes) insNode.run(n.kind, n.name, n.qualifiedName, n.filePath, n.startLine, n.endLine, n.language);
-    for (const e of result.edges) insEdge.run(e.kind, e.sourceQualified, e.targetQualified, e.filePath, e.line);
-    db.prepare('INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)').run('last_updated', new Date().toISOString());
-  });
-  tx();
+  const db = await openDb(repoDir);
+  db.run('BEGIN;');
+  db.run('DELETE FROM nodes; DELETE FROM edges;'); // full rebuild for v1 — no incremental update yet
+  for (const n of result.nodes) {
+    run(db, 'INSERT INTO nodes (kind,name,qualified_name,file_path,start_line,end_line,language) VALUES (?,?,?,?,?,?,?)',
+      [n.kind, n.name, n.qualifiedName, n.filePath, n.startLine, n.endLine, n.language]);
+  }
+  for (const e of result.edges) {
+    run(db, 'INSERT INTO edges (kind,source_qualified,target_qualified,file_path,line) VALUES (?,?,?,?,?)',
+      [e.kind, e.sourceQualified, e.targetQualified, e.filePath, e.line]);
+  }
+  run(db, 'INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)', ['last_updated', new Date().toISOString()]);
+  db.run('COMMIT;');
+  saveDb(db, repoDir);
   db.close();
   return { files: result.files, nodes: result.nodes.length, edges: result.edges.length };
 }
 
-function status(repoDir) {
+async function status(repoDir) {
   if (!fs.existsSync(dbPath(repoDir))) return null;
-  const db = openDb(repoDir);
-  const nodes = db.prepare('SELECT COUNT(*) c FROM nodes').get().c;
-  const edges = db.prepare('SELECT COUNT(*) c FROM edges').get().c;
-  const files = db.prepare('SELECT COUNT(DISTINCT file_path) c FROM nodes').get().c;
-  const languages = db.prepare('SELECT DISTINCT language FROM nodes').all().map((r) => r.language);
-  const lastUpdated = db.prepare("SELECT value FROM metadata WHERE key='last_updated'").get();
+  const db = await openDb(repoDir);
+  const nodes = queryAll(db, 'SELECT COUNT(*) c FROM nodes')[0].c;
+  const edges = queryAll(db, 'SELECT COUNT(*) c FROM edges')[0].c;
+  const files = queryAll(db, 'SELECT COUNT(DISTINCT file_path) c FROM nodes')[0].c;
+  const languages = queryAll(db, 'SELECT DISTINCT language FROM nodes').map((r) => r.language);
+  const lastUpdated = queryAll(db, "SELECT value FROM metadata WHERE key='last_updated'")[0];
   db.close();
   return { nodes, edges, files, languages, lastUpdated: lastUpdated?.value };
 }
 
 // query kinds: callers_of, callees_of, imports_of, find (by bare name)
-function query(repoDir, kind, name) {
+async function query(repoDir, kind, name) {
   if (!fs.existsSync(dbPath(repoDir))) throw new Error('no graph built yet — run `icarus graph build --repo <dir>` first');
-  const db = openDb(repoDir);
+  const db = await openDb(repoDir);
   let rows;
   if (kind === 'callers_of') {
-    rows = db.prepare(`
+    rows = queryAll(db, `
       SELECT DISTINCT n.qualified_name, n.file_path, n.start_line FROM edges e
       JOIN nodes n ON n.qualified_name = e.source_qualified
       WHERE e.kind='CALLS' AND e.target_qualified LIKE ?
-    `).all(`%::${name}`);
+    `, [`%::${name}`]);
   } else if (kind === 'callees_of') {
-    rows = db.prepare(`
+    rows = queryAll(db, `
       SELECT DISTINCT n.qualified_name, n.file_path, n.start_line FROM edges e
       JOIN nodes n ON n.qualified_name = e.target_qualified
       WHERE e.kind='CALLS' AND e.source_qualified LIKE ?
-    `).all(`%::${name}`);
+    `, [`%::${name}`]);
   } else if (kind === 'imports_of') {
-    rows = db.prepare(`SELECT DISTINCT file_path, line, target_qualified as source FROM edges WHERE kind='IMPORTS' AND target_qualified LIKE ?`).all(`%${name}%`);
+    rows = queryAll(db, `SELECT DISTINCT file_path, line, target_qualified as source FROM edges WHERE kind='IMPORTS' AND target_qualified LIKE ?`, [`%${name}%`]);
   } else if (kind === 'find') {
-    rows = db.prepare('SELECT qualified_name, kind, file_path, start_line, end_line, language FROM nodes WHERE name = ?').all(name);
+    rows = queryAll(db, 'SELECT qualified_name, kind, file_path, start_line, end_line, language FROM nodes WHERE name = ?', [name]);
   } else {
     db.close();
     throw new Error(`unknown query kind "${kind}" — use callers_of|callees_of|imports_of|find`);
