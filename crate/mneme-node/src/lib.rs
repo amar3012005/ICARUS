@@ -566,3 +566,69 @@ impl MnemeStore {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 }
+
+// Post-quantum signing (ML-DSA-65 / FIPS 204, via RustCrypto's `ml-dsa`) — proved safe through
+// `bun build --compile` before any of this was written (a real crash was hit earlier this
+// session with a DIFFERENT native crate, better-sqlite3, whose own N-API bindings broke Bun's
+// N-API compat shim; `ml-dsa` is pure Rust with no such surface, and a throwaway probe function
+// confirmed it survives the identical compile+run before this real implementation replaced it).
+//
+// Deliberately NOT part of the frozen 202-byte slot format — signatures live in a side-table the
+// Node layer manages (one JSONL file per org shard), the same "frozen slot, side-table for
+// anything new" shape used in production (see the research page's own "memory_signatures" side-
+// table). This module only does the cryptography; canonical-payload construction, key storage,
+// and the append-only signature log all live in cli-lib.js.
+mod sign {
+    use ml_dsa::{Generate, Keypair, MlDsa65, Signature, SigningKey, VerifyingKey};
+    use signature::{SignatureEncoding, Signer, Verifier};
+    use napi::bindgen_prelude::*;
+    use napi_derive::napi;
+
+    /// A freshly generated ML-DSA-65 keypair, as raw bytes for the Node layer to persist.
+    /// `signing_key` is the 32-byte SEED (`SigningKey::to_seed()`/`from_seed()` — the crate's own
+    /// "preferred serialization... consistently 32-bytes" form), not the full expanded key —
+    /// smaller to store, and re-expanding from seed on load is cheap.
+    #[napi(object)]
+    pub struct SigningKeypair {
+        pub signing_key: Buffer,
+        pub verifying_key: Buffer,
+    }
+
+    #[napi]
+    pub fn generate_signing_keypair() -> Result<SigningKeypair> {
+        let sk = SigningKey::<MlDsa65>::generate();
+        let vk = sk.verifying_key();
+        Ok(SigningKeypair {
+            signing_key: sk.to_seed().as_slice().to_vec().into(),
+            verifying_key: vk.encode().as_slice().to_vec().into(),
+        })
+    }
+
+    /// Sign arbitrary bytes with a raw 32-byte signing-key seed (from
+    /// `generate_signing_keypair`). The CALLER builds the canonical payload (slot id + text,
+    /// etc.) — this function only does the cryptographic operation, so the exact bytes being
+    /// signed are never ambiguous from reading this file alone.
+    #[napi]
+    pub fn sign_bytes(signing_key_seed: Buffer, payload: Buffer) -> Result<Buffer> {
+        let seed = ml_dsa::B32::try_from(signing_key_seed.as_ref())
+            .map_err(|_| Error::from_reason(format!("signing key must be exactly 32 bytes, got {}", signing_key_seed.len())))?;
+        let sk = SigningKey::<MlDsa65>::from_seed(&seed);
+        let sig = sk.sign(&payload);
+        Ok(sig.to_bytes().to_vec().into())
+    }
+
+    /// Verify `signature` over `payload` against a raw verifying-key encoding. Returns `false`
+    /// for a bad signature or tampered payload, NOT an error — only a malformed key/signature
+    /// (wrong length, can't even be parsed) is an error. A caller checking "is this memory
+    /// authentic" wants a clean boolean for the common tamper case, not exception-handling for it.
+    #[napi]
+    pub fn verify_bytes(verifying_key_bytes: Buffer, payload: Buffer, signature: Buffer) -> Result<bool> {
+        let enc = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(verifying_key_bytes.as_ref())
+            .map_err(|_| Error::from_reason(format!("verifying key wrong length: got {}", verifying_key_bytes.len())))?;
+        let vk = VerifyingKey::<MlDsa65>::decode(&enc);
+        let sig = Signature::<MlDsa65>::try_from(signature.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid signature encoding: {e}")))?;
+        Ok(vk.verify(&payload, &sig).is_ok())
+    }
+}
+pub use sign::{generate_signing_keypair, sign_bytes, verify_bytes, SigningKeypair};

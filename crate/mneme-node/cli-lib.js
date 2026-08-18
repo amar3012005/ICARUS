@@ -9,6 +9,7 @@ const os = require('os');
 // Lazy: some callers of this module (icarus mcp install, icarus status) never touch a shard,
 // so they must not be forced to load the native addon just because this file was required.
 function getMnemeStore() { return require('./index.js').MnemeStore; }
+function getNative() { return require('./native.js'); }
 
 // A shard takes an exclusive flock for the lifetime of its open handle. Each `icarus` CLI
 // invocation is a short-lived process — one open, one command, process exits, lock releases
@@ -49,6 +50,108 @@ const LAYER_SKILL = 3;
 // ordinary memories in the same org. The shard insert (layer=LAYER_SKILL) is for RECALL
 // integration only -- so a skill's content surfaces in `icarus recall` alongside real memories.
 const SKILLS_DIR = path.join(HOME, 'skills');
+
+// Post-quantum signing (ML-DSA-65 / FIPS 204) — every memory signed at write time, on by
+// default, matching the real production design this was modeled on (see mneme-node/src/lib.rs's
+// `sign` module for the crypto itself and why it's a side-table, not a slot-format change).
+// Deliberately simpler key handling than a multi-tenant server: this is a single-user local CLI,
+// so ONE keypair lives at ~/.icarus/keys, generated transparently on first use — no signup, no
+// network, no manual `icarus keygen` step required for the "on by default" property to hold.
+const SIGN_KEYS_DIR = path.join(HOME, 'keys');
+const SIGNING_KEY_PATH = path.join(SIGN_KEYS_DIR, 'ml-dsa-sk');
+const VERIFYING_KEY_PATH = path.join(SIGN_KEYS_DIR, 'ml-dsa-pk');
+
+function signaturesPath(cfg, org) {
+  return path.join(cfg.dataRoot, org, 'signatures.jsonl');
+}
+
+/** True unless explicitly disabled — signing needs no external key/network (unlike embeddings/
+ * llm), so there's no "no key configured" case to gate on; the only way it's off is a person
+ * turning it off. */
+function signingEnabled(cfg) {
+  return !(cfg.signing && cfg.signing.disabled);
+}
+
+/** Load the local ML-DSA-65 keypair, generating one on first use. The signing key file is
+ * written 0600 (owner read/write only) — the same "secret key never leaves this machine, DB
+ * compromise != forgery" property the production design documents, scaled down to "this
+ * machine's disk, not a database anyone else can dump." Returns {signingKey, verifyingKey} as
+ * Buffers. */
+function ensureSigningKeys() {
+  if (fs.existsSync(SIGNING_KEY_PATH) && fs.existsSync(VERIFYING_KEY_PATH)) {
+    return {
+      signingKey: fs.readFileSync(SIGNING_KEY_PATH),
+      verifyingKey: fs.readFileSync(VERIFYING_KEY_PATH),
+    };
+  }
+  const kp = getNative().generateSigningKeypair();
+  fs.mkdirSync(SIGN_KEYS_DIR, { recursive: true });
+  fs.writeFileSync(SIGNING_KEY_PATH, kp.signingKey, { mode: 0o600 });
+  fs.writeFileSync(VERIFYING_KEY_PATH, kp.verifyingKey, { mode: 0o644 });
+  return { signingKey: kp.signingKey, verifyingKey: kp.verifyingKey };
+}
+
+/** The exact bytes that get signed — MUST match between signSlot() and verifySlot(), and
+ * changing this format later invalidates every existing signature (a real, honest tradeoff of
+ * "the signature proves this exact text belongs to this exact slot," not something to change
+ * casually). Binds the slot id INTO the payload so a signature can't be replayed onto a
+ * different slot even if the text happens to collide. */
+function canonicalPayload(slotId, text) {
+  return Buffer.from(`slot:${slotId}\n${text}`, 'utf8');
+}
+
+/** Sign slot `slotId`'s `text` and append the signature to this org's signatures.jsonl. Never
+ * throws past logging — signing is a bonus property of a write, not a requirement for it; a
+ * signing failure (corrupt key, native module issue) must not turn a successful insert into a
+ * failed ingest. This is the SAME fail-open honesty the production design documents for its own
+ * signing path, not a weaker version invented for this. */
+function signSlot(slotId, text, cfg, org) {
+  try {
+    const { signingKey } = ensureSigningKeys();
+    const payload = canonicalPayload(slotId, text);
+    const signature = getNative().signBytes(signingKey, payload);
+    const line = JSON.stringify({ slot_id: slotId, signature: signature.toString('base64'), signed_at: new Date().toISOString() });
+    fs.appendFileSync(signaturesPath(cfg, org), line + '\n');
+    return true;
+  } catch (e) {
+    console.error(`icarus: signing slot ${slotId} failed (${e.message}) — memory stored unsigned.`);
+    return false;
+  }
+}
+
+/** Verify a previously signed slot. Returns {signed: false} if no signature was ever recorded
+ * for this slot (raw/unsigned memory — not itself suspicious, e.g. anything written before
+ * signing was enabled), {signed: true, valid: bool} otherwise. */
+function verifySlot(slotId, cfg, org) {
+  const p = signaturesPath(cfg, org);
+  if (!fs.existsSync(p)) return { signed: false };
+  const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+  // Last-match-wins: a slot could in principle be signed more than once (re-signed after a
+  // rewrite); the most recent entry is the one that should describe the slot's current content.
+  let entry = null;
+  for (const line of lines) {
+    let d;
+    try { d = JSON.parse(line); } catch (_) { continue; }
+    if (d.slot_id === slotId) entry = d;
+  }
+  if (!entry) return { signed: false };
+  const store = openStore(cfg, org);
+  const text = store.slotText(slotId);
+  const { verifyingKey } = ensureSigningKeys();
+  const payload = canonicalPayload(slotId, text);
+  // A malformed/corrupted signature (wrong length, bad encoding) is a REAL tamper indicator, not
+  // a bug to surface as an exception — the native layer throws on that (it can't even decode a
+  // Signature struct to compare), caught here so "someone corrupted this record" always reports
+  // as valid:false, the same as "someone changed the text but kept a well-formed signature."
+  let valid;
+  try {
+    valid = getNative().verifyBytes(verifyingKey, payload, Buffer.from(entry.signature, 'base64'));
+  } catch (_) {
+    valid = false;
+  }
+  return { signed: true, valid, signedAt: entry.signed_at };
+}
+
 function loadCfg() {
   try {
     return JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
@@ -212,6 +315,54 @@ async function extractSkill(transcript, cfg) {
   return chatComplete(SKILL_PROMPT, transcript, cfg, 800);
 }
 
+// Real Claude Code transcript.jsonl shape (verified against actual local session files, not
+// guessed): one JSON object per line. `type: 'user'`/`'assistant'` are the only ones with real
+// conversational content; message.content is either a plain string (a typed user message) or an
+// array of blocks — `text` (prose), `tool_use` (name + input, on assistant messages), `tool_result`
+// (on user-role messages — that's how Claude Code represents a tool's own output). Every other
+// line type (`custom-title`, `mode`, `pr-link`, `queue-operation`, `system`, `attachment`,
+// `last-prompt`) is session bookkeeping, not narrative content — skipped.
+const TRANSCRIPT_BLOCK_MAX = 500; // per-block cap so one huge tool_result doesn't dominate the prompt
+const TRANSCRIPT_TOTAL_MAX = 60000; // overall cap; keeps the TAIL (most recent = most relevant to "what just got resolved")
+
+function truncateBlock(s) {
+  return s.length > TRANSCRIPT_BLOCK_MAX ? s.slice(0, TRANSCRIPT_BLOCK_MAX) + '…[truncated]' : s;
+}
+
+function parseClaudeTranscript(jsonlPath) {
+  let raw;
+  try { raw = fs.readFileSync(jsonlPath, 'utf8'); } catch (_) { return ''; }
+  const lines = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let d;
+    try { d = JSON.parse(line); } catch (_) { continue; } // a lagging/half-written last line must not kill the whole parse
+    if (d.type === 'user') {
+      const content = d.message?.content;
+      if (typeof content === 'string') {
+        lines.push(`User: ${truncateBlock(content)}`);
+      } else if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b.type === 'tool_result') {
+            const text = Array.isArray(b.content) ? b.content.map((c) => c.text || '').join(' ') : String(b.content || '');
+            if (text.trim()) lines.push(`  -> ${truncateBlock(text.trim())}`);
+          }
+        }
+      }
+    } else if (d.type === 'assistant') {
+      const content = d.message?.content;
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b.type === 'text' && b.text?.trim()) lines.push(`Assistant: ${truncateBlock(b.text.trim())}`);
+          else if (b.type === 'tool_use') lines.push(`Assistant ran: ${b.name}(${truncateBlock(JSON.stringify(b.input || {}))})`);
+        }
+      }
+    }
+  }
+  const text = lines.join('\n');
+  return text.length > TRANSCRIPT_TOTAL_MAX ? text.slice(-TRANSCRIPT_TOTAL_MAX) : text;
+}
+
 function slugFromSkillMd(md) {
   const m = md.match(/^name:\s*(.+)$/m);
   const raw = (m ? m[1] : 'skill').trim();
@@ -307,10 +458,12 @@ async function ingestDir(dir, org, cfg, onProgress) {
   const files = walkText(dir);
   const vectorMode = embeddingsConfigured(cfg);
   const distillMode = llmConfigured(cfg);
+  const signMode = signingEnabled(cfg);
   const zero = new Float32Array(cfg.dim); // BM25 needs no vector; a placeholder keeps every
                                            // slot's dim consistent so a later `connect-embeddings`
                                            // + re-ingest doesn't hit a dimension mismatch.
   let n = 0;
+  let signed = 0;
   for (const f of files) {
     let chunks = chunk(fs.readFileSync(f, 'utf8'));
     // Distillation (TencentDB's L0->L1 in their own terms) is a per-chunk chat-completion call
@@ -328,13 +481,17 @@ async function ingestDir(dir, org, cfg, onProgress) {
         const batch = chunks.slice(i, i + 16);
         const vecs = await embed(batch, cfg);
         batch.forEach((t, j) => {
-          store.insert(`${path.basename(f)}\n${t}`, vecs[j], 0);
+          const text = `${path.basename(f)}\n${t}`;
+          const slotId = store.insert(text, vecs[j], 0);
+          if (signMode && signSlot(slotId, text, cfg, org)) signed++;
           n++;
         });
       }
     } else {
       for (const t of chunks) {
-        store.insert(`${path.basename(f)}\n${t}`, zero, 0);
+        const text = `${path.basename(f)}\n${t}`;
+        const slotId = store.insert(text, zero, 0);
+        if (signMode && signSlot(slotId, text, cfg, org)) signed++;
         n++;
       }
     }
@@ -344,7 +501,7 @@ async function ingestDir(dir, org, cfg, onProgress) {
   store.flush();
   return {
     files: files.length, chunks: n, live: store.liveCount(),
-    mode: vectorMode ? 'vector' : 'lexical', distilled: distillMode,
+    mode: vectorMode ? 'vector' : 'lexical', distilled: distillMode, signed,
   };
 }
 
@@ -399,5 +556,6 @@ function statusReport(cfg) {
 module.exports = {
   HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
-  SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
+  parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
+  signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
 };

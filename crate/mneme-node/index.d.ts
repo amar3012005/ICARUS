@@ -36,6 +36,31 @@ export interface RecordPage {
   nextSlot: number
 }
 /**
+ * A freshly generated ML-DSA-65 keypair, as raw bytes for the Node layer to persist.
+ * `signing_key` is the 32-byte SEED (`SigningKey::to_seed()`/`from_seed()` — the crate's own
+ * "preferred serialization... consistently 32-bytes" form), not the full expanded key —
+ * smaller to store, and re-expanding from seed on load is cheap.
+ */
+export interface SigningKeypair {
+  signingKey: Buffer
+  verifyingKey: Buffer
+}
+export declare function generateSigningKeypair(): SigningKeypair
+/**
+ * Sign arbitrary bytes with a raw 32-byte signing-key seed (from
+ * `generate_signing_keypair`). The CALLER builds the canonical payload (slot id + text,
+ * etc.) — this function only does the cryptographic operation, so the exact bytes being
+ * signed are never ambiguous from reading this file alone.
+ */
+export declare function signBytes(signingKeySeed: Buffer, payload: Buffer): Buffer
+/**
+ * Verify `signature` over `payload` against a raw verifying-key encoding. Returns `false`
+ * for a bad signature or tampered payload, NOT an error — only a malformed key/signature
+ * (wrong length, can't even be parsed) is an error. A caller checking "is this memory
+ * authentic" wants a clean boolean for the common tamper case, not exception-handling for it.
+ */
+export declare function verifyBytes(verifyingKeyBytes: Buffer, payload: Buffer, signature: Buffer): boolean
+/**
  * A per-org mneme store (wraps one `.amr` shard).
  *
  * Holds a native id→slot index (u64 hash of the record's JSON `id` → candidate slots) so JS

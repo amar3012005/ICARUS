@@ -17,7 +17,8 @@ const readline = require('readline');
 function getMnemeStore() { return require('./index.js').MnemeStore; }
 const {
   HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
-  llmConfigured, skillSave, skillList,
+  llmConfigured, skillSave, skillList, parseClaudeTranscript,
+  signingEnabled, verifySlot,
 } = require('./cli-lib.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -78,6 +79,7 @@ function cmdStatus(_flags, cfg) {
   const s = statusReport(cfg);
   console.log(`icarus  data: ${s.dataRoot}  dim: ${s.dim}`);
   console.log(`HIVEMIND: ${s.hivemindConnected ? 'connected' : 'not connected'}`);
+  console.log(`Signing: ${signingEnabled(cfg) ? 'ML-DSA-65 (FIPS 204), on' : 'disabled'}`);
   if (!s.shards.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
   console.log(`\nshards:`);
   for (const sh of s.shards) {
@@ -384,6 +386,70 @@ async function cmdSkill(flags, cfg) {
   throw new Error('usage: icarus skill <save [file] --org <name> | list --org <name>>');
 }
 
+// `icarus verify` — independent proof that a memory hasn't been tampered with since it was
+// written: re-derives the same canonical payload (slot id + current stored text) and checks it
+// against the recorded ML-DSA-65 signature. Reports one of three real states, not just a
+// boolean: no signature ever recorded (written before signing was enabled, or signing was off),
+// signature present and valid, or signature present but the content no longer matches it — the
+// last case is the one that actually matters (real tamper detection, verified in this session
+// by rewriting a slot's stored text directly and confirming this goes invalid).
+function cmdVerify(flags, cfg) {
+  const org = flags.org || 'default';
+  const slotId = Number(flags._[0]);
+  if (!Number.isInteger(slotId) || slotId < 0) throw new Error('usage: icarus verify <slot_id> --org <name>');
+  const r = verifySlot(slotId, cfg, org);
+  if (!r.signed) return console.log(`slot ${slotId} in "${org}": no signature recorded (written before signing was enabled, or signing was off).`);
+  if (r.valid) return console.log(`✓ slot ${slotId} in "${org}": signature valid (signed ${r.signedAt}).`);
+  console.log(`✗ slot ${slotId} in "${org}": signature INVALID — content does not match what was signed at ${r.signedAt}.`);
+  process.exitCode = 1;
+}
+
+// `icarus hook session-end` — the automatic-skill-generation counterpart to `icarus skill save`,
+// wired as a real Claude Code SessionEnd hook (verified against actual Claude Code hook docs,
+// not guessed): Claude Code writes {session_id, transcript_path, cwd, hook_event_name} as JSON on
+// stdin when a session ends. transcript_path is Claude Code's own real transcript.jsonl for that
+// session; parseClaudeTranscript() turns it into readable text for extractSkill(). Org defaults
+// to the basename of `cwd` (the project directory) so skills naturally group by project, not by
+// a single catch-all "default" bucket, unless overridden.
+//
+// Real, documented caveat this has to account for: the transcript file is written
+// ASYNCHRONOUSLY and may still be lagging behind the actual last turn at the moment SessionEnd
+// fires — so this polls for the file's size to stabilize (unchanged across two checks) for a few
+// seconds before parsing, rather than reading whatever partial content exists the instant the
+// hook starts. Never throws past that: a hook that fails must not block or error out a user's
+// session close, so every failure path here just logs and exits 0.
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+async function waitForStableFile(p, attempts = 6, intervalMs = 500) {
+  let lastSize = -1;
+  for (let i = 0; i < attempts; i++) {
+    let size;
+    try { size = fs.statSync(p).size; } catch (_) { size = -1; }
+    if (size !== -1 && size === lastSize) return true;
+    lastSize = size;
+    await sleep(intervalMs);
+  }
+  return fs.existsSync(p);
+}
+async function cmdHookSessionEnd(_flags, cfg) {
+  let payload = '';
+  try { payload = fs.readFileSync(0, 'utf8'); } catch (_) { /* no stdin — nothing to do */ }
+  let hookData;
+  try { hookData = JSON.parse(payload); } catch (_) { console.error('icarus hook session-end: no valid JSON on stdin, skipping.'); return; }
+  const { transcript_path: transcriptPath, cwd } = hookData;
+  if (!transcriptPath) { console.error('icarus hook session-end: no transcript_path in hook payload, skipping.'); return; }
+  if (!llmConfigured(cfg)) return; // silent — this only fires automatically; no key configured means nothing to do, not an error
+  await waitForStableFile(transcriptPath);
+  const transcript = parseClaudeTranscript(transcriptPath);
+  if (!transcript.trim()) { console.error('icarus hook session-end: empty transcript after parsing, skipping.'); return; }
+  const org = process.env.ICARUS_HOOK_ORG || (cwd ? path.basename(cwd) : 'default');
+  try {
+    const saved = await skillSave(transcript, org, cfg);
+    if (saved) console.error(`icarus: skill auto-saved from session → ${saved}`); // stderr: SessionEnd's stdout isn't shown to the user
+  } catch (e) {
+    console.error('icarus hook session-end: extraction failed —', e.message);
+  }
+}
+
 // The PATH line install.sh's ensure_path() appends — same literal string, so removal matches
 // exactly what was added, never a fuzzy/regex guess at "any icarus-looking PATH export" that
 // could delete something a user wrote themselves.
@@ -496,8 +562,15 @@ async function main() {
       }
       case 'daemon': await cmdDaemon(flags, cfg); break;
       case 'prune': await cmdPrune(flags, cfg); break;
+      case 'hook': {
+        const sub = flags._[0];
+        if (sub === 'session-end') await cmdHookSessionEnd(flags, cfg);
+        else throw new Error('usage: icarus hook session-end   (reads Claude Code\'s SessionEnd JSON payload from stdin)');
+        break;
+      }
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
+      case 'verify': cmdVerify(flags, cfg); break;
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -523,6 +596,10 @@ async function main() {
                                         a Claude-Code-shaped skill .md, saved to ~/.icarus/skills
   icarus skill list --org <name>       list skills saved for an org
                                         needs connect-llm configured (memory generation)
+  icarus hook session-end              automatic skill generation, wired as a Claude Code
+                                        SessionEnd hook (icarus setup offers to install it) —
+                                        reads Claude Code's own hook JSON from stdin, no manual
+                                        transcript handling needed. Not meant to be run by hand.
   icarus graph build --repo <dir>      native symbol/call-graph index (Tree-sitter via WASM,
                                         SQLite storage) — JS/TS + Rust for now, no Python/uvx dep
   icarus graph status --repo <dir>     node/edge/file counts for the built graph
@@ -545,6 +622,10 @@ async function main() {
                                         its MCP registration from Claude Code/Cursor/Codex. Shows
                                         exactly what will be removed and asks first, unless
                                         --yes. Not reversible — ingested data goes with it.
+  icarus verify <slot_id> --org <name> check a memory's ML-DSA-65 (FIPS 204) signature against
+                                        its current stored content — real tamper detection, not
+                                        just a checksum. Every icarus ingest signs on by default;
+                                        keys live at ~/.icarus/keys (0600), generated on first use.
 
   --pq recall (icarus recall --pq): an alternative to the default HNSW recall, not a universal
   upgrade — measured on real data, it builds much faster always, and queries FASTER than HNSW
