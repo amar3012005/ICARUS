@@ -111,6 +111,46 @@ async function run() {
     },
   );
 
+  server.registerTool(
+    'icarus_graph_build',
+    {
+      title: 'Build the native symbol/call graph for a codebase',
+      description: 'Tree-sitter parse (JS/TS + Rust) into a local symbol/call-graph SQLite index at <repo>/.icarus-graph/graph.db. Full rebuild each call -- run again after significant changes. Native, no Python/uvx dependency.',
+      inputSchema: { repo: z.string().describe('Absolute path to the codebase root') },
+    },
+    async ({ repo }) => {
+      try { return textResult(await require('./graph-native.js').buildAndStore(repo)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_graph_status',
+    {
+      title: 'Graph build status for a codebase',
+      description: 'Node/edge/file counts and last-build time for a previously built graph. Returns null if icarus_graph_build has not run yet for this repo.',
+      inputSchema: { repo: z.string().describe('Absolute path to the codebase root') },
+    },
+    async ({ repo }) => {
+      try { return textResult(require('./graph-native.js').status(repo)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_graph_query',
+    {
+      title: 'Query the symbol/call graph',
+      description: 'callers_of/callees_of: who calls, or is called by, a function (bare name match). imports_of: which files import a given module. find: locate a symbol by name across the codebase. Requires icarus_graph_build to have run first.',
+      inputSchema: {
+        repo: z.string().describe('Absolute path to the codebase root'),
+        kind: z.enum(['callers_of', 'callees_of', 'imports_of', 'find']),
+        name: z.string().describe('Symbol or module name to query'),
+      },
+    },
+    async ({ repo, kind, name }) => {
+      try { return textResult(require('./graph-native.js').query(repo, kind, name)); } catch (e) { return errorResult(e); }
+    },
+  );
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -153,14 +153,27 @@ EOF
 # --- 5. config + PATH + HIVEMIND OAuth (both paths) -------------------------
 write_config() {
   local cfg="$HOME_DIR/config.json"
+  # Default embeddings provider: OpenRouter's real baai/bge-m3 (openrouter.ai/baai/bge-m3,
+  # verified live: native 1024-dim output, matches `dim` below exactly). LITELLM_BASE_URL still
+  # overrides this wholesale for anyone pointing at their own LiteLLM/blaiq gateway instead.
+  local embed_endpoint="${LITELLM_BASE_URL:-https://openrouter.ai/api/v1}"
+  local embed_model="bge-m3"
+  [ -z "${LITELLM_BASE_URL:-}" ] && embed_model="baai/bge-m3"
   [ -f "$cfg" ] || cat > "$cfg" <<EOF
 {
   "dataRoot": "$DATA_DIR",
   "dim": 1024,
   "embeddings": {
     "disabled": false,
-    "endpoint": "${LITELLM_BASE_URL:-https://api.blaiq.ai/v1}",
-    "model": "bge-m3",
+    "endpoint": "$embed_endpoint",
+    "model": "$embed_model",
+    "apiKey": null
+  },
+  "llm": {
+    "disabled": false,
+    "provider": "openrouter",
+    "endpoint": "https://openrouter.ai/api/v1",
+    "model": "anthropic/claude-3.5-haiku",
     "apiKey": null
   },
   "hivemind": { "connected": false }
@@ -210,16 +223,17 @@ connect_hivemind() {
 connect_embeddings() {
   # ICARUS works with zero embedding provider — BM25 lexical search needs no vector at all.
   # This is an OFFER, not a requirement; default is no, and that default is a fully working tool.
-  # `export LITELLM_API_KEY=...` before running this installer is ALSO enough on its own,
+  # `export OPENROUTER_API_KEY=...` before running this installer is ALSO enough on its own,
   # .env-style, no interactive step needed either way — same pattern TencentDB Agent Memory's
-  # own setup uses (fill in the env vars, it just works).
-  if [ -n "${LITELLM_API_KEY:-}" ]; then
-    ok "LITELLM_API_KEY found in the environment — vector recall is already enabled, no setup needed."
+  # own setup uses (fill in the env vars, it just works). LITELLM_API_KEY still works for anyone
+  # pointing at their own LiteLLM/blaiq gateway instead of the default OpenRouter provider.
+  if [ -n "${OPENROUTER_API_KEY:-}" ] || [ -n "${LITELLM_API_KEY:-}" ]; then
+    ok "API key found in the environment — vector recall is already enabled, no setup needed."
     return 0
   fi
   if [ ! -t 0 ]; then
-    warn "Non-interactive install, no LITELLM_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
-    echo "    Add a provider later:  icarus connect-embeddings   (or just export LITELLM_API_KEY and re-run)"
+    warn "Non-interactive install, no OPENROUTER_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
+    echo "    Add a provider later:  icarus connect-embeddings   (or just export OPENROUTER_API_KEY and re-run)"
     return 0
   fi
   printf '\n'

@@ -4,7 +4,7 @@
 // (Filename/dir stay "mneme" — the internal engine/crate name — but every string a user sees
 // says "icarus", matching the CLI binary install.sh actually installs.)
 // Zero npm deps beyond the native addon (and @modelcontextprotocol/sdk for `mcp-serve` only);
-// embeddings via the configured LiteLLM gateway (bge-m3).
+// embeddings via OpenRouter's baai/bge-m3 by default (any OpenAI-compatible /embeddings endpoint works).
 //
 // Shared config/embed/ingest/recall logic lives in cli-lib.js — mcp-serve.js requires the SAME
 // module, so the CLI and the MCP server can never silently drift onto two different behaviors.
@@ -15,6 +15,7 @@ const readline = require('readline');
 function getMnemeStore() { return require('./index.js').MnemeStore; }
 const {
   CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
+  llmConfigured, skillSave, skillList,
 } = require('./cli-lib.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -147,14 +148,17 @@ function makePrompter() {
   return ask;
 }
 
-async function cmdConnect(_flags, cfg) {
+async function cmdConnect(_flags, cfg, sharedAsk) {
   const base = process.env.HIVEMIND_URL || 'https://hivemind.blaiq.ai';
   console.log(`\nConnect ICARUS ↔ HIVEMIND`);
   console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
-  const ask = makePrompter();
+  // A caller (icarus setup) that's already mid-wizard passes its own prompter through, so this
+  // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
+  // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
+  const ask = sharedAsk || makePrompter();
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
-  ask.close();
+  if (!sharedAsk) ask.close();
   if (!token) return console.log('  skipped.');
   cfg.hivemind = { connected: true, url: base, token, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
@@ -162,32 +166,172 @@ async function cmdConnect(_flags, cfg) {
 }
 
 // Embeddings are OPT-IN, not required — ingest/recall work lexical-only (BM25) with zero
-// embedding provider configured. `export LITELLM_API_KEY=...` alone is enough (.env-style, no
-// interactive step needed — the same pattern TencentDB Agent Memory's own setup uses); this
+// embedding provider configured. `export OPENROUTER_API_KEY=...` alone is enough (.env-style,
+// no interactive step needed — the same pattern TencentDB Agent Memory's own setup uses); this
 // command is for when you'd rather be prompted, or want the key saved to config instead of
-// exported every session, or want to force lexical-only even with an env var present.
-async function cmdConnectEmbeddings(flags, cfg) {
+// exported every session, or want to force lexical-only even with an env var present. Default
+// provider is OpenRouter's real baai/bge-m3 (openrouter.ai/baai/bge-m3, verified live: native
+// 1024-dim output, matches the shard's fixed dim exactly). LITELLM_API_KEY/LITELLM_BASE_URL
+// still work as an override for anyone pointing at their own LiteLLM/blaiq gateway instead.
+async function cmdConnectEmbeddings(flags, cfg, sharedAsk) {
   if (flags.disable) {
     cfg.embeddings = { ...cfg.embeddings, disabled: true, apiKey: null };
     saveCfg(cfg);
-    return console.log('✓ embeddings disabled — ingest/recall will use lexical-only (BM25) search, even with LITELLM_API_KEY set.');
+    return console.log('✓ embeddings disabled — ingest/recall will use lexical-only (BM25) search, even with OPENROUTER_API_KEY set.');
   }
   console.log('\nConnect an embedding provider (OpenAI-compatible /embeddings endpoint).');
   console.log('Skip this entirely and ICARUS still works — BM25 lexical search needs no vector.');
-  console.log('(Already have LITELLM_API_KEY exported? You don\'t need this command at all — it just works.)\n');
-  const ask = makePrompter();
-  const endpoint = await ask(`  Endpoint [${cfg.embeddings?.endpoint || 'https://api.blaiq.ai/v1'}]: `)
-    || cfg.embeddings?.endpoint || 'https://api.blaiq.ai/v1';
-  const model = await ask(`  Model [${cfg.embeddings?.model || 'bge-m3'}]: `) || cfg.embeddings?.model || 'bge-m3';
-  const apiKey = await ask('  API key (or blank to use LITELLM_API_KEY env var instead): ');
-  ask.close();
-  if (!apiKey && !process.env.LITELLM_API_KEY) {
-    return console.log('  no key given and LITELLM_API_KEY not set — skipped. Staying lexical-only.');
+  console.log('(Already have OPENROUTER_API_KEY exported? You don\'t need this command at all — it just works.)\n');
+  const ask = sharedAsk || makePrompter();
+  const endpoint = await ask(`  Endpoint [${cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1'}]: `)
+    || cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1';
+  const model = await ask(`  Model [${cfg.embeddings?.model || 'baai/bge-m3'}]: `) || cfg.embeddings?.model || 'baai/bge-m3';
+  const apiKey = await ask('  API key (or blank to use OPENROUTER_API_KEY env var instead): ');
+  if (!sharedAsk) ask.close();
+  if (!apiKey && !process.env.OPENROUTER_API_KEY && !process.env.LITELLM_API_KEY) {
+    return console.log('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.');
   }
   cfg.embeddings = { disabled: false, endpoint, model, apiKey: apiKey || null };
   saveCfg(cfg);
   console.log(`  ✓ embedding provider configured (${model} @ ${endpoint}). Config → ${CFG_PATH}`);
   console.log('  Re-run `icarus ingest` for existing orgs to get vector recall on their content.');
+}
+
+// Memory generation (distillation, TencentDB Agent Memory's own L0->L1 term) is OPT-IN, same
+// shape as connect-embeddings — but a SEPARATE knob: this is a chat-completion call, not an
+// embeddings one, and neither Claude's native API nor OpenRouter offer embeddings at all. Two
+// real providers, not a fake "connect your Claude subscription": Anthropic prohibits third-party
+// products from routing calls through a user's Claude.ai Free/Pro/Max login — the only supported
+// path is a standalone Anthropic API key from console.anthropic.com, or OpenRouter (which can
+// also reach Claude models, by model name, through its own separate key). ICARUS never asks for
+// or stores a Claude.ai/Codex login session.
+async function cmdConnectLlm(flags, cfg, sharedAsk) {
+  if (flags.disable) {
+    cfg.llm = { ...cfg.llm, disabled: true, apiKey: null };
+    saveCfg(cfg);
+    return console.log('✓ memory generation disabled — ingest will store raw text, even with an API key env var set.');
+  }
+  console.log('\nConnect a memory-generation provider (distills raw text into key facts before storing).');
+  console.log('Skip this entirely and ICARUS still works — raw text is stored and searchable as-is.\n');
+  console.log('  1) OpenRouter   — one key, routes to Claude/GPT/etc by model name');
+  console.log('  2) Anthropic API key — console.anthropic.com (NOT your Claude.ai subscription login)');
+  console.log('  3) Skip\n');
+  const ask = sharedAsk || makePrompter();
+  const choice = (await ask('  Choice [1/2/3]: ')).trim() || '3';
+  if (choice === '3') { if (!sharedAsk) ask.close(); return console.log('  skipped. Staying raw-text mode.'); }
+  const provider = choice === '2' ? 'anthropic' : 'openrouter';
+  const defaults = provider === 'anthropic'
+    ? { endpoint: 'https://api.anthropic.com', model: 'claude-3-5-haiku-20241022' }
+    : { endpoint: 'https://openrouter.ai/api/v1', model: 'anthropic/claude-3.5-haiku' };
+  const endpoint = await ask(`  Endpoint [${cfg.llm?.endpoint || defaults.endpoint}]: `) || cfg.llm?.endpoint || defaults.endpoint;
+  const model = await ask(`  Model [${cfg.llm?.model || defaults.model}]: `) || cfg.llm?.model || defaults.model;
+  const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY';
+  const apiKey = await ask(`  API key (or blank to use ${envVar} env var instead): `);
+  if (!sharedAsk) ask.close();
+  if (!apiKey && !process.env[envVar]) {
+    return console.log(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`);
+  }
+  cfg.llm = { disabled: false, provider, endpoint, model, apiKey: apiKey || null };
+  saveCfg(cfg);
+  console.log(`  ✓ memory generation configured (${provider}: ${model} @ ${endpoint}). Config → ${CFG_PATH}`);
+  console.log('  Re-run `icarus ingest` for existing orgs to distill their content going forward.');
+}
+
+// The guided, one-by-one flow: detect agents, ask per agent, then walk through memory-generation
+// / embeddings / HIVEMIND as sequential explained steps — never a silent "run these 3 commands
+// later" wall. Piped/non-interactive input works identically (makePrompter's non-TTY branch),
+// just answered from stdin/env instead of a live terminal.
+async function cmdSetup(_flags, cfg) {
+  const { detectAgents, installClaudeCode, installCodex, installCursor, resolveIcarusCommand } = require('./mcp-install.js');
+  console.log('\nicarus setup — guided, step by step. Answer or press enter to skip any step.\n');
+  // ONE prompter for the whole wizard: on piped/non-TTY input, makePrompter() does a single
+  // fs.readFileSync(0) — a second instance mid-wizard would find the pipe already drained and
+  // silently read nothing for every remaining question (a real bug, caught running this live).
+  const ask = makePrompter();
+  console.log('Step 1/4 — coding agents on this machine\n');
+  const found = detectAgents().filter((a) => a.found);
+  if (!found.length) {
+    console.log('  none detected (no ~/.claude.json, ~/.codex, or ~/.cursor found). Skipping.\n');
+  } else {
+    const command = resolveIcarusCommand();
+    const installers = { 'claude-code': installClaudeCode, codex: installCodex, cursor: installCursor };
+    for (const { agent } of found) {
+      const yn = (await ask(`  Register ICARUS as an MCP server for ${agent}? [Y/n]: `)).trim().toLowerCase();
+      if (yn === 'n' || yn === 'no') { console.log(`  · ${agent}: skipped`); continue; }
+      const r = installers[agent](command);
+      console.log(r.installed ? `  ✓ ${agent}: registered in ${r.path}` : `  · ${agent}: ${r.reason}`);
+    }
+    if (found.some((a) => a.agent === 'codex')) {
+      console.log('  (Codex ChatGPT-subscription login via its app-server is a separate, not-yet-built');
+      console.log('   integration — this only registered icarus as a plain MCP tool for it.)');
+    }
+    console.log('');
+  }
+
+  console.log('Step 2/4 — memory generation (distill ingested text into key facts)\n');
+  if (llmConfigured(cfg)) {
+    console.log(`  already configured (${cfg.llm.provider} @ ${cfg.llm.endpoint}) — skipping.\n`);
+  } else {
+    await cmdConnectLlm({ _: [] }, cfg, ask);
+    console.log('');
+  }
+
+  console.log('Step 3/4 — vector recall (semantic search on top of lexical/BM25)\n');
+  if (embeddingsConfigured(cfg)) {
+    console.log(`  already configured (${cfg.embeddings.model} @ ${cfg.embeddings.endpoint}) — skipping.\n`);
+  } else {
+    await cmdConnectEmbeddings({ _: [] }, cfg, ask);
+    console.log('');
+  }
+
+  console.log('Step 4/4 — HIVEMIND account (optional)\n');
+  if (cfg.hivemind && cfg.hivemind.connected) {
+    console.log('  already connected — skipping.\n');
+  } else {
+    await cmdConnect({ _: [] }, cfg, ask);
+    console.log('');
+  }
+  ask.close();
+
+  const fresh = loadCfg();
+  console.log('Setup summary:');
+  console.log(`  agents registered : ${found.filter((a) => a.found).length ? 'see above' : 'none found'}`);
+  console.log(`  memory generation : ${llmConfigured(fresh) ? `on (${fresh.llm.provider})` : 'off (raw text)'}`);
+  console.log(`  vector recall     : ${embeddingsConfigured(fresh) ? `on (${fresh.embeddings.model})` : 'off (lexical/BM25)'}`);
+  console.log(`  HIVEMIND          : ${fresh.hivemind?.connected ? 'connected' : 'not connected'}`);
+  console.log('\nAll set. Try: icarus ingest <dir> --org <name>');
+}
+
+// "Automatically enables skill generation" (as requested) has a real limit: ICARUS has no
+// visibility into a coding-agent session on its own — no agent broadcasts its transcript to
+// arbitrary local tools. What's actually automatable is the LAST step: given a transcript
+// (stdin, a file, or a piped `--session-end` hook payload), distill it into a skill with zero
+// interactive prompts. The "automatic" part is wiring THIS into an agent's own hook (e.g.
+// Claude Code's SessionEnd hook piping its transcript here) — that's a one-line hook config on
+// the agent's side, not something ICARUS can install into another tool's session lifecycle
+// itself (same reasoning as never touching a Claude Code/Codex login session).
+async function cmdSkill(flags, cfg) {
+  const sub = flags._[0];
+  const org = flags.org || 'default';
+  if (sub === 'list') {
+    const skills = skillList(org);
+    if (!skills.length) return console.log(`no skills saved yet for org "${org}". Run: icarus skill save <file> --org ${org}`);
+    console.log(`skills for "${org}":\n`);
+    for (const s of skills) console.log(`  ${s.slug.padEnd(28)} ${s.description}`);
+    return;
+  }
+  if (sub === 'save') {
+    if (!llmConfigured(cfg)) {
+      throw new Error('skill extraction needs a memory-generation provider — run `icarus connect-llm` first');
+    }
+    const file = flags._[1];
+    const transcript = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
+    console.log('extracting skill...');
+    const saved = await skillSave(transcript, org, cfg);
+    if (!saved) throw new Error('extraction failed (bad key, provider error, or empty transcript) — no skill written');
+    return console.log(`✓ skill saved: ${saved}`);
+  }
+  throw new Error('usage: icarus skill <save [file] --org <name> | list --org <name>>');
 }
 
 async function cmdMcpServe(_flags, _cfg) {
@@ -224,6 +368,8 @@ async function main() {
       case 'train-pq': cmdTrainPq(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
       case 'connect-embeddings': await cmdConnectEmbeddings(flags, cfg); break;
+      case 'connect-llm': await cmdConnectLlm(flags, cfg); break;
+      case 'setup': await cmdSetup(flags, cfg); break;
       case 'mcp-serve': await cmdMcpServe(flags, cfg); break;
       case 'mcp': {
         const sub = flags._[0];
@@ -233,6 +379,8 @@ async function main() {
         break;
       }
       case 'daemon': await cmdDaemon(flags, cfg); break;
+      case 'graph': await require('./graph.js').run(flags); break;
+      case 'skill': await cmdSkill(flags, cfg); break;
       default:
         console.log(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -242,13 +390,29 @@ async function main() {
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)
   icarus status                        shards + disk usage
+  icarus setup                         guided, one-by-one wizard: detect coding agents, connect
+                                        memory generation, embeddings, HIVEMIND — do this first
   icarus connect                       link your HIVEMIND account
   icarus connect-embeddings [--disable]
                                         configure an embedding provider for vector recall — OPT
                                         IN, not required: with none configured, ingest/recall
                                         run lexical-only (BM25), not an error
-  icarus mcp install                   register icarus as an MCP server in every coding
-                                        agent found on this machine (Claude Code, Codex, Cursor)
+  icarus connect-llm [--disable]       configure a memory-generation (distillation) provider —
+                                        OpenRouter or your own Anthropic API key. OPT IN; with
+                                        none configured, ingest stores raw text unchanged.
+                                        NEVER a Claude.ai/Codex subscription login — Anthropic's
+                                        own terms prohibit third-party tools from doing that.
+  icarus skill save [file] --org <name>  distill a session transcript (file, or piped stdin) into
+                                        a Claude-Code-shaped skill .md, saved to ~/.icarus/skills
+  icarus skill list --org <name>       list skills saved for an org
+                                        needs connect-llm configured (memory generation)
+  icarus graph build --repo <dir>      native symbol/call-graph index (Tree-sitter via WASM,
+                                        SQLite storage) — JS/TS + Rust for now, no Python/uvx dep
+  icarus graph status --repo <dir>     node/edge/file counts for the built graph
+  icarus graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]
+  icarus mcp install                   register icarus as an MCP server in every coding agent
+                                        found on this machine (Claude Code, Codex, Cursor) —
+                                        exposes icarus_graph_build/status/query natively too
   icarus mcp serve                     run the MCP server directly (stdio) — what the agents
                                         installed above actually launch
   icarus daemon start [--port 8137]    run ICARUS as a persistent local HTTP service (a shared
@@ -265,7 +429,10 @@ async function main() {
   only on small/medium shards (recall_pq loses to HNSW's query latency as shard size grows).
   Good fit: shards you rebuild often. Run train-pq once first, or --pq errors with that reminder.
 
-  env: LITELLM_API_KEY (embeddings, optional — see connect-embeddings), ICARUS_HOME (default ~/.icarus)`);
+  env: OPENROUTER_API_KEY (embeddings + memory generation, optional — see connect-embeddings/connect-llm)
+       ANTHROPIC_API_KEY (memory generation via Anthropic's own API instead — see connect-llm)
+       LITELLM_API_KEY / LITELLM_BASE_URL (embeddings via your own LiteLLM/blaiq gateway instead)
+       ICARUS_HOME (default ~/.icarus)`);
     }
   } catch (e) {
     console.error('✗', e.message);

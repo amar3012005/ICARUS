@@ -30,53 +30,86 @@ function writeJsonPreserving(p, obj) {
   fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n');
 }
 
+// Every MCP entry `mcp install`/`icarus setup` can register, name -> {command, args}. Just
+// icarus itself — the native symbol/call-graph indexer (graph-native.js) is exposed as icarus's
+// OWN MCP tools (icarus_graph_build/status/query, see mcp-serve.js) now, not a separate
+// registered server for a wrapped external tool.
+function mcpEntries(command, _repo) {
+  return {
+    icarus: { command, args: ['mcp-serve'] },
+  };
+}
+
 // Claude Code: global ~/.claude.json, top-level `mcpServers.<name> = {command, args, env?}`.
-function installClaudeCode(command) {
+function installClaudeCode(command, repo) {
   const p = path.join(HOME, '.claude.json');
   if (!fs.existsSync(p)) return { agent: 'claude-code', installed: false, reason: 'not found (no ~/.claude.json)' };
   const cfg = readJsonSafe(p);
   if (!cfg) return { agent: 'claude-code', installed: false, reason: 'config exists but failed to parse — left untouched' };
   cfg.mcpServers = cfg.mcpServers || {};
-  if (cfg.mcpServers.icarus) return { agent: 'claude-code', installed: false, reason: 'already registered' };
-  cfg.mcpServers.icarus = { type: 'stdio', command, args: ['mcp-serve'], env: {} };
+  let wrote = false;
+  for (const [name, entry] of Object.entries(mcpEntries(command, repo))) {
+    if (cfg.mcpServers[name]) continue;
+    cfg.mcpServers[name] = { type: 'stdio', ...entry, env: {} };
+    wrote = true;
+  }
+  if (!wrote) return { agent: 'claude-code', installed: false, reason: 'already registered' };
   writeJsonPreserving(p, cfg);
   return { agent: 'claude-code', installed: true, path: p };
 }
 
 // Cursor: global ~/.cursor/mcp.json, same `mcpServers.<name> = {command, args}` shape.
-function installCursor(command) {
+function installCursor(command, repo) {
   const dir = path.join(HOME, '.cursor');
   const p = path.join(dir, 'mcp.json');
   if (!fs.existsSync(dir)) return { agent: 'cursor', installed: false, reason: 'not found (no ~/.cursor)' };
   const cfg = fs.existsSync(p) ? readJsonSafe(p) : { mcpServers: {} };
   if (!cfg) return { agent: 'cursor', installed: false, reason: 'mcp.json exists but failed to parse — left untouched' };
   cfg.mcpServers = cfg.mcpServers || {};
-  if (cfg.mcpServers.icarus) return { agent: 'cursor', installed: false, reason: 'already registered' };
-  cfg.mcpServers.icarus = { command, args: ['mcp-serve'] };
+  let wrote = false;
+  for (const [name, entry] of Object.entries(mcpEntries(command, repo))) {
+    if (cfg.mcpServers[name]) continue;
+    cfg.mcpServers[name] = entry;
+    wrote = true;
+  }
+  if (!wrote) return { agent: 'cursor', installed: false, reason: 'already registered' };
   writeJsonPreserving(p, cfg);
   return { agent: 'cursor', installed: true, path: p };
 }
 
-// Codex: ~/.codex/config.toml (TOML, not JSON). Appending a well-formed new `[mcp_servers.icarus]`
-// section is enough — Codex's own writes go through the same file, and this never re-serializes
+// Codex: ~/.codex/config.toml (TOML, not JSON). Appending well-formed new `[mcp_servers.<name>]`
+// sections is enough — Codex's own writes go through the same file, and this never re-serializes
 // (so no existing content, formatting, or comments elsewhere in the file can be disturbed).
-// Deliberately NOT a general TOML editor: it only ever appends, and only if the section is absent.
-function installCodex(command) {
+// Deliberately NOT a general TOML editor: it only ever appends, and only for sections absent.
+function installCodex(command, repo) {
   const dir = path.join(HOME, '.codex');
   const p = path.join(dir, 'config.toml');
   if (!fs.existsSync(dir)) return { agent: 'codex', installed: false, reason: 'not found (no ~/.codex)' };
   let existing = '';
-  if (fs.existsSync(p)) {
-    existing = fs.readFileSync(p, 'utf8');
-    if (/^\[mcp_servers\.icarus\]/m.test(existing)) {
-      return { agent: 'codex', installed: false, reason: 'already registered' };
-    }
+  if (fs.existsSync(p)) existing = fs.readFileSync(p, 'utf8');
+  let block = '';
+  let wrote = false;
+  for (const [name, entry] of Object.entries(mcpEntries(command, repo))) {
+    if (new RegExp(`^\\[mcp_servers\\.${name}\\]`, 'm').test(existing)) continue;
+    const argsToml = JSON.stringify(entry.args); // ["a","b"] is valid TOML array syntax too
+    block += `\n[mcp_servers.${name}]\ncommand = ${JSON.stringify(entry.command)}\nargs = ${argsToml}\n`;
+    wrote = true;
   }
-  const argsToml = JSON.stringify(['mcp-serve']); // ["mcp-serve"] is valid TOML array syntax too
-  const block = `\n[mcp_servers.icarus]\ncommand = ${JSON.stringify(command)}\nargs = ${argsToml}\n`;
+  if (!wrote) return { agent: 'codex', installed: false, reason: 'already registered' };
   fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(p, (existing && !existing.endsWith('\n') ? '\n' : '') + block);
   return { agent: 'codex', installed: true, path: p };
+}
+
+// Existence-check ONLY, no writing — for `icarus setup`'s wizard to ask "register with X?" one
+// agent at a time BEFORE committing to any write, instead of installClaudeCode/installCodex/
+// installCursor's current all-in-one detect+write behavior (still used as-is by `mcp install`).
+function detectAgents() {
+  return [
+    { agent: 'claude-code', found: fs.existsSync(path.join(HOME, '.claude.json')) },
+    { agent: 'codex', found: fs.existsSync(path.join(HOME, '.codex')) },
+    { agent: 'cursor', found: fs.existsSync(path.join(HOME, '.cursor')) },
+  ];
 }
 
 async function run(_flags) {
@@ -97,7 +130,10 @@ async function run(_flags) {
   } else {
     console.log('\nNothing to do — either no supported agent was found, or icarus is already registered everywhere it was.');
   }
-  console.log('Tools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_train_pq, icarus_compact.');
+  console.log('Tools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_train_pq, icarus_compact,');
+  console.log('               icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph).');
 }
 
-module.exports = { run, resolveIcarusCommand };
+module.exports = {
+  run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
+};

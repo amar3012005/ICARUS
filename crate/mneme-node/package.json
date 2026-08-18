@@ -16,6 +16,8 @@
     "mcp-serve.js",
     "mcp-install.js",
     "daemon.js",
+    "graph.js",
+    "graph-native.js",
     "*.node",
     "README.md"
   ],
@@ -70,6 +72,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.3",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.20.8",
     "zod": "^4.4.3"
   }
 }

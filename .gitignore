@@ -39,3 +39,6 @@ bench/shadow/*.err
 bench/shadow/mneme-shard/
 examples/__pycache__/
 __pycache__/
+
+# icarus graph build output (native code-review-graph, per-repo local index — never committed)
+.icarus-graph/
