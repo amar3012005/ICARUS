@@ -231,44 +231,70 @@ ensure_path() {
 # with `2>/dev/null` right there — exactly the scary-looking noise this function exists to avoid).
 has_tty() { { : < /dev/tty; } 2>/dev/null; }
 
-connect_hivemind() {
+# All four guided steps read via bash's own `read ... < /dev/tty` (the single-read pattern every
+# curl-pipe installer relies on, well-proven) and then call the matching icarus subcommand with
+# the answer already in hand via flags -- NEVER handing off tty control to a long-lived node
+# child process for more than the split-second of one non-interactive invocation. Earlier version
+# of this function spawned `icarus setup` (a single Node process doing 4+ sequential /dev/tty
+# reads) directly as install.sh's child -- a real test of the actual published `curl | bash`
+# install showed that process dying silently after its very first question, no error printed
+# (consistent with a signal-based kill, not a JS exception) -- most likely a controlling-
+# terminal/process-group interaction specific to being spawned from inside a shell pipeline
+# (`curl url | bash`), since a plain interactive `icarus setup` run (not spawned by install.sh)
+# had no such issue in any of this session's own testing. Untested unknown, so removed the
+# dependency on it entirely rather than trying to explain away one unreproduced failure.
+guided_setup() {
   if ! has_tty; then
-    warn "No controlling terminal — skipping HIVEMIND connect."
-    echo "    Run later:  icarus connect"
+    warn "No controlling terminal — skipping guided setup."
+    echo "    Run later:  icarus setup   (or individually: icarus mcp install / connect-llm / connect-embeddings / connect)"
     return 0
   fi
   printf '\n'
-  c "36" "Connect your HIVEMIND account now? ICARUS can sync recall with HIVEMIND."
-  read -r -p "  Connect? [y/N] " ans < /dev/tty
-  case "$ans" in
-    y|Y) "$BIN_DIR/icarus" connect < /dev/tty ;;
-    *)   echo "    Skipped. Run later:  icarus connect" ;;
-  esac
-}
+  c "36" "Continuing with guided setup. Press Ctrl+C at any point to stop — whatever"
+  c "36" "step you're on can always be re-run later with the command shown for it."
 
-connect_embeddings() {
-  # ICARUS works with zero embedding provider — BM25 lexical search needs no vector at all.
-  # This is an OFFER, not a requirement; default is no, and that default is a fully working tool.
-  # `export OPENROUTER_API_KEY=...` before running this installer is ALSO enough on its own,
-  # .env-style, no interactive step needed either way — same pattern TencentDB Agent Memory's
-  # own setup uses (fill in the env vars, it just works). LITELLM_API_KEY still works for anyone
-  # pointing at their own LiteLLM/blaiq gateway instead of the default OpenRouter provider.
-  if [ -n "${OPENROUTER_API_KEY:-}" ] || [ -n "${LITELLM_API_KEY:-}" ]; then
-    ok "API key found in the environment — vector recall is already enabled, no setup needed."
-    return 0
+  printf '\n'; c "36" "Step 1/4 — registering with any coding agents found on this machine"
+  "$BIN_DIR/icarus" mcp install || true
+
+  printf '\n'; c "36" "Step 2/4 — memory generation (distills ingested text into key facts before storing)"
+  if [ -n "${OPENROUTER_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
+    ok "API key already in the environment — memory generation is enabled, nothing to do."
+  else
+    echo "  Skip this entirely and ICARUS still works — raw text is stored and searchable as-is."
+    echo "    1) OpenRouter (one key, routes to Claude/GPT/etc by model name)"
+    echo "    2) Anthropic API key (console.anthropic.com — NOT a Claude.ai subscription login)"
+    echo "    3) Skip"
+    read -r -p "  Choice [1/2/3]: " llm_choice < /dev/tty
+    case "$llm_choice" in
+      1) read -r -s -p "  OpenRouter API key: " llm_key < /dev/tty; printf '\n'
+         "$BIN_DIR/icarus" connect-llm --provider openrouter --key "$llm_key" ;;
+      2) read -r -s -p "  Anthropic API key: " llm_key < /dev/tty; printf '\n'
+         "$BIN_DIR/icarus" connect-llm --provider anthropic --key "$llm_key" ;;
+      *) "$BIN_DIR/icarus" connect-llm --provider skip ;;
+    esac
   fi
-  if ! has_tty; then
-    warn "No controlling terminal, no OPENROUTER_API_KEY in the environment — ingest/recall will be lexical-only (BM25)."
-    echo "    Add a provider later:  icarus connect-embeddings   (or just export OPENROUTER_API_KEY and re-run)"
-    return 0
+
+  printf '\n'; c "36" "Step 3/4 — vector recall (semantic search on top of lexical/BM25)"
+  if [ -n "${OPENROUTER_API_KEY:-}${LITELLM_API_KEY:-}" ]; then
+    ok "API key already in the environment — vector recall is enabled, nothing to do."
+  else
+    echo "  Skip this entirely and ICARUS still works — BM25 lexical search needs no vector."
+    read -r -p "  Connect an embedding provider (OpenRouter baai/bge-m3)? [y/N] " emb_ans < /dev/tty
+    case "$emb_ans" in
+      y|Y) read -r -s -p "  OpenRouter API key: " emb_key < /dev/tty; printf '\n'
+           "$BIN_DIR/icarus" connect-embeddings --key "$emb_key" ;;
+      *) echo "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
+    esac
   fi
-  printf '\n'
-  c "36" "Connect an external embedding provider now? Without one, ICARUS still works — ingest/recall"
-  c "36" "just run lexical-only (BM25 keyword search), not semantic. You can add one anytime."
-  read -r -p "  Connect an embedding provider? [y/N] " ans < /dev/tty
-  case "$ans" in
-    y|Y) "$BIN_DIR/icarus" connect-embeddings < /dev/tty ;;
-    *)   echo "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
+
+  printf '\n'; c "36" "Step 4/4 — HIVEMIND account (optional)"
+  read -r -p "  Connect your HIVEMIND account? [y/N] " hm_ans < /dev/tty
+  case "$hm_ans" in
+    y|Y)
+      echo "  Open: ${HIVEMIND_URL:-https://hivemind.blaiq.ai}/settings/connections (authorize \"icarus local\")"
+      read -r -s -p "  Paste HIVEMIND token: " hm_token < /dev/tty; printf '\n'
+      "$BIN_DIR/icarus" connect --token "$hm_token" ;;
+    *) echo "    Skipped. Run later:  icarus connect" ;;
   esac
 }
 
@@ -302,22 +328,7 @@ main() {
     verify
   fi
 
-  # A real controlling terminal exists (see has_tty's comment) -> run the FULL guided wizard
-  # (agent MCP registration, memory generation, embeddings, HIVEMIND — all four, one after
-  # another) instead of the old separate connect_embeddings/connect_hivemind calls, which only
-  # ever covered two of those four and left the user to run `icarus mcp install`/`icarus
-  # connect-llm` manually afterward. No controlling terminal (CI, a fully detached script) ->
-  # unchanged silent-skip-with-instructions behavior; nothing to read from either way.
-  if has_tty; then
-    printf '\n'
-    c "36" "Continuing with guided setup (agents, memory generation, embeddings, HIVEMIND)."
-    c "36" "Press Ctrl+C at any point to stop — nothing beyond this point is required, and"
-    c "36" "whatever step you're on can always be re-run later with: icarus setup"
-    "$BIN_DIR/icarus" setup < /dev/tty || true
-  else
-    connect_embeddings
-    connect_hivemind
-  fi
+  guided_setup
 
   printf '\n'
   c "32" "Done. Try:  icarus status"

@@ -150,8 +150,24 @@ function makePrompter() {
   return ask;
 }
 
-async function cmdConnect(_flags, cfg, sharedAsk) {
+async function cmdConnect(flags, cfg, sharedAsk) {
   const base = process.env.HIVEMIND_URL || 'https://hivemind.blaiq.ai';
+  // --token makes this fully non-interactive — install.sh's guided section uses this instead of
+  // spawning a second interactive read inside a curl|bash pipeline's child process. A real bug
+  // was caught running the actual `curl | bash` install: a long-lived Node process doing several
+  // sequential /dev/tty reads (icarus setup's own wizard, invoked as install.sh's child) died
+  // silently after its first question — most likely a controlling-terminal/process-group issue
+  // specific to being spawned from within a shell pipeline (`curl url | bash`), not reproducible
+  // in a plain interactive shell. install.sh now does ALL prompting itself (the single-read `read
+  // ... < /dev/tty` pattern already proven reliable), then calls each icarus subcommand with the
+  // answer already in hand via flags — never handing tty control to a child process for more than
+  // one read at a time.
+  if (flags.token !== undefined) {
+    if (!flags.token) return console.log('  skipped.');
+    cfg.hivemind = { connected: true, url: base, token: flags.token, connectedAt: new Date().toISOString() };
+    saveCfg(cfg);
+    return console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
+  }
   console.log(`\nConnect ICARUS ↔ HIVEMIND`);
   console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
@@ -180,6 +196,19 @@ async function cmdConnectEmbeddings(flags, cfg, sharedAsk) {
     cfg.embeddings = { ...cfg.embeddings, disabled: true, apiKey: null };
     saveCfg(cfg);
     return console.log('✓ embeddings disabled — ingest/recall will use lexical-only (BM25) search, even with OPENROUTER_API_KEY set.');
+  }
+  // --key (even '' to mean "use env var / skip") makes this fully non-interactive — see
+  // cmdConnect's comment for why install.sh's guided section needs this shape.
+  if (flags.key !== undefined) {
+    const endpoint = flags.endpoint || cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1';
+    const model = flags.model || cfg.embeddings?.model || 'baai/bge-m3';
+    if (!flags.key && !process.env.OPENROUTER_API_KEY && !process.env.LITELLM_API_KEY) {
+      return console.log('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.');
+    }
+    cfg.embeddings = { disabled: false, endpoint, model, apiKey: flags.key || null };
+    saveCfg(cfg);
+    console.log(`  ✓ embedding provider configured (${model} @ ${endpoint}). Config → ${CFG_PATH}`);
+    return;
   }
   console.log('\nConnect an embedding provider (OpenAI-compatible /embeddings endpoint).');
   console.log('Skip this entirely and ICARUS still works — BM25 lexical search needs no vector.');
@@ -212,6 +241,25 @@ async function cmdConnectLlm(flags, cfg, sharedAsk) {
     cfg.llm = { ...cfg.llm, disabled: true, apiKey: null };
     saveCfg(cfg);
     return console.log('✓ memory generation disabled — ingest will store raw text, even with an API key env var set.');
+  }
+  // --provider (openrouter|anthropic|skip) + --key make this fully non-interactive — see
+  // cmdConnect's comment for why install.sh's guided section needs this shape.
+  if (flags.provider !== undefined) {
+    if (flags.provider === 'skip') return console.log('  skipped. Staying raw-text mode.');
+    const provider = flags.provider === 'anthropic' ? 'anthropic' : 'openrouter';
+    const defaults = provider === 'anthropic'
+      ? { endpoint: 'https://api.anthropic.com', model: 'claude-3-5-haiku-20241022' }
+      : { endpoint: 'https://openrouter.ai/api/v1', model: 'anthropic/claude-3.5-haiku' };
+    const endpoint = flags.endpoint || cfg.llm?.endpoint || defaults.endpoint;
+    const model = flags.model || cfg.llm?.model || defaults.model;
+    const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY';
+    if (!flags.key && !process.env[envVar]) {
+      return console.log(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`);
+    }
+    cfg.llm = { disabled: false, provider, endpoint, model, apiKey: flags.key || null };
+    saveCfg(cfg);
+    console.log(`  ✓ memory generation configured (${provider}: ${model} @ ${endpoint}). Config → ${CFG_PATH}`);
+    return;
   }
   console.log('\nConnect a memory-generation provider (distills raw text into key facts before storing).');
   console.log('Skip this entirely and ICARUS still works — raw text is stored and searchable as-is.\n');
