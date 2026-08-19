@@ -186,10 +186,23 @@ function makePrompter() {
 // Matches "just like claude does it": zero typing for the common case. HIVEMIND_URL (or
 // --api-url) still overrides for anyone self-hosting or pointing ICARUS at a different
 // HIVEMIND-shaped server; this is a default, not a hardcoded requirement.
-const DEFAULT_HIVEMIND_URL = 'https://api.singulancelabs.com';
+// Two DIFFERENT services, confirmed live and NOT interchangeable — a real bug caught by an
+// actual failed `icarus ingest` (404 Not Found) right after a successful connect:
+//   - api.singulancelabs.com   = hivemind-control-plane: /auth/cli/start, session/API-key minting.
+//     Confirmed: POST /api/knowledge/upload here -> 404 (route doesn't exist on this service).
+//   - core.singulancelabs.com  = hm-core: the actual REST API ICARUS calls for ingest/recall
+//     (/api/knowledge/upload, /api/recall, ...). Confirmed: POST /api/knowledge/upload here ->
+//     401 (route exists, needs the bearer token) — the SAME token minted by the auth host works
+//     here too (one shared, revocable API key across both services).
+// So `icarus connect` signs in against the AUTH host but must store the REST host separately —
+// never reuse one for the other. HIVEMIND_URL overrides the auth host; HIVEMIND_API_URL (or
+// --api-url) overrides the REST host — same split cli-lib.js's hivemindApiBase() already expects.
+const DEFAULT_HIVEMIND_AUTH_URL = 'https://api.singulancelabs.com';
+const DEFAULT_HIVEMIND_API_URL = 'https://core.singulancelabs.com';
 
 async function cmdConnect(flags, cfg, sharedAsk) {
-  const defaultUrl = process.env.HIVEMIND_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_URL;
+  const authUrl = process.env.HIVEMIND_URL || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
+  const restUrl = flags['api-url'] || process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
   // --token makes this fully non-interactive — install.sh's guided section uses this instead of
   // spawning a second interactive read inside a curl|bash pipeline's child process. A real bug
   // was caught running the actual `curl | bash` install: a long-lived Node process doing several
@@ -202,8 +215,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // one read at a time.
   if (flags.token !== undefined) {
     if (!flags.token) return console.log(c.dim('  skipped.'));
-    const apiUrl = flags['api-url'] || cfg.hivemind?.apiUrl || defaultUrl;
-    cfg.hivemind = { connected: true, url: apiUrl, token: flags.token, apiUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: flags.token, apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
     return;
@@ -213,13 +225,13 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // comment) tried FIRST against the default/configured server, no prompt needed for the common
   // case. Only if that fails (unreachable server, timed out, or user closes the tab) does this
   // fall to asking for a URL + a manually pasted token.
-  console.log(c.dim(`  Signing in via ${c.path(defaultUrl)} ${defaultUrl === DEFAULT_HIVEMIND_URL ? '(default — override with HIVEMIND_URL)' : ''}`));
+  console.log(c.dim(`  Signing in via ${c.path(authUrl)} ${authUrl === DEFAULT_HIVEMIND_AUTH_URL ? '(default — override with HIVEMIND_URL)' : ''}`));
   console.log(c.running('  Opening your browser...'));
-  const oauth = await attemptHivemindOAuth(defaultUrl);
+  const oauth = await attemptHivemindOAuth(authUrl);
   if (oauth) {
-    cfg.hivemind = { connected: true, url: defaultUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: defaultUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
-    return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)}`);
+    return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)} (API base: ${c.path(restUrl)})`);
   }
   // --oauth-only: browser-flow-or-fail, no interactive fallback — this is what install.sh's
   // guided_setup calls, so it (not this Node process) owns every /dev/tty read. A real bug this
@@ -237,13 +249,13 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
   // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
   const ask = sharedAsk || makePrompter();
-  const apiUrl = (await ask(`  Memory server REST API base URL [${defaultUrl}]: `)) || defaultUrl;
-  console.log(`  1. Open: ${c.path(`${apiUrl}/settings/connections`)} (authorize "icarus local")`);
+  const manualUrl = (await ask(`  Memory server REST API base URL [${restUrl}]: `)) || restUrl;
+  console.log(`  1. Open: ${c.path(`${authUrl}/settings/connections`)} (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
   if (!token) return console.log(c.dim('  skipped.'));
-  cfg.hivemind = { connected: true, url: apiUrl, token, apiUrl, connectedAt: new Date().toISOString() };
+  cfg.hivemind = { connected: true, url: authUrl, token, apiUrl: manualUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
   console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
 }

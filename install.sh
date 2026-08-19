@@ -312,14 +312,21 @@ guided_setup() {
       # curl|bash pipe. Only the fallback below reads /dev/tty, and THIS script owns that read —
       # never hand a Node child more than one /dev/tty read at a time (see the comment above
       # guided_setup for the real bug that taught us this).
-      hm_url="${HIVEMIND_URL:-https://api.singulancelabs.com}"
-      if "$BIN_DIR/icarus" connect --oauth-only --api-url "$hm_url"; then
+      #
+      # Deliberately NOT passing --api-url here: the sign-in host (HIVEMIND_URL, defaults to
+      # api.singulancelabs.com) and the REST API host icarus ingest/recall actually call
+      # (HIVEMIND_API_URL, defaults to core.singulancelabs.com) are two DIFFERENT services — a
+      # real bug hit this session when install.sh passed the sign-in host as --api-url too,
+      # silently pointing ingest/recall at the wrong server (404s). Let mneme-cli.js's own
+      # defaults for each apply unless the user has actually set the matching env var.
+      hm_auth_url="${HIVEMIND_URL:-https://api.singulancelabs.com}"
+      if "$BIN_DIR/icarus" connect --oauth-only; then
         :
       else
         warn "Browser sign-in didn't complete — falling back to a manual token."
-        echo "  Open: ${hm_url}/settings/connections (authorize \"icarus local\")"
+        echo "  Open: ${hm_auth_url}/settings/connections (authorize \"icarus local\")"
         read -r -s -p "  Paste HIVEMIND token: " hm_token < /dev/tty; printf '\n'
-        [ -n "$hm_token" ] && "$BIN_DIR/icarus" connect --token "$hm_token" --api-url "$hm_url"
+        [ -n "$hm_token" ] && "$BIN_DIR/icarus" connect --token "$hm_token"
       fi ;;
     *) dim "    Skipped. Run later:  icarus connect" ;;
   esac
