@@ -13,7 +13,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const {
   loadCfg, ingestDir, recallQuery, statusReport, openStore,
-  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery,
+  hivemindConfigured, hivemindIngestDir, hivemindSaveMemory, saveLocalMemory,
 } = require('./cli-lib.js');
 
 function textResult(obj) {
@@ -66,23 +66,44 @@ async function run() {
     'icarus_recall',
     {
       title: 'Recall memories from ICARUS',
-      description: 'Recall over a previously ingested org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real /api/recall (dense+lexical+entity+temporal, fused server-side) unless local=true. Otherwise: semantic (HNSW/PQ) if an embedding provider is configured, lexical (BM25) if not -- automatic, not a caller decision. Set usePq=true only if train_pq has already run for that org AND an embedding provider is configured (see icarus_train_pq) -- it is NOT a universal upgrade over the default HNSW recall, see icarus_train_pq\'s description.',
+      description: 'Recall over a previously ingested org\'s memory shard. LOCAL ONLY, always -- never routes to HIVEMIND\'s shared /api/recall: a real cross-tenant leak was found there in testing (other orgs\' private content came back for this org\'s own queries). Real parallel hybrid retrieval: dense (HNSW, using an embedding provider or HIVEMIND\'s free embed service if connected) and lexical (BM25) run concurrently, merged via Reciprocal Rank Fusion -- not a single-modality either/or fallback. If HIVEMIND is connected, the merged wide candidate set gets a narrow re-score from the real bge-reranker-v2-m3 cross-encoder; if not, the hybrid merge itself is the final answer. Set usePq=true only if train_pq has already run for that org AND an embedding provider is configured (see icarus_train_pq) -- it is NOT a universal upgrade over the default hybrid recall, see icarus_train_pq\'s description.',
       inputSchema: {
         query: z.string().describe('Natural-language query'),
         org: z.string().default('default'),
         topK: z.number().int().positive().max(200).default(5),
-        usePq: z.boolean().default(false).describe('Use PQ/ADC recall instead of the default HNSW/brute recall — requires icarus_train_pq to have run first for this org'),
+        usePq: z.boolean().default(false).describe('Use PQ/ADC recall instead of the default hybrid recall — requires icarus_train_pq to have run first for this org'),
+      },
+    },
+    async ({ query, org, topK, usePq }) => {
+      try {
+        const cfg = loadCfg();
+        const hits = await recallQuery(query, org || 'default', cfg, topK || 5, !!usePq);
+        return textResult(hits);
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_save',
+    {
+      title: 'Save a real memory to ICARUS',
+      description: 'Saves text as a real, deliberate memory -- full embedding + smart-router when HIVEMIND-routed (mode:\'atomic\', the same primitive MCP\'s own save_memory tool uses server-side), real local embedding otherwise. NOT evidence-only -- recallable via icarus_recall alongside anything icarus_ingest promoted. Set local=true to force the local .amr engine even if a HIVEMIND token is configured.',
+      inputSchema: {
+        text: z.string().describe('The memory content to save'),
+        org: z.string().default('default'),
         local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
       },
     },
-    async ({ query, org, topK, usePq, local }) => {
+    async ({ text, org, local }) => {
       try {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && !local) {
-          return textResult(await hivemindRecallQuery(query, org || 'default', cfg, topK || 5));
+          const r = await hivemindSaveMemory(text, org || 'default', cfg);
+          await saveLocalMemory(text, org || 'default', cfg); // mirror — icarus_recall is local-only
+          return textResult(r);
         }
-        const hits = await recallQuery(query, org || 'default', cfg, topK || 5, !!usePq);
-        return textResult(hits);
+        await saveLocalMemory(text, org || 'default', cfg);
+        return textResult({ ok: true, org: org || 'default', mode: 'local' });
       } catch (e) { return errorResult(e); }
     },
   );

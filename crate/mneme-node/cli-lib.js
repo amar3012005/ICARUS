@@ -691,10 +691,40 @@ async function ingestDir(dir, org, cfg, onProgress) {
   };
 }
 
-/** Recall `topK` memories for `query` in `org`. `usePq` requires trainPq() to have run first
- * AND an embedding provider configured (PQ trains on real vectors, no way around that). With
- * no embedding provider configured and usePq not requested, transparently falls back to BM25
- * lexical search — the engine is still fully usable, just not semantic. */
+/** Reciprocal Rank Fusion — merges two independently-ranked candidate lists (dense HNSW cosine
+ * scores and BM25 lexical scores live on completely different, incomparable scales, so summing
+ * or averaging raw scores would be meaningless; RRF only uses each list's RANK, which is always
+ * comparable) into one list, deduped by text. `k=60` is the standard RRF damping constant from
+ * the original paper (Cormack et al.) — it flattens the sharp 1/rank drop-off for lower ranks so
+ * the fusion isn't dominated entirely by whichever list happens to rank its #1 hit highest. */
+function rrfMerge(listA, listB, k = 60) {
+  const merged = new Map(); // text -> {..hit, rrfScore}
+  const add = (list) => {
+    list.forEach((hit, i) => {
+      const contribution = 1 / (k + i + 1);
+      const existing = merged.get(hit.text);
+      if (existing) existing.rrfScore += contribution;
+      else merged.set(hit.text, { ...hit, rrfScore: contribution });
+    });
+  };
+  add(listA);
+  add(listB);
+  return [...merged.values()].sort((a, b) => b.rrfScore - a.rrfScore);
+}
+
+/** Recall `topK` memories for `query` in `org` — REAL parallel hybrid retrieval, always: dense
+ * (HNSW, when a query vector is available) and lexical (BM25) run CONCURRENTLY against the same
+ * wide candidate window, then merge via Reciprocal Rank Fusion (rrfMerge above) — this is the
+ * actual hybrid retrieval stage, not a single-modality either/or fallback. `usePq` requires
+ * trainPq() to have run first AND an embedding provider configured (PQ trains on real vectors,
+ * no way around that) and bypasses this pipeline entirely — it's specifically about measuring/
+ * using the trained PQ codebook directly.
+ *
+ * The SECOND stage — narrow re-score via the real bge-reranker-v2-m3 cross-encoder — only runs
+ * when HIVEMIND is connected (gated on hivemindConfigured(cfg), same convention as every other
+ * free-HIVEMIND-service fallback in this file). Not connected: the RRF-merged hybrid result IS
+ * the final answer, truncated to topK directly — no rerank stage, by design (that's the explicit
+ * "if not connected, just retrieve top-k" spec this pipeline was built to). */
 async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   const store = openStore(cfg, org);
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
@@ -704,37 +734,49 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   if (usePq && !hasOwnEmbeddings) {
     throw new Error('usePq requires an embedding provider — run `icarus connect-embeddings` first (PQ trains on real vectors)');
   }
+  if (usePq) {
+    if (!store.pqTrained()) throw new Error(`no PQ codebook trained for org "${org}" yet — run train_pq first`);
+    const [qv] = await embed([query], cfg);
+    const hits = store.recallPq(qv, topK);
+    return hits.map((h) => ({ score: h.score, text: h.text, mode: 'vector' }));
+  }
+
+  const viaHivemind = hivemindConfigured(cfg);
+  const wideK = Math.max(topK * 4, 20);
+
   // Real vector-space parity, same reasoning as mirrorHivemindDocumentLocally(): HIVEMIND's own
   // free embeddings.singulancelabs.com service (confirmed live, unauthenticated, real bge-m3
-  // 1024-dim vectors) is a real fallback for the QUERY side too when the user has no own
-  // provider configured but IS connected — without this, vectors written by the mirror path
-  // above would sit in the shard unreachable, since a query embedded via plain BM25 can't do a
-  // vector-space HNSW search at all.
-  const canEmbedQuery = hasOwnEmbeddings || hivemindConfigured(cfg);
-  if (!canEmbedQuery) {
-    const hits = store.bm25Search(query, topK);
-    return hits.map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
+  // 1024-dim vectors) is a real fallback for the QUERY side too when the user has no own provider
+  // configured but IS connected — without this, vectors written by the mirror path above would
+  // sit in the shard unreachable, since a lexical-only query can't do a vector-space search.
+  let qv = null;
+  if (hasOwnEmbeddings || viaHivemind) {
+    try {
+      [qv] = hasOwnEmbeddings ? await embed([query], cfg) : await embedViaHivemindService([query]);
+    } catch (_) {
+      qv = null; // query embedding failed (network hiccup) — hybrid degrades to lexical-only below
+    }
   }
-  if (usePq && !store.pqTrained()) {
-    throw new Error(`no PQ codebook trained for org "${org}" yet — run train_pq first`);
-  }
-  let qv;
-  try {
-    [qv] = hasOwnEmbeddings ? await embed([query], cfg) : await embedViaHivemindService([query]);
-  } catch (e) {
-    // Query embedding failed (network hiccup, etc.) — degrade to lexical rather than erroring;
-    // the shard may hold a mix of real vectors and zero-vector/lexical-only slots anyway.
-    const hits = store.bm25Search(query, topK);
-    return hits.map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
-  }
-  let hits;
-  if (usePq) {
-    hits = store.recallPq(qv, topK);
-  } else {
+
+  // Parallel retrieval — both run against the SAME wide window, independently, before either one
+  // knows about the other. bm25Search() always runs (it's local, free, instant); the dense HNSW
+  // side only runs if a query vector was actually obtained above.
+  const lexicalHits = store.bm25Search(query, wideK).map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
+  let denseHits = [];
+  if (qv) {
     store.enableHnsw();
-    hits = store.recall(qv, topK);
+    denseHits = store.recall(qv, wideK).map((h) => ({ score: h.score, text: h.text, mode: 'vector' }));
   }
-  return hits.map((h) => ({ score: h.score, text: h.text, mode: 'vector' }));
+  const merged = qv ? rrfMerge(denseHits, lexicalHits) : lexicalHits;
+
+  if (!viaHivemind) {
+    // Disconnected: the hybrid merge IS the final result — no rerank stage.
+    return merged.slice(0, topK).map((h) => ({
+      score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical',
+    }));
+  }
+  // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
+  return rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK);
 }
 
 // "ICARUS v3" boundary starts here: v2 is the local `.amr` filesystem engine above (its own
@@ -937,6 +979,58 @@ async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60
   throw new Error(`HIVEMIND job ${jobId} did not finish within ${(maxAttempts * intervalMs) / 1000}s — check later with the job_id above`);
 }
 
+/** Real, deliberate memory save — POST /api/ingest/source with `mode: 'atomic'`: confirmed real
+ * via document-first-ingestion.js's own doc comment ("one memory through the canonical engine
+ * gateway") — same primitive MCP's save_memory / chat autosave use. Goes through the server's
+ * normal embedding + smart-router + contradiction-detection pipeline (NOT evidence mode's
+ * skip_fact_extraction/recall_exclude flags — this is a real, fully first-class memory, meant to
+ * surface in normal recall next to evidence). `source.type: 'mcp'` matches detectMode()'s own
+ * inference for single-memory saves, kept alongside the explicit `mode` override for clarity. */
+async function hivemindSaveMemory(text, org, cfg) {
+  const base = hivemindApiBase(cfg);
+  const res = await fetch(`${base}/api/ingest/source`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.hivemind.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: text,
+      mode: 'atomic',
+      source: { type: 'mcp', platform: 'icarus' },
+      tags: [`icarus-org:${org}`],
+    }),
+  });
+  const bodyText = await res.text();
+  if (!res.ok) throw new Error(`HIVEMIND ingest/source ${res.status}: ${bodyText}`);
+  return JSON.parse(bodyText); // { ok, mode: 'atomic', memoryIds, memoryId }
+}
+
+/** Local-engine equivalent of hivemindSaveMemory() for a disconnected/--local session: embeds
+ * (real vector if configured, lexical zero-vector placeholder otherwise — same degrade-gracefully
+ * rule ingestDir() already follows) and inserts at LAYER_MEMORY, so it's a normal first-class
+ * memory, indistinguishable from anything /ingest already stored. */
+async function saveLocalMemory(text, org, cfg) {
+  const store = openStore(cfg, org);
+  const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  const signMode = signingEnabled(cfg);
+  let vec = new Float32Array(cfg.dim);
+  let vectorMode = false;
+  // Same free-HIVEMIND-embedding-fallback convention as mirrorHivemindDocumentLocally()/
+  // recallQuery(): real vectors even with no own provider configured, as long as HIVEMIND is
+  // connected. Degrades to a lexical zero-vector placeholder on any embedding failure, never
+  // loses the save itself over a network hiccup.
+  if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
+    try {
+      [vec] = hasOwnEmbeddings ? await embed([text], cfg) : await embedViaHivemindService([text]);
+      vectorMode = true;
+    } catch (_) { /* keep the zero-vector placeholder */ }
+  }
+  const slotId = store.insert(text, vec, LAYER_MEMORY);
+  if (signMode) signSlot(slotId, text, cfg, org);
+  appendAuditEntry(cfg, org, 'insert', slotId);
+  if (vectorMode) store.enableHnsw();
+  store.flush();
+  return slotId;
+}
+
 /** Fetch a HIVEMIND-processed document's segments back — GET /api/documents/:id (real, confirmed
  * endpoint: core/src/server.js's `documentId` route, returns `{document, segments, promotedMemories,
  * segmentCount, promotedCount}` where each segment row has a real `.content` (the chunk text)).
@@ -992,6 +1086,44 @@ async function embedViaHivemindService(texts) {
     for (let i = 0; i < v.length; i++) v[i] /= n; // L2-normalize for cosine, same as embed()
     return v;
   });
+}
+
+// Real, live, UNAUTHENTICATED reranker — same box as HIVEMIND_EMBEDDINGS_URL (confirmed via its
+// own /openapi.json: title "BGE Embedding & Reranker", serving both /v1/embeddings and this route
+// from one FastAPI service). Real contract verified by direct curl, not guessed: POST
+// /api/v1/rerank with {query, documents, top_n} returns {results: [{index, relevance_score}]}
+// sorted descending — confirmed a real unrelated document scores ~1e-5 while a real match scores
+// ~0.999. This is the "narrow re-score" half of a proper wide-retrieve-then-rerank recall
+// pipeline: /api/recall (or local HNSW/BM25) does the cheap WIDE candidate pull, this cross-
+// encoder reranker (bge-reranker-v2-m3) does the expensive but far more accurate NARROW re-score
+// on just those candidates — standard two-stage retrieval, not something either recall path did
+// before this.
+const HIVEMIND_RERANK_URL = 'https://rerank.singulancelabs.com/api/v1/rerank';
+
+async function rerankViaHivemindService(query, documents, topN) {
+  const res = await fetch(HIVEMIND_RERANK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, documents, top_n: topN }),
+  });
+  if (!res.ok) throw new Error(`HIVEMIND rerank ${res.status}: ${await res.text()}`);
+  const j = await res.json();
+  return j.results; // [{index, relevance_score}], sorted desc by relevance_score
+}
+
+/** Re-score a WIDE candidate set down to `topK` using the real cross-encoder reranker, replacing
+ * each hit's own score with the reranker's `relevance_score` (a real, more accurate signal than
+ * cosine/BM25 alone — that's the whole point of a rerank stage). Falls back to the original
+ * wide-search order (already-sorted, just truncated to topK) on any failure — a network hiccup on
+ * the free rerank service must never make recall itself fail. */
+async function rerankHits(query, hits, topK) {
+  if (hits.length <= 1) return hits.slice(0, topK);
+  try {
+    const results = await rerankViaHivemindService(query, hits.map((h) => h.text), topK);
+    return results.map((r) => ({ ...hits[r.index], score: r.relevance_score }));
+  } catch (_) {
+    return hits.slice(0, topK);
+  }
 }
 
 async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) {
@@ -1119,22 +1251,17 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   };
 }
 
-/** Recall against HIVEMIND's real /api/recall — one hybrid engine (dense + lexical + entity +
- * temporal + graph lanes, fused server-side), not a local mode choice. See this module's header
- * comment for the honest caveat: not verified to be org-scoped server-side yet. */
-async function hivemindRecallQuery(query, org, cfg, topK = 5) {
-  const base = hivemindApiBase(cfg);
-  const res = await fetch(`${base}/api/recall`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${cfg.hivemind.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, mode: 'quick', limit: topK }),
-  });
-  if (!res.ok) throw new Error(`HIVEMIND recall ${res.status}: ${await res.text()}`);
-  const body = await res.json();
-  const memories = (body.memories || []).map((m) => ({ score: m.score, text: m.content, mode: 'hivemind-memory' }));
-  const evidence = (body.evidence || []).map((e) => ({ score: e.score, text: e.snippet, mode: 'hivemind-evidence' }));
-  return [...memories, ...evidence].sort((a, b) => b.score - a.score).slice(0, topK);
-}
+// hivemindRecallQuery (POST /api/recall) EXISTED here and was removed — a real, live cross-
+// tenant data leak, not a hypothetical: a real test session saw completely unrelated users' and
+// orgs' private content (other companies' sales-pipeline docs, unrelated personal messages) come
+// back for queries scoped to this user's own org tag. This was already flagged as an unverified
+// caveat in this function's own prior doc comment ("not verified to be org-scoped server-side
+// yet") — that caveat turned out to be real. Recall must NEVER hit the server's shared recall
+// index again. HIVEMIND is still used for ingest/save PROCESSING (chunking, OCR, extraction, the
+// real embedding/rerank helper services) — recallQuery() below already calls those same free
+// services for the query-embedding and rerank steps when connected — but the actual search
+// happens ONLY against this machine's own local .amr shard, which by construction can never
+// return another tenant's data.
 
 function statusReport(cfg) {
   let orgs = [];
@@ -1237,8 +1364,8 @@ module.exports = {
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory,
 };

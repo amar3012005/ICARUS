@@ -16,10 +16,11 @@ const path = require('path');
 const readline = require('readline');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
-  loadCfg, saveCfg, ingestDir, recallQuery, statusReport, signingEnabled,
-  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
+  loadCfg, saveCfg, ingestDir, recallQuery, statusReport, signingEnabled, embeddingsConfigured,
+  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS,
+  hivemindSaveMemory, saveLocalMemory,
 } = require('./cli-lib.js');
 
 function boxWidth() {
@@ -89,7 +90,8 @@ function drawBanner(cfg) {
     hmLine,
     '',
     menuRow(`${c.command('/ingest')} ${c.dim('<dir>')}`, c.dim('extract + store a folder'), 48),
-    menuRow(`${c.command('/recall')} ${c.dim('<query>')}`, c.dim('semantic + lexical search'), 48),
+    menuRow(`${c.command('/recall')} ${c.dim('<query>')}`, c.dim('local semantic + lexical search'), 48),
+    menuRow(`${c.command('/save')} ${c.dim('<text>')}`, c.dim('save a real memory'), 48),
     menuRow(c.command('/status'), c.dim('shards, signing, audit'), 48),
     menuRow(c.command('/connect'), c.dim('sign in to HIVEMIND'), 48),
     menuRow(c.command('/update'), c.dim('download the latest release'), 48),
@@ -104,7 +106,8 @@ function printHelp() {
   console.log(`
 ${heading('Commands')}
   ${c.command('/ingest')} <dir> [--org name] [--local] [--force]  ingest a folder
-  ${c.command('/recall')} <query> [--org name] [--k 5] [--local]  recall
+  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).
+  ${c.command('/save')} <text> [--org name] [--local]              save a real memory (full embedding + smart-router; NOT evidence-only) — recallable via /recall
   ${c.command('/status')}                                          org shards + engine status
   ${c.command('/connect')}                                         browser sign-in to HIVEMIND
   ${c.command('/org')} <name>                                      switch the default org for this session
@@ -220,17 +223,28 @@ async function dispatch(line, state, cfg) {
       break;
     }
     case 'recall': {
+      // LOCAL ONLY, always — see cli-lib.js's comment where hivemindRecallQuery used to live:
+      // a real cross-tenant leak was found on HIVEMIND's shared /api/recall (other orgs' private
+      // content came back for this org's queries). recallQuery() still uses HIVEMIND's free
+      // embed+rerank services for query processing when connected — never as the search index.
       const q = argStr.trim();
       if (!q) { console.log(err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
+      const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
+      console.log(`\n${heading(`top ${hits.length}`)}\n`);
+      hits.forEach((h, i) => console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${h.text.replace(/\s+/g, ' ').slice(0, 140)}`));
+      break;
+    }
+    case 'save': {
+      const text = argStr.trim();
+      if (!text) { console.log(err('usage: /save <text> [--org name]')); break; }
       if (hivemindConfigured(cfg) && !flags.local) {
-        const hits = await hivemindRecallQuery(q, org, cfg, k);
-        console.log(`\n${heading(`top ${hits.length}`)} ${c.dim('(HIVEMIND)')}\n`);
-        hits.forEach((h, i) => console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${(h.score ?? 0).toFixed(4)}]`)} ${(h.text || '').replace(/\s+/g, ' ').slice(0, 140)}`));
+        const r = await hivemindSaveMemory(text, org, cfg);
+        await saveLocalMemory(text, org, cfg); // mirror — /recall is local-only, this text must exist locally to ever surface
+        console.log(ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
       } else {
-        const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
-        console.log(`\n${heading(`top ${hits.length}`)}\n`);
-        hits.forEach((h, i) => console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${h.text.replace(/\s+/g, ' ').slice(0, 140)}`));
+        await saveLocalMemory(text, org, cfg);
+        console.log(ok(`saved as a local memory in "${c.path(org)}"'s shard (embedded${embeddingsConfigured(cfg) ? '' : ' lexically — no embedding provider configured'}).`));
       }
       break;
     }

@@ -19,9 +19,10 @@ const {
   HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
   llmConfigured, skillSave, skillList, parseClaudeTranscript,
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS,
+  hivemindSaveMemory, saveLocalMemory,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
@@ -97,29 +98,53 @@ async function cmdIngest(flags, cfg) {
   console.log(`\n${ok(`ingested ${c.bold(result.chunks)} chunks from ${result.files} files into ${c.path(org)} (${result.live} live, mode=${result.mode})`)}`);
 }
 
+// Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
+// connection state. Real reason, not a style choice: an actual test session against a real
+// HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
+// org's own queries — a live cross-tenant leak on the server's shared recall index, not a
+// hypothetical. The local .amr shard is the only surface that can't leak another tenant's data
+// by construction. HIVEMIND is still used for ingest/save PROCESSING and as free embed+rerank
+// helper services (see recallQuery()'s own use of them) — just never as the actual search index.
 async function cmdRecall(flags, cfg) {
   const q = flags._[0];
   const org = flags.org || 'default';
   const k = Number(flags.k || 5);
   const usePq = flags.pq !== undefined;
-  if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]');
-  if (hivemindConfigured(cfg) && !flags.local) {
-    const hits = await hivemindRecallQuery(q, org, cfg, k);
-    console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}" ${c.dim('(HIVEMIND — dense+lexical+entity+temporal, fused server-side)')}:\n`);
-    hits.forEach((h, i) => {
-      const txt = (h.text || '').replace(/\s+/g, ' ').slice(0, 160);
-      console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${(h.score ?? 0).toFixed(4)}]`)} ${c.dim(`(${h.mode})`)} ${txt}`);
-    });
-    return;
-  }
+  if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq]');
   const hits = await recallQuery(q, org, cfg, k, usePq);
-  const modeLabel = hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 — no embedding provider configured)')
-    : usePq ? c.dim(' (PQ/ADC recall)') : '';
+  const modeLabel = usePq ? c.dim(' (PQ/ADC recall)')
+    : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 — no embedding provider configured)')
+    : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid: dense + lexical, RRF-merged)')
+    : '';
   console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}"${modeLabel}:\n`);
   hits.forEach((h, i) => {
     const txt = h.text.replace(/\s+/g, ' ').slice(0, 160);
     console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${txt}`);
   });
+}
+
+// /save — real, deliberate memory creation (full embedding + smart-router when HIVEMIND-routed;
+// real local embedding otherwise), NOT evidence-only. Recallable via /recall alongside anything
+// /ingest already stored — see hivemindSaveMemory()/saveLocalMemory()'s own doc comments.
+//
+// Real gap caught testing this before shipping: /recall is LOCAL ONLY (this session's own fix
+// for the cross-tenant leak), so a cloud-only save via hivemindSaveMemory() was completely
+// unrecallable — `icarus save "..."` then `icarus recall` on the exact same text returned ZERO
+// hits. The HIVEMIND-routed branch now ALSO writes the same text into the local shard
+// (saveLocalMemory — cheap, no extra network round-trip since the text is already in hand,
+// unlike ingest's document mirror which has to fetch server-extracted segments back).
+async function cmdSave(flags, cfg) {
+  const text = flags._.join(' ');
+  const org = flags.org || 'default';
+  if (!text.trim()) throw new Error('usage: icarus save "<text>" --org <name> [--local]');
+  if (hivemindConfigured(cfg) && !flags.local) {
+    const r = await hivemindSaveMemory(text, org, cfg);
+    await saveLocalMemory(text, org, cfg);
+    console.log(ok(`saved as a real memory (id ${c.path(r.memoryId || r.memoryIds?.[0] || '?')}) in ${c.path(org)} — full embedding + smart-router, mirrored locally, recallable via icarus recall.`));
+    return;
+  }
+  await saveLocalMemory(text, org, cfg);
+  console.log(ok(`saved as a local memory in ${c.path(org)}'s shard${embeddingsConfigured(cfg) ? '' : c.dim(' (lexical-only — no embedding provider configured)')}.`));
 }
 
 function cmdStatus(_flags, cfg) {
@@ -689,6 +714,7 @@ async function main() {
     switch (cmd) {
       case 'ingest': await cmdIngest(flags, cfg); break;
       case 'recall': await cmdRecall(flags, cfg); break;
+      case 'save': await cmdSave(flags, cfg); break;
       case 'status': cmdStatus(flags, cfg); break;
       case 'compact': cmdCompact(flags, cfg); break;
       case 'train-pq': cmdTrainPq(flags, cfg); break;
@@ -738,8 +764,22 @@ async function main() {
                                         --force matches the real FE's own force field (bypass
                                         dedup) -- not yet read server-side, sent to match the
                                         real contract exactly.
-  icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]
-                                        same HIVEMIND-if-connected routing as ingest above.
+  icarus recall "<query>" --org <name> [--k 5] [--pq]
+                                        LOCAL ONLY, always -- never routes to HIVEMIND's shared
+                                        recall (a real cross-tenant leak was found there: other
+                                        orgs' private content came back for this org's queries).
+                                        Real parallel hybrid retrieval: dense (HNSW) + lexical
+                                        (BM25) run concurrently, merged via Reciprocal Rank
+                                        Fusion. If HIVEMIND connected: narrow re-score via the
+                                        real bge-reranker-v2-m3 cross-encoder on top of that wide
+                                        hybrid merge. If not: the hybrid merge IS the answer, no
+                                        rerank stage.
+  icarus save "<text>" --org <name> [--local]
+                                        save a real, deliberate memory -- full embedding +
+                                        smart-router when HIVEMIND-routed (mode:'atomic', the
+                                        same primitive MCP save_memory uses), real local
+                                        embedding otherwise. NOT evidence-only -- recallable via
+                                        icarus recall alongside anything icarus ingest promoted.
   icarus compact --org <name>          reclaim deleted memories' bytes
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)
