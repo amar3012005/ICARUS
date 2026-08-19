@@ -31,7 +31,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -59,21 +59,30 @@ function parseFlags(args) {
 // actually read it yet (see hivemindUploadFile's doc comment for the full story: there is no
 // real "evidence vs full memory generation" request parameter on this endpoint — a fabricated
 // --full/ingestMode flag existed here earlier and did nothing server-side; removed).
+//
+// Default behavior when HIVEMIND-routed: the server does the chunking/OCR/extraction (real work
+// ICARUS's local engine can't do for pdf/docx/images), then the resulting segment TEXT is pulled
+// back and re-embedded + stored in the LOCAL .amr shard too (see mirrorHivemindDocumentLocally's
+// doc comment in cli-lib.js for the one real limitation: the server never exposes its own
+// embedding vectors over HTTP, so this is cloud-chunking + local-embedding, not cloud-embedding —
+// confirmed by reading the real server code, not assumed). `--no-mirror` skips this and leaves
+// the data purely server-side, matching the old behavior.
 async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
-  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--force]');
+  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--force] [--no-mirror]');
   const viaHivemind = hivemindConfigured(cfg) && !flags.local;
   const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
   if (skipReason) return console.log(err(skipReason));
   if (viaHivemind) {
-    console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"`)));
+    console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"${flags['no-mirror'] ? '' : c.dim(' (mirroring segments into the local shard too)')}`)));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force });
+    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'] });
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
     if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
+    if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
     console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }
@@ -718,6 +727,12 @@ async function main() {
                                         instead of the local engine — accepts everything the
                                         server itself supports (pdf/docx/xlsx/pptx/images/audio),
                                         a broader set than the local engine's text-only formats.
+                                        By default the server's chunked segment TEXT is pulled
+                                        back and re-embedded + stored in the LOCAL shard too
+                                        (--no-mirror to skip and stay purely server-side) — the
+                                        server never exposes its own embedding vectors over HTTP
+                                        (confirmed absent), so this is cloud chunking + local
+                                        re-embedding, not cloud embedding.
                                         --local forces the local .amr engine even if connected.
                                         --force matches the real FE's own force field (bypass
                                         dedup) -- not yet read server-side, sent to match the

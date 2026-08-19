@@ -87,7 +87,7 @@ function parseArgs(argStr) {
   for (let i = 0; i < clean.length; i++) {
     if (clean[i].startsWith('--')) {
       const name = clean[i].slice(2);
-      const boolFlags = new Set(['local', 'force', 'pq']);
+      const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror']);
       if (boolFlags.has(name)) out[name] = true;
       else out[name] = clean[++i];
     } else out._.push(clean[i]);
@@ -160,18 +160,19 @@ async function dispatch(line, state, cfg) {
   switch (cmd) {
     case 'ingest': {
       const dir = flags._[0];
-      if (!dir) { console.log(err('usage: /ingest <dir> [--org name] [--local] [--force]')); break; }
+      if (!dir) { console.log(err('usage: /ingest <dir> [--org name] [--local] [--force] [--no-mirror]')); break; }
       const viaHivemind = hivemindConfigured(cfg) && !flags.local;
       const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
       if (skipReason) { console.log(err(skipReason)); break; }
       if (viaHivemind) {
         console.log(bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force });
+        const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'] });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
         if (result.failed) notes.push(`${result.failed} failed — see errors above`);
+        if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
         console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;

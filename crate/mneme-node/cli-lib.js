@@ -887,7 +887,7 @@ async function hivemindUploadFile(filePath, org, cfg, { force = false } = {}) {
     // server had already seen — one re-ingested doc silently dropped every other file in the
     // batch. Non-duplicate 409s (a genuinely unexpected shape) still throw below.
     let body; try { body = JSON.parse(bodyText); } catch (_) { body = null; }
-    if (body?.duplicate) return { duplicate: true, existingTitle: body.existing_title || null };
+    if (body?.duplicate) return { duplicate: true, existingTitle: body.existing_title || null, existingDocumentId: body.existing_document_id || null };
     throw new Error(`HIVEMIND upload 409: ${bodyText}`);
   }
   if (!res.ok) throw new Error(`HIVEMIND upload ${res.status}: ${bodyText}`);
@@ -908,17 +908,80 @@ async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60
   throw new Error(`HIVEMIND job ${jobId} did not finish within ${(maxAttempts * intervalMs) / 1000}s — check later with the job_id above`);
 }
 
+/** Fetch a HIVEMIND-processed document's segments back — GET /api/documents/:id (real, confirmed
+ * endpoint: core/src/server.js's `documentId` route, returns `{document, segments, promotedMemories,
+ * segmentCount, promotedCount}` where each segment row has a real `.content` (the chunk text)).
+ * This is the ONLY thing that comes back — checked job status, this endpoint, and /api/recall, and
+ * none of them expose the actual embedding VECTORS the server computed (they live only in Qdrant,
+ * never surfaced over HTTP). So a local mirror can pull back the server's real chunking work, but
+ * has to re-embed locally rather than reuse the server's own vectors — see
+ * mirrorHivemindDocumentLocally()'s own doc comment for what that means in practice. */
+async function hivemindFetchDocumentSegments(documentId, cfg) {
+  const base = hivemindApiBase(cfg);
+  const res = await fetch(`${base}/api/documents/${documentId}`, {
+    headers: { Authorization: `Bearer ${cfg.hivemind.token}` },
+  });
+  if (!res.ok) throw new Error(`HIVEMIND documents ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+/** After HIVEMIND finishes processing a file (real chunking/OCR/extraction — work ICARUS's local
+ * engine can't do for pdf/docx/images), pull the resulting segment TEXT back and store it in the
+ * LOCAL .amr shard too, under LAYER_EVIDENCE — so ingesting through HIVEMIND leaves you with a
+ * real local copy, not just a server-side one.
+ *
+ * Real, load-bearing limitation, stated plainly rather than silently glossed over: the server
+ * never exposes the embedding VECTORS it computed (confirmed — no endpoint returns them). So this
+ * does NOT get "cloud embedding, local storage" — it gets cloud CHUNKING + local RE-EMBEDDING
+ * (using cfg.embeddings, the same provider local ingestDir() already uses) + local storage. If no
+ * embedding provider is configured, it stores lexical-only (BM25, zero-vector placeholder) —
+ * exactly ingestDir()'s own degrade-gracefully behavior, not a new failure mode. Returns the
+ * number of segments mirrored (0 if the document had none, e.g. still processing). */
+async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) {
+  const { segments } = await hivemindFetchDocumentSegments(documentId, cfg);
+  const texts = (segments || [])
+    .map((s) => `${sourceLabel}\n${s.content || ''}`)
+    .filter((t) => t.trim().length > 20);
+  if (!texts.length) return 0;
+
+  const store = openStore(cfg, org);
+  const vectorMode = embeddingsConfigured(cfg);
+  const signMode = signingEnabled(cfg);
+  const zero = new Float32Array(cfg.dim);
+  let stored = 0;
+  const insertOne = (text, vec) => {
+    const slotId = store.insertLayered(text, vec, 0, LAYER_EVIDENCE);
+    if (signMode) signSlot(slotId, text, cfg, org);
+    appendAuditEntry(cfg, org, 'insert', slotId);
+    stored++;
+  };
+  if (vectorMode) {
+    for (let i = 0; i < texts.length; i += 16) {
+      const batch = texts.slice(i, i + 16);
+      const vecs = await embed(batch, cfg);
+      batch.forEach((text, j) => insertOne(text, vecs[j]));
+    }
+    store.enableHnsw();
+  } else {
+    for (const text of texts) insertOne(text, zero);
+  }
+  store.flush();
+  return stored;
+}
+
 /** Upload every file under `dir` to HIVEMIND (real REST API, async job per file) instead of the
  * local engine. Returns the same shape ingestDir() does, so callers (CLI/MCP) don't need to know
  * which path ran. `files`/`chunks`/`live` come from HIVEMIND's own per-job counts, not invented
  * locally — a real report of what its server actually did, not an assumption. */
 async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   const files = walkHivemindIngestable(dir);
+  const mirrorLocal = opts.mirrorLocal !== false; // default ON — see mirrorHivemindDocumentLocally's doc comment
   let totalMemories = 0;
   let totalSegments = 0;
   let duplicates = 0;
   let pending = 0; // uploaded, still processing past the poll window — not a failure
   let failed = 0; // genuinely errored (network blip, 5xx, etc.) — logged, batch keeps going
+  let mirrored = 0; // segments actually written into the local .amr shard this run
   let n = 0;
   // The WHOLE per-file body is wrapped, not just the poll — a real bug, same class as the
   // 409-duplicate one this function already guards against but caught SEPARATELY, live: a
@@ -930,7 +993,14 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     try {
       const job = await hivemindUploadFile(f, org, cfg, opts);
       if (job.duplicate) {
-        duplicates++; // already ingested — a skip, not a failure
+        duplicates++; // already ingested server-side — a skip, not a failure
+        // Still worth mirroring locally: "already in your knowledge base" describes the SERVER,
+        // not this machine — the exact real gap this feature exists to close (a file dedup'd
+        // from an earlier session/machine, but this shard has never seen it).
+        if (mirrorLocal && job.existingDocumentId) {
+          try { mirrored += await mirrorHivemindDocumentLocally(job.existingDocumentId, path.basename(f), org, cfg); }
+          catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
+        }
       } else {
         let result;
         try {
@@ -951,6 +1021,10 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
         } else {
           totalMemories += result.counts?.memories || 0;
           totalSegments += result.counts?.segments || 0;
+          if (mirrorLocal && result.document_id) {
+            try { mirrored += await mirrorHivemindDocumentLocally(result.document_id, path.basename(f), org, cfg); }
+            catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
+          }
         }
       }
     } catch (e) {
@@ -965,7 +1039,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     // `distilled` reflects what the server actually did (memories > 0), not a request flag —
     // there's no real way to ask for "full" vs "evidence-only" on this endpoint (see
     // hivemindUploadFile's own doc comment).
-    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed,
+    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored,
   };
 }
 
@@ -1088,6 +1162,7 @@ module.exports = {
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
+  hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate,
 };

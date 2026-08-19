@@ -42,19 +42,20 @@ async function run() {
     'icarus_ingest',
     {
       title: 'Ingest a folder into ICARUS',
-      description: 'Extract and store files under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead -- accepts everything that server supports (pdf/docx/xlsx/pptx/images/audio, a much broader set than the local engine\'s text-only formats) -- set local=true to force the local .amr engine even when connected (text-only: txt/md/json/csv/log). There is no real way to request "evidence-only vs full memory generation" on this endpoint -- the server decides based on what it actually extracts, not a request parameter.',
+      description: 'Extract and store files under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead -- accepts everything that server supports (pdf/docx/xlsx/pptx/images/audio, a much broader set than the local engine\'s text-only formats) -- set local=true to force the local .amr engine even when connected (text-only: txt/md/json/csv/log). By default, segment text processed by HIVEMIND is also pulled back and re-embedded + stored in the LOCAL shard (mirrorLocal=false to skip and leave it purely server-side) -- the server never exposes its own embedding vectors over HTTP (checked, confirmed absent), so this is cloud chunking + local re-embedding, not cloud embedding. There is no real way to request "evidence-only vs full memory generation" on this endpoint -- the server decides based on what it actually extracts, not a request parameter.',
       inputSchema: {
         dir: z.string().describe('Absolute path to the directory to ingest'),
         org: z.string().default('default').describe('Org/shard name to store into'),
         local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
         force: z.boolean().default(false).describe('Matches the real FE\'s own "force" field (bypass the same-checksum dedup gate) -- not yet read server-side, sent to match the real upload contract exactly'),
+        mirrorLocal: z.boolean().default(true).describe('When routed through HIVEMIND, also pull back the processed segment text and store it (re-embedded) in the local .amr shard. Set false to leave data purely server-side.'),
       },
     },
-    async ({ dir, org, local, force }) => {
+    async ({ dir, org, local, force, mirrorLocal }) => {
       try {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && !local) {
-          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force }));
+          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force, mirrorLocal: mirrorLocal !== false }));
         }
         return textResult(await ingestDir(dir, org || 'default', cfg));
       } catch (e) { return errorResult(e); }
