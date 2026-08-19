@@ -162,7 +162,7 @@ async function dispatch(line, state, cfg) {
         console.log(bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
         let tick = 0;
         const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { fullMemoryGeneration: !!flags.full });
-        console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}`);
+        console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${result.duplicates ? c.dim(` — ${result.duplicates} already in your knowledge base, skipped`) : ''}`);
       } else {
         let tick = 0;
         const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));

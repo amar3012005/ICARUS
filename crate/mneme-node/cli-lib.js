@@ -792,8 +792,20 @@ async function hivemindUploadFile(filePath, org, cfg, { fullMemoryGeneration = f
     headers: { Authorization: `Bearer ${cfg.hivemind.token}` },
     body: form,
   });
-  if (!res.ok) throw new Error(`HIVEMIND upload ${res.status}: ${await res.text()}`);
-  return res.json(); // { job_id, status, storage_mode, ... }
+  const bodyText = await res.text();
+  if (res.status === 409) {
+    // A real, EXPECTED outcome — not a failure. The server's own response body says so
+    // explicitly (`duplicate: true`, `status: "existing"`), rather than us assuming from the
+    // status code alone. A real bug this was caught fixing: hivemindIngestDir's per-file loop
+    // used to let this throw, which aborted the ENTIRE folder ingest on the first file the
+    // server had already seen — one re-ingested doc silently dropped every other file in the
+    // batch. Non-duplicate 409s (a genuinely unexpected shape) still throw below.
+    let body; try { body = JSON.parse(bodyText); } catch (_) { body = null; }
+    if (body?.duplicate) return { duplicate: true, existingTitle: body.existing_title || null };
+    throw new Error(`HIVEMIND upload 409: ${bodyText}`);
+  }
+  if (!res.ok) throw new Error(`HIVEMIND upload ${res.status}: ${bodyText}`);
+  return JSON.parse(bodyText); // { job_id, status, storage_mode, ... }
 }
 
 async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60 } = {}) {
@@ -818,12 +830,23 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   const files = walkText(dir);
   let totalMemories = 0;
   let totalSegments = 0;
+  let duplicates = 0;
   let n = 0;
   for (const f of files) {
     const job = await hivemindUploadFile(f, org, cfg, opts);
+    if (job.duplicate) {
+      // Already ingested — a skip, not a failure. Keep going; one re-ingested file must never
+      // stop the rest of the batch (the real bug this whole duplicate-handling path fixes).
+      duplicates++;
+      n++;
+      if (onProgress) onProgress(n);
+      continue;
+    }
     const result = await hivemindPollJob(job.job_id, cfg);
     if (result.status === 'failed') {
       console.error(`icarus: HIVEMIND ingest failed for ${f} — ${result.error || 'unknown error'}`);
+      n++;
+      if (onProgress) onProgress(n);
       continue;
     }
     totalMemories += result.counts?.memories || 0;
@@ -833,7 +856,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   }
   return {
     files: files.length, chunks: totalSegments || totalMemories, live: totalMemories,
-    mode: 'hivemind', distilled: !!opts.fullMemoryGeneration, signed: 0,
+    mode: 'hivemind', distilled: !!opts.fullMemoryGeneration, signed: 0, duplicates,
   };
 }
 

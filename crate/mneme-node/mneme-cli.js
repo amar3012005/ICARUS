@@ -63,7 +63,7 @@ async function cmdIngest(flags, cfg) {
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}" ${c.dim(`(${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`)}`)));
     let tick = 0;
     const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { fullMemoryGeneration: !!flags.full });
-    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}`);
+    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${result.duplicates ? c.dim(` — ${result.duplicates} already in your knowledge base, skipped`) : ''}`);
     return;
   }
   if (!embeddingsConfigured(cfg)) {
