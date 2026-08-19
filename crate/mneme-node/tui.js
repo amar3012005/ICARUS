@@ -249,7 +249,7 @@ async function dispatch(line, state, cfg) {
       // HIVEMIND's cloud box on their own. --cloud opts back in explicitly.
       if (hivemindConfigured(cfg) && flags.cloud) {
         const r = await hivemindSaveMemory(text, org, cfg);
-        await saveLocalMemory(text, org, cfg); // mirror — /recall is local-only, this text must exist locally to ever surface
+        await saveLocalMemory(text, org, cfg, { viaCloud: true }); // mirror — /recall is local-only, this text must exist locally to ever surface
         console.log(ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
       } else {
         await saveLocalMemory(text, org, cfg);

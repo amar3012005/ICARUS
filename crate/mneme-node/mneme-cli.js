@@ -146,7 +146,7 @@ async function cmdSave(flags, cfg) {
   // too, same as before, so /recall keeps working either way).
   if (hivemindConfigured(cfg) && flags.cloud) {
     const r = await hivemindSaveMemory(text, org, cfg);
-    await saveLocalMemory(text, org, cfg);
+    await saveLocalMemory(text, org, cfg, { viaCloud: true });
     console.log(ok(`saved as a real memory (id ${c.path(r.memoryId || r.memoryIds?.[0] || '?')}) in ${c.path(org)} — full embedding + smart-router, mirrored locally, recallable via icarus recall.`));
     return;
   }

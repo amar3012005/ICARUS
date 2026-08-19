@@ -195,8 +195,18 @@ function entryHashInput(prevHash, seq, event, slotId, at) {
 
 /** Append one hash-chained event to org's audit trail. Never throws past logging — same
  * fail-open posture as signSlot(): an audit-trail write failure must not turn a successful
- * insert into a failed one. */
-function appendAuditEntry(cfg, org, event, slotId) {
+ * insert into a failed one.
+ *
+ * `meta` is real provenance riding ALONGSIDE the chain, not part of it: the native .amr engine
+ * has no free-form metadata field on a memory itself (checked MemoryInput's real fields — just
+ * text/vector/entity_bitmap/adjacency/valid_from/created_at/layer), so "where did this slot come
+ * from" has nowhere else to live. Deliberately excluded from entryHashInput()/verifyAuditChain()
+ * — the hash chain's job is proving the SEQUENCE of writes wasn't reordered/spliced, not
+ * attesting to descriptive metadata, and folding meta into the hash would break every audit
+ * chain written before this field existed. `meta.source` identifies which code path created the
+ * slot (save-local/save-cloud/ingest-local/ingest-evidence/skill/...); `meta.sourceFile` is the
+ * originating file/document name for evidence, when there is one. */
+function appendAuditEntry(cfg, org, event, slotId, meta = null) {
   try {
     const p = auditChainPath(cfg, org);
     const entries = readJsonl(p);
@@ -205,7 +215,10 @@ function appendAuditEntry(cfg, org, event, slotId) {
     const at = new Date().toISOString();
     const hash = crypto.createHash('sha256').update(entryHashInput(prevHash, seq, event, slotId, at)).digest('hex');
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.appendFileSync(p, JSON.stringify({ seq, event, slot_id: slotId, prev_hash: prevHash, hash, at }) + '\n');
+    const line = { seq, event, slot_id: slotId, prev_hash: prevHash, hash, at, org };
+    if (meta && meta.source) line.source = meta.source;
+    if (meta && meta.sourceFile) line.source_file = meta.sourceFile;
+    fs.appendFileSync(p, JSON.stringify(line) + '\n');
     return true;
   } catch (e) {
     console.error(`icarus: audit trail append failed (${e.message}) — write itself still succeeded.`);
@@ -500,7 +513,8 @@ async function skillSave(transcript, org, cfg) {
   try {
     const store = openStore(cfg, org);
     const zero = new Float32Array(cfg.dim);
-    store.insertLayered(md, zero, 0, LAYER_SKILL);
+    const slotId = store.insertLayered(md, zero, Date.now(), LAYER_SKILL);
+    appendAuditEntry(cfg, org, 'insert', slotId, { source: 'skill-save', sourceFile: `${slug}.md` });
     store.flush();
   } catch (_) {
     // Recall indexing is a bonus, not the point — the .md file on disk is the real artifact and
@@ -666,18 +680,18 @@ async function ingestDir(dir, org, cfg, onProgress) {
         const vecs = await embed(batch, cfg);
         batch.forEach((t, j) => {
           const text = `${path.basename(f)}\n${t}`;
-          const slotId = store.insert(text, vecs[j], 0);
+          const slotId = store.insert(text, vecs[j], Date.now());
           if (signMode && signSlot(slotId, text, cfg, org)) signed++;
-          appendAuditEntry(cfg, org, 'insert', slotId);
+          appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-local', sourceFile: path.basename(f) });
           n++;
         });
       }
     } else {
       for (const t of chunks) {
         const text = `${path.basename(f)}\n${t}`;
-        const slotId = store.insert(text, zero, 0);
+        const slotId = store.insert(text, zero, Date.now());
         if (signMode && signSlot(slotId, text, cfg, org)) signed++;
-        appendAuditEntry(cfg, org, 'insert', slotId);
+        appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-local', sourceFile: path.basename(f) });
         n++;
       }
     }
@@ -1030,7 +1044,7 @@ async function hivemindSaveMemory(text, org, cfg) {
  * (real vector if configured, lexical zero-vector placeholder otherwise — same degrade-gracefully
  * rule ingestDir() already follows) and inserts at LAYER_MEMORY, so it's a normal first-class
  * memory, indistinguishable from anything /ingest already stored. */
-async function saveLocalMemory(text, org, cfg) {
+async function saveLocalMemory(text, org, cfg, opts = {}) {
   const store = openStore(cfg, org);
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
   const signMode = signingEnabled(cfg);
@@ -1046,9 +1060,14 @@ async function saveLocalMemory(text, org, cfg) {
       vectorMode = true;
     } catch (_) { /* keep the zero-vector placeholder */ }
   }
-  const slotId = store.insert(text, vec, LAYER_MEMORY);
+  // Real bug fixed here: this used to call insert(text, vec, LAYER_MEMORY) — insert()'s 3rd
+  // param is valid_from, NOT layer (see its Rust signature), so LAYER_MEMORY (0) was silently
+  // landing as a fake "valid_from=0" timestamp, and the actual layer was never set at all (only
+  // correct by coincidence, since the engine's own default layer also happens to be 0). Fixed to
+  // call insertLayered() with a real timestamp AND an explicit layer.
+  const slotId = store.insertLayered(text, vec, Date.now(), LAYER_MEMORY);
   if (signMode) signSlot(slotId, text, cfg, org);
-  appendAuditEntry(cfg, org, 'insert', slotId);
+  appendAuditEntry(cfg, org, 'insert', slotId, { source: opts.viaCloud ? 'save-cloud-mirror' : 'save-local' });
   if (vectorMode) store.enableHnsw();
   store.flush();
   return slotId;
@@ -1166,9 +1185,9 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
   const zero = new Float32Array(cfg.dim);
   let stored = 0;
   const insertOne = (text, vec) => {
-    const slotId = store.insertLayered(text, vec, 0, LAYER_EVIDENCE);
+    const slotId = store.insertLayered(text, vec, Date.now(), LAYER_EVIDENCE);
     if (signMode) signSlot(slotId, text, cfg, org);
-    appendAuditEntry(cfg, org, 'insert', slotId);
+    appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-evidence', sourceFile: sourceLabel });
     stored++;
   };
   // Prefer the user's OWN configured provider if they set one up (respect their explicit choice
@@ -1329,7 +1348,7 @@ function statusReport(cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.15';
+const ICARUS_VERSION = '0.3.16';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
