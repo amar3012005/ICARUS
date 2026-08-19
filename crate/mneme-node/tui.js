@@ -24,42 +24,80 @@ const {
 
 function boxWidth() {
   const cols = process.stdout.columns || 78;
-  return Math.max(48, Math.min(cols - 2, 78));
+  return Math.max(60, Math.min(cols - 4, 96));
 }
+
+function visibleLen(s) { return s.replace(/\x1b\[[0-9;]*m/g, '').length; }
 
 function padLine(s, width) {
   // Strip ANSI for width math, then pad the ORIGINAL (colored) string using the visible length.
-  const visible = s.replace(/\x1b\[[0-9;]*m/g, '');
-  const pad = Math.max(0, width - visible.length);
+  const pad = Math.max(0, width - visibleLen(s));
   return s + ' '.repeat(pad);
 }
 
-function box(lines, width) {
-  const top = c.dim('┌' + '─'.repeat(width) + '┐');
-  const bot = c.dim('└' + '─'.repeat(width) + '┘');
-  const body = lines.map((l) => `${c.dim('│')} ${padLine(l, width - 2)} ${c.dim('│')}`);
+// Right-align a key/hint against a left label within `width` columns — matches grok-build's
+// hero-box menu rows (welcome/mod.rs's rendered "label ... key" pattern, e.g. "New worktree
+// ctrl+w"): label left, hint right, both on one row, padded to fill the column exactly.
+function menuRow(label, hint, width) {
+  const gap = Math.max(1, width - visibleLen(label) - visibleLen(hint));
+  return `${label}${' '.repeat(gap)}${hint}`;
+}
+
+// Original ICARUS mark, NOT a copy of any other product's logo asset — an abstract ascending-
+// wing motif in the same dot-matrix visual language grok-build's own small logo uses (braille
+// block characters, compact ~11x5), rendered as its own thing.
+const ICARUS_MARK = [
+  '⠀⠀⢀⣠⣴⣾⣷⣦⣀⠀⠀',
+  '⠀⣰⡿⠋⠀⠀⠀⠙⢿⣆⠀',
+  '⢰⡟⠀⠀⢀⣀⡀⠀⠀⢻⡆',
+  '⠈⠻⣦⡀⠀⠉⠀⢀⣼⠟⠁',
+  '⠀⠀⠈⠛⠶⠶⠞⠛⠁⠀⠀',
+];
+const MARK_WIDTH = 11;
+
+// Rounded border, two columns inside — mark left, version/status/menu right — mirroring
+// grok-build's hero_box.rs structure (logo left column, version+subtitle+menu right column,
+// rounded border) without its mouse hit-testing/live-announcement machinery, which needs a real
+// alt-screen curses runtime this CLI deliberately doesn't build (see this file's header comment).
+function heroBox(rightLines, width) {
+  const leftW = MARK_WIDTH + 2;
+  const rightW = width - leftW - 3; // 3 = the gap column + 2 border-adjacent spaces
+  const rows = Math.max(ICARUS_MARK.length, rightLines.length);
+  const top = c.dim('╭' + '─'.repeat(width) + '╮');
+  const bot = c.dim('╰' + '─'.repeat(width) + '╯');
+  const body = [];
+  for (let i = 0; i < rows; i++) {
+    const left = i < ICARUS_MARK.length ? c.assistant(ICARUS_MARK[i]) : ' '.repeat(MARK_WIDTH);
+    const right = i < rightLines.length ? rightLines[i] : '';
+    body.push(`${c.dim('│')} ${padLine(left, leftW - 1)} ${padLine(right, rightW)} ${c.dim('│')}`);
+  }
   return [top, ...body, bot].join('\n');
 }
 
 function drawBanner(cfg) {
   const w = boxWidth();
+  const cwd = process.cwd().replace(process.env.HOME || '', '~');
+  console.log(`${c.dim(glyphs.diamond)} ${c.dim(cwd)}\n`);
+
   const hmLine = cfg.hivemind?.connected
     ? c.success(`HIVEMIND connected${cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''}`)
-    : c.dim('HIVEMIND not connected — /connect to link your account');
-  const lines = [
-    `${c.bold(c.assistant('ICARUS'))} ${c.dim(`v${ICARUS_VERSION}`)}  ${c.dim('memory filesystem for AI agents')}`,
+    : c.dim('HIVEMIND not connected');
+  const right = [
+    `${c.bold(c.assistant('ICARUS'))}  ${c.dim(`v${ICARUS_VERSION}`)}`,
+    c.dim('memory filesystem for AI agents'),
     '',
     hmLine,
     '',
-    `${c.command('/ingest')} ${c.dim('<dir> [--org name]')}          extract + store a folder`,
-    `${c.command('/recall')} ${c.dim('<query> [--org name]')}        semantic + lexical search`,
-    `${c.command('/status')}                              shards, signing, audit, HIVEMIND`,
-    `${c.command('/connect')}                             sign in to HIVEMIND (browser)`,
-    `${c.command('/update')}                              download the latest release`,
-    `${c.command('/help')}                                full command list`,
-    `${c.command('/quit')}${' '.repeat(31)}${c.dim('ctrl+d')}`,
+    menuRow(`${c.command('/ingest')} ${c.dim('<dir>')}`, c.dim('extract + store a folder'), 48),
+    menuRow(`${c.command('/recall')} ${c.dim('<query>')}`, c.dim('semantic + lexical search'), 48),
+    menuRow(c.command('/status'), c.dim('shards, signing, audit'), 48),
+    menuRow(c.command('/connect'), c.dim('sign in to HIVEMIND'), 48),
+    menuRow(c.command('/update'), c.dim('download the latest release'), 48),
+    menuRow(c.command('/help'), c.dim('full command list'), 48),
+    menuRow(c.command('/quit'), c.dim('ctrl+d'), 48),
   ];
-  console.log(box(lines, w));
+  console.log(heroBox(right, w));
+  console.log(`\n${c.dim('Type a command, or plain text to recall.')}\n`);
 }
 
 function printHelp() {
@@ -99,7 +137,6 @@ async function run() {
   const cfg = loadCfg();
   process.stdout.write('\x1b[2J\x1b[H'); // clear screen — banner starts at a known top
   drawBanner(cfg);
-  console.log(c.dim(`\nType a command, or plain text to recall. ${c.command('/help')} for the full list.\n`));
 
   const rl = readline.createInterface({
     input: process.stdin,
