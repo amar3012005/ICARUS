@@ -23,14 +23,29 @@ DATA_DIR="$HOME_DIR/data"
 BIN_DIR="$HOME_DIR/bin"
 USED_BINARY=0 # 1 once the prebuilt-binary path succeeds — later steps skip the source build
 
-c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
-info() { c "36" "▸ $1"; }
-ok()   { c "32" "✓ $1"; }
-warn() { c "33" "! $1"; }
-die()  { c "31" "✗ $1"; exit 1; }
+# Truecolor ANSI matching the Node CLI's theme.js — ported from the same grok-build GrokNight
+# palette (crates/codegen/xai-grok-pager-render/src/theme/groknight.rs), so install.sh and every
+# `icarus` command afterward share one visual identity instead of drifting onto two color sets.
+# Degrades the same way theme.js does: NO_COLOR wins, then a real TTY check (curl|bash's own
+# stdout may not be one).
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
+  C_ENABLED=0
+else
+  C_ENABLED=1
+fi
+rgb() { # rgb R G B text
+  if [ "$C_ENABLED" = "1" ]; then printf '\033[38;2;%s;%s;%sm%s\033[0m\n' "$1" "$2" "$3" "$4"
+  else printf '%s\n' "$4"; fi
+}
+info() { rgb 122 162 247 "▸ $1"; }               # accent_system (blue)
+ok()   { rgb 158 206 106 "✓ $1"; }               # accent_success (green)
+warn() { rgb 224 175 104 "! $1"; }               # command/warning (yellow)
+die()  { rgb 247 118 142 "✗ $1"; exit 1; }       # accent_error (red)
+dim()  { rgb 108 108 108 "$1"; }                 # comment (muted gray)
+step() { printf '\n'; rgb 122 162 247 "◆ $1"; }  # accent_system + diamond, matches icarus setup's steps
 
 banner() {
-  c "35" "
+  rgb 187 154 247 "
    ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗
    ██║██╔════╝██╔══██╗██╔══██╗██║   ██║██╔════╝
    ██║██║     ███████║██████╔╝██║   ██║███████╗
@@ -246,24 +261,24 @@ has_tty() { { : < /dev/tty; } 2>/dev/null; }
 guided_setup() {
   if ! has_tty; then
     warn "No controlling terminal — skipping guided setup."
-    echo "    Run later:  icarus setup   (or individually: icarus mcp install / connect-llm / connect-embeddings / connect)"
+    dim "    Run later:  icarus setup   (or individually: icarus mcp install / connect-llm / connect-embeddings / connect)"
     return 0
   fi
   printf '\n'
-  c "36" "Continuing with guided setup. Press Ctrl+C at any point to stop — whatever"
-  c "36" "step you're on can always be re-run later with the command shown for it."
+  dim "Continuing with guided setup. Press Ctrl+C at any point to stop — whatever"
+  dim "step you're on can always be re-run later with the command shown for it."
 
-  printf '\n'; c "36" "Step 1/4 — registering with any coding agents found on this machine"
+  step "Step 1/4 — registering with any coding agents found on this machine"
   "$BIN_DIR/icarus" mcp install || true
 
-  printf '\n'; c "36" "Step 2/4 — memory generation (distills ingested text into key facts before storing)"
+  step "Step 2/4 — memory generation (distills ingested text into key facts before storing)"
   if [ -n "${OPENROUTER_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
     ok "API key already in the environment — memory generation is enabled, nothing to do."
   else
-    echo "  Skip this entirely and ICARUS still works — raw text is stored and searchable as-is."
-    echo "    1) OpenRouter (one key, routes to Claude/GPT/etc by model name)"
-    echo "    2) Anthropic API key (console.anthropic.com — NOT a Claude.ai subscription login)"
-    echo "    3) Skip"
+    dim "  Skip this entirely and ICARUS still works — raw text is stored and searchable as-is."
+    dim "    1) OpenRouter (one key, routes to Claude/GPT/etc by model name)"
+    dim "    2) Anthropic API key (console.anthropic.com — NOT a Claude.ai subscription login)"
+    dim "    3) Skip"
     read -r -p "  Choice [1/2/3]: " llm_choice < /dev/tty
     case "$llm_choice" in
       1) read -r -s -p "  OpenRouter API key: " llm_key < /dev/tty; printf '\n'
@@ -274,27 +289,31 @@ guided_setup() {
     esac
   fi
 
-  printf '\n'; c "36" "Step 3/4 — vector recall (semantic search on top of lexical/BM25)"
+  step "Step 3/4 — vector recall (semantic search on top of lexical/BM25)"
   if [ -n "${OPENROUTER_API_KEY:-}${LITELLM_API_KEY:-}" ]; then
     ok "API key already in the environment — vector recall is enabled, nothing to do."
   else
-    echo "  Skip this entirely and ICARUS still works — BM25 lexical search needs no vector."
+    dim "  Skip this entirely and ICARUS still works — BM25 lexical search needs no vector."
     read -r -p "  Connect an embedding provider (OpenRouter baai/bge-m3)? [y/N] " emb_ans < /dev/tty
     case "$emb_ans" in
       y|Y) read -r -s -p "  OpenRouter API key: " emb_key < /dev/tty; printf '\n'
            "$BIN_DIR/icarus" connect-embeddings --key "$emb_key" ;;
-      *) echo "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
+      *) dim "    Skipped — running lexical-only (BM25) until you run: icarus connect-embeddings" ;;
     esac
   fi
 
-  printf '\n'; c "36" "Step 4/4 — HIVEMIND account (optional)"
+  step "Step 4/4 — HIVEMIND account (optional)"
   read -r -p "  Connect your HIVEMIND account? [y/N] " hm_ans < /dev/tty
   case "$hm_ans" in
     y|Y)
-      echo "  Open: ${HIVEMIND_URL:-https://hivemind.blaiq.ai}/settings/connections (authorize \"icarus local\")"
+      if [ -n "${HIVEMIND_URL:-}" ]; then
+        dim "  Open: ${HIVEMIND_URL}/settings/connections (authorize \"icarus local\")"
+      else
+        dim "  Set HIVEMIND_URL to your server first (e.g. HIVEMIND_URL=https://your-server.example.com) — no default is baked in."
+      fi
       read -r -s -p "  Paste HIVEMIND token: " hm_token < /dev/tty; printf '\n'
       "$BIN_DIR/icarus" connect --token "$hm_token" ;;
-    *) echo "    Skipped. Run later:  icarus connect" ;;
+    *) dim "    Skipped. Run later:  icarus connect" ;;
   esac
 }
 
@@ -331,11 +350,11 @@ main() {
   guided_setup
 
   printf '\n'
-  c "32" "Done. Try:  icarus status"
+  ok "Done. Try:  icarus status"
   if [ "$USED_BINARY" = "1" ]; then
-    c "90" "Docs: ${REPO}#readme"
+    dim "Docs: ${REPO}#readme"
   else
-    c "90" "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
+    dim "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
   fi
 }
 

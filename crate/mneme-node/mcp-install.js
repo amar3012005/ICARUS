@@ -30,6 +30,59 @@ function writeJsonPreserving(p, obj) {
   fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n');
 }
 
+// Claude Code's SessionEnd hook — a DIFFERENT real file from the MCP registration above:
+// ~/.claude/settings.json (hooks config), not ~/.claude.json (MCP servers + app state). Verified
+// against real Claude Code hook docs: hooks.SessionEnd is an array of {matcher, hooks:[{type,
+// command, timeout}]} groups; an empty matcher "" matches every SessionEnd trigger. This is what
+// makes "automatic skill generation during coding sessions" (as opposed to `icarus skill save`,
+// which needs a human to remember to run it) actually automatic.
+function claudeSettingsPath() { return path.join(HOME, '.claude', 'settings.json'); }
+
+function detectHook() {
+  const p = claudeSettingsPath();
+  if (!fs.existsSync(p)) return { found: false };
+  const cfg = readJsonSafe(p);
+  const existing = cfg?.hooks?.SessionEnd || [];
+  const already = existing.some((g) => (g.hooks || []).some((h) => (h.command || '').includes('hook session-end')));
+  return { found: already, path: p };
+}
+
+function installHook(command) {
+  const p = claudeSettingsPath();
+  const cfg = fs.existsSync(p) ? (readJsonSafe(p) || {}) : {};
+  cfg.hooks = cfg.hooks || {};
+  cfg.hooks.SessionEnd = cfg.hooks.SessionEnd || [];
+  const already = cfg.hooks.SessionEnd.some((g) => (g.hooks || []).some((h) => (h.command || '').includes('hook session-end')));
+  if (already) return { installed: false, reason: 'already installed', path: p };
+  cfg.hooks.SessionEnd.push({
+    matcher: '',
+    hooks: [{ type: 'command', command: `${command} hook session-end`, timeout: 30 }],
+  });
+  writeJsonPreserving(p, cfg);
+  return { installed: true, path: p };
+}
+
+// Surgical inverse of installHook — removes only entries whose command mentions our own hook
+// subcommand, from whichever SessionEnd group(s) contain it, without touching unrelated
+// SessionEnd hooks or any other key in the same settings.json.
+function removeHook() {
+  const p = claudeSettingsPath();
+  if (!fs.existsSync(p)) return { removed: false };
+  const cfg = readJsonSafe(p);
+  if (!cfg?.hooks?.SessionEnd) return { removed: false };
+  let removed = false;
+  cfg.hooks.SessionEnd = cfg.hooks.SessionEnd
+    .map((g) => ({ ...g, hooks: (g.hooks || []).filter((h) => {
+      const match = (h.command || '').includes('hook session-end');
+      if (match) removed = true;
+      return !match;
+    }) }))
+    .filter((g) => g.hooks.length > 0);
+  if (cfg.hooks.SessionEnd.length === 0) delete cfg.hooks.SessionEnd;
+  if (removed) writeJsonPreserving(p, cfg);
+  return { removed, path: p };
+}
+
 // Every MCP entry `mcp install`/`icarus setup` can register, name -> {command, args}. Just
 // icarus itself — the native symbol/call-graph indexer (graph-native.js) is exposed as icarus's
 // OWN MCP tools (icarus_graph_build/status/query, see mcp-serve.js) now, not a separate
@@ -222,5 +275,5 @@ async function run(_flags) {
 
 module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
-  detectRemovable, removeAll,
+  detectRemovable, removeAll, detectHook, installHook, removeHook,
 };

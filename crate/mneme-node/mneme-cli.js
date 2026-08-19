@@ -21,6 +21,7 @@ const {
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
 } = require('./cli-lib.js');
+const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
 // original "consume the next token as this flag's value" behavior unchanged, so `--k 5`,
@@ -58,18 +59,20 @@ async function cmdIngest(flags, cfg) {
   const org = flags.org || 'default';
   if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--full]');
   if (hivemindConfigured(cfg) && !flags.local) {
-    console.log(`ingesting into HIVEMIND workspace, org tag "icarus-org:${org}" (${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`);
-    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${n} files`), { fullMemoryGeneration: !!flags.full });
-    console.log(`\n✓ HIVEMIND ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments (mode=${result.mode})`);
+    console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}" ${c.dim(`(${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`)}`)));
+    let tick = 0;
+    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { fullMemoryGeneration: !!flags.full });
+    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}`);
     return;
   }
   if (!embeddingsConfigured(cfg)) {
-    console.log('no embedding provider configured — ingesting lexical-only (BM25, no semantic recall).');
-    console.log('run `icarus connect-embeddings` to add one, then re-ingest for vector recall.\n');
+    console.log(c.dim('no embedding provider configured — ingesting lexical-only (BM25, no semantic recall).'));
+    console.log(c.dim(`run ${c.command('icarus connect-embeddings')} to add one, then re-ingest for vector recall.\n`));
   }
-  console.log(`ingesting into org "${org}"`);
-  const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${n} chunks`));
-  console.log(`\n✓ ingested ${result.chunks} chunks from ${result.files} files into ${org} (${result.live} live, mode=${result.mode})`);
+  console.log(bullet(c.system(`ingesting into org "${c.path(org)}"`)));
+  let tick = 0;
+  const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} chunks`));
+  console.log(`\n${ok(`ingested ${c.bold(result.chunks)} chunks from ${result.files} files into ${c.path(org)} (${result.live} live, mode=${result.mode})`)}`);
 }
 
 async function cmdRecall(flags, cfg) {
@@ -80,33 +83,34 @@ async function cmdRecall(flags, cfg) {
   if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]');
   if (hivemindConfigured(cfg) && !flags.local) {
     const hits = await hivemindRecallQuery(q, org, cfg, k);
-    console.log(`\ntop ${hits.length} for "${q}" (HIVEMIND — dense+lexical+entity+temporal, fused server-side):\n`);
+    console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}" ${c.dim('(HIVEMIND — dense+lexical+entity+temporal, fused server-side)')}:\n`);
     hits.forEach((h, i) => {
       const txt = (h.text || '').replace(/\s+/g, ' ').slice(0, 160);
-      console.log(`  ${i + 1}. [${(h.score ?? 0).toFixed(4)}] (${h.mode}) ${txt}`);
+      console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${(h.score ?? 0).toFixed(4)}]`)} ${c.dim(`(${h.mode})`)} ${txt}`);
     });
     return;
   }
   const hits = await recallQuery(q, org, cfg, k, usePq);
-  const modeLabel = hits[0]?.mode === 'lexical' ? ' (lexical/BM25 — no embedding provider configured)'
-    : usePq ? ' (PQ/ADC recall)' : '';
-  console.log(`\ntop ${hits.length} for "${q}"${modeLabel}:\n`);
+  const modeLabel = hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 — no embedding provider configured)')
+    : usePq ? c.dim(' (PQ/ADC recall)') : '';
+  console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}"${modeLabel}:\n`);
   hits.forEach((h, i) => {
     const txt = h.text.replace(/\s+/g, ' ').slice(0, 160);
-    console.log(`  ${i + 1}. [${h.score.toFixed(4)}] ${txt}`);
+    console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${txt}`);
   });
 }
 
 function cmdStatus(_flags, cfg) {
   const s = statusReport(cfg);
-  console.log(`icarus  data: ${s.dataRoot}  dim: ${s.dim}`);
-  console.log(`HIVEMIND: ${s.hivemindConnected ? 'connected' : 'not connected'}`);
-  console.log(`Signing: ${signingEnabled(cfg) ? 'ML-DSA-65 (FIPS 204), on' : 'disabled'}`);
-  console.log(`Audit trail: SLH-DSA-SHA2-128s (FIPS 205), on — icarus audit checkpoint/verify`);
-  if (!s.shards.length) return console.log('no shards yet — run: icarus ingest <dir> --org <name>');
-  console.log(`\nshards:`);
+  console.log(`${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
+  console.log(rule());
+  console.log(`${c.dim(glyphs.accentBar)} HIVEMIND   ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}`);
+  console.log(`${c.dim(glyphs.accentBar)} Signing    ${signingEnabled(cfg) ? c.success('ML-DSA-65 (FIPS 204), on') : c.dim('disabled')}`);
+  console.log(`${c.dim(glyphs.accentBar)} Audit      ${c.success('SLH-DSA-SHA2-128s (FIPS 205), on')} ${c.dim('— icarus audit checkpoint/verify')}`);
+  if (!s.shards.length) return console.log(c.dim(`\nno shards yet — run: ${c.command('icarus ingest <dir> --org <name>')}`));
+  console.log(`\n${c.system(glyphs.diamond)} ${heading('shards')}`);
   for (const sh of s.shards) {
-    console.log(`  ${sh.org.padEnd(24)} ${(sh.bytesOnDisk / 1e6).toFixed(2)} MB on disk`);
+    console.log(`  ${c.dim(glyphs.accentBar)} ${c.path(sh.org.padEnd(24))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB on disk')}`);
   }
 }
 
@@ -114,7 +118,7 @@ function cmdCompact(flags, cfg) {
   const org = flags.org || 'default';
   const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   const reclaimed = store.compact();
-  console.log(`✓ compacted ${org}: reclaimed ${(reclaimed / 1e3).toFixed(1)} KB`);
+  console.log(ok(`compacted ${c.path(org)}: reclaimed ${c.bold((reclaimed / 1e3).toFixed(1))} KB`));
 }
 
 // PQ (Product Quantization) is a real alternative to HNSW, not a universal upgrade — see
@@ -133,10 +137,10 @@ function cmdTrainPq(flags, cfg) {
   const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
   const live = store.liveCount();
   if (!live) throw new Error(`org "${org}" has no memories yet — nothing to train on`);
-  console.log(`training PQ codebook for "${org}" (${live} live vectors, seed=${seed})...`);
+  console.log(bullet(c.system(`training PQ codebook for "${c.path(org)}" ${c.dim(`(${live} live vectors, seed=${seed})`)}...`)));
   const t0 = Date.now();
   store.trainPq(seed);
-  console.log(`✓ trained in ${((Date.now() - t0) / 1000).toFixed(1)}s — try: icarus recall "..." --org ${org} --pq`);
+  console.log(ok(`trained in ${c.bold(((Date.now() - t0) / 1000).toFixed(1) + 's')} — try: ${c.command(`icarus recall "..." --org ${org} --pq`)}`));
 }
 
 // Two real, separate bugs were caught building this:
@@ -188,14 +192,14 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // answer already in hand via flags — never handing tty control to a child process for more than
   // one read at a time.
   if (flags.token !== undefined) {
-    if (!flags.token) return console.log('  skipped.');
+    if (!flags.token) return console.log(c.dim('  skipped.'));
     cfg.hivemind = { connected: true, url: base, token: flags.token, apiUrl: flags['api-url'] || cfg.hivemind?.apiUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
-    console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
-    if (!cfg.hivemind.apiUrl) console.log('  (no --api-url given — icarus ingest/recall will use the local engine until you set one: icarus connect --api-url <url>)');
+    console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
+    if (!cfg.hivemind.apiUrl) console.log(c.dim(`  (no --api-url given — icarus ingest/recall will use the local engine until you set one: ${c.command('icarus connect --api-url <url>')})`));
     return;
   }
-  console.log(`\nConnect ICARUS ↔ HIVEMIND`);
+  console.log(`\n${heading('Connect ICARUS ↔ HIVEMIND')}`);
   // A caller (icarus setup) that's already mid-wizard passes its own prompter through, so this
   // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
   // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
@@ -206,29 +210,29 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // up front regardless of which auth path follows: OAuth discovery needs it to know where to
   // look, and manual-token entry needs it to know where to send requests.
   const apiUrl = await ask('  Memory server REST API base URL (e.g. https://your-server.example.com, or blank to stay local-only for now): ');
-  if (!apiUrl) { if (!sharedAsk) ask.close(); return console.log('  skipped — staying on the local engine.'); }
+  if (!apiUrl) { if (!sharedAsk) ask.close(); return console.log(c.dim('  skipped — staying on the local engine.')); }
 
   // Try real OAuth first (authorization-code + PKCE + dynamic client registration — see
   // attemptHivemindOAuth's own doc comment for why this never throws and what it needs from the
   // server). Only on failure does this fall to the manual paste-your-own-token flow below —
   // exactly the "first run redirect oauth, fallback is api key" order this was built for.
-  console.log('  Trying OAuth...');
+  console.log(c.running('  Trying OAuth...'));
   const oauth = await attemptHivemindOAuth(apiUrl);
   if (oauth) {
     if (!sharedAsk) ask.close();
     cfg.hivemind = { connected: true, url: base, token: oauth.token, refreshToken: oauth.refreshToken, apiUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
-    return console.log('  ✓ HIVEMIND connected via OAuth. Token stored in', CFG_PATH);
+    return console.log(`  ${ok('HIVEMIND connected via OAuth.')} Token stored in ${c.path(CFG_PATH)}`);
   }
-  console.log('  OAuth isn\'t available for this server (or the flow didn\'t complete) — falling back to a manual token.');
-  console.log(`  1. Open: ${base}/settings/connections (authorize "icarus local")`);
+  console.log(c.dim('  OAuth isn\'t available for this server (or the flow didn\'t complete) — falling back to a manual token.'));
+  console.log(`  1. Open: ${c.path(`${base}/settings/connections`)} (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
-  if (!token) return console.log('  skipped.');
+  if (!token) return console.log(c.dim('  skipped.'));
   cfg.hivemind = { connected: true, url: base, token, apiUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
-  console.log('  ✓ HIVEMIND connected. Token stored in', CFG_PATH);
+  console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
 }
 
 // Embeddings are OPT-IN, not required — ingest/recall work lexical-only (BM25) with zero
@@ -243,7 +247,7 @@ async function cmdConnectEmbeddings(flags, cfg, sharedAsk) {
   if (flags.disable) {
     cfg.embeddings = { ...cfg.embeddings, disabled: true, apiKey: null };
     saveCfg(cfg);
-    return console.log('✓ embeddings disabled — ingest/recall will use lexical-only (BM25) search, even with OPENROUTER_API_KEY set.');
+    return console.log(ok('embeddings disabled — ingest/recall will use lexical-only (BM25) search, even with OPENROUTER_API_KEY set.'));
   }
   // --key (even '' to mean "use env var / skip") makes this fully non-interactive — see
   // cmdConnect's comment for why install.sh's guided section needs this shape.
@@ -251,16 +255,16 @@ async function cmdConnectEmbeddings(flags, cfg, sharedAsk) {
     const endpoint = flags.endpoint || cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1';
     const model = flags.model || cfg.embeddings?.model || 'baai/bge-m3';
     if (!flags.key && !process.env.OPENROUTER_API_KEY && !process.env.LITELLM_API_KEY) {
-      return console.log('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.');
+      return console.log(c.dim('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.'));
     }
     cfg.embeddings = { disabled: false, endpoint, model, apiKey: flags.key || null };
     saveCfg(cfg);
-    console.log(`  ✓ embedding provider configured (${model} @ ${endpoint}). Config → ${CFG_PATH}`);
+    console.log(`  ${ok(`embedding provider configured (${c.model(model)} @ ${c.path(endpoint)})`)}. Config → ${c.path(CFG_PATH)}`);
     return;
   }
-  console.log('\nConnect an embedding provider (OpenAI-compatible /embeddings endpoint).');
-  console.log('Skip this entirely and ICARUS still works — BM25 lexical search needs no vector.');
-  console.log('(Already have OPENROUTER_API_KEY exported? You don\'t need this command at all — it just works.)\n');
+  console.log(`\n${heading('Connect an embedding provider')} ${c.dim('(OpenAI-compatible /embeddings endpoint)')}`);
+  console.log(c.dim('Skip this entirely and ICARUS still works — BM25 lexical search needs no vector.'));
+  console.log(c.dim('(Already have OPENROUTER_API_KEY exported? You don\'t need this command at all — it just works.)\n'));
   const ask = sharedAsk || makePrompter();
   const endpoint = await ask(`  Endpoint [${cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1'}]: `)
     || cfg.embeddings?.endpoint || 'https://openrouter.ai/api/v1';
@@ -268,12 +272,12 @@ async function cmdConnectEmbeddings(flags, cfg, sharedAsk) {
   const apiKey = await ask('  API key (or blank to use OPENROUTER_API_KEY env var instead): ');
   if (!sharedAsk) ask.close();
   if (!apiKey && !process.env.OPENROUTER_API_KEY && !process.env.LITELLM_API_KEY) {
-    return console.log('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.');
+    return console.log(c.dim('  no key given and OPENROUTER_API_KEY not set — skipped. Staying lexical-only.'));
   }
   cfg.embeddings = { disabled: false, endpoint, model, apiKey: apiKey || null };
   saveCfg(cfg);
-  console.log(`  ✓ embedding provider configured (${model} @ ${endpoint}). Config → ${CFG_PATH}`);
-  console.log('  Re-run `icarus ingest` for existing orgs to get vector recall on their content.');
+  console.log(`  ${ok(`embedding provider configured (${c.model(model)} @ ${c.path(endpoint)})`)}. Config → ${c.path(CFG_PATH)}`);
+  console.log(c.dim(`  Re-run ${c.command('icarus ingest')} for existing orgs to get vector recall on their content.`));
 }
 
 // Memory generation (distillation, TencentDB Agent Memory's own L0->L1 term) is OPT-IN, same
@@ -288,12 +292,12 @@ async function cmdConnectLlm(flags, cfg, sharedAsk) {
   if (flags.disable) {
     cfg.llm = { ...cfg.llm, disabled: true, apiKey: null };
     saveCfg(cfg);
-    return console.log('✓ memory generation disabled — ingest will store raw text, even with an API key env var set.');
+    return console.log(ok('memory generation disabled — ingest will store raw text, even with an API key env var set.'));
   }
   // --provider (openrouter|anthropic|skip) + --key make this fully non-interactive — see
   // cmdConnect's comment for why install.sh's guided section needs this shape.
   if (flags.provider !== undefined) {
-    if (flags.provider === 'skip') return console.log('  skipped. Staying raw-text mode.');
+    if (flags.provider === 'skip') return console.log(c.dim('  skipped. Staying raw-text mode.'));
     const provider = flags.provider === 'anthropic' ? 'anthropic' : 'openrouter';
     const defaults = provider === 'anthropic'
       ? { endpoint: 'https://api.anthropic.com', model: 'claude-3-5-haiku-20241022' }
@@ -302,21 +306,21 @@ async function cmdConnectLlm(flags, cfg, sharedAsk) {
     const model = flags.model || cfg.llm?.model || defaults.model;
     const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY';
     if (!flags.key && !process.env[envVar]) {
-      return console.log(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`);
+      return console.log(c.dim(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`));
     }
     cfg.llm = { disabled: false, provider, endpoint, model, apiKey: flags.key || null };
     saveCfg(cfg);
-    console.log(`  ✓ memory generation configured (${provider}: ${model} @ ${endpoint}). Config → ${CFG_PATH}`);
+    console.log(`  ${ok(`memory generation configured (${c.model(provider)}: ${model} @ ${c.path(endpoint)})`)}. Config → ${c.path(CFG_PATH)}`);
     return;
   }
-  console.log('\nConnect a memory-generation provider (distills raw text into key facts before storing).');
-  console.log('Skip this entirely and ICARUS still works — raw text is stored and searchable as-is.\n');
-  console.log('  1) OpenRouter   — one key, routes to Claude/GPT/etc by model name');
-  console.log('  2) Anthropic API key — console.anthropic.com (NOT your Claude.ai subscription login)');
-  console.log('  3) Skip\n');
+  console.log(`\n${heading('Connect a memory-generation provider')} ${c.dim('(distills raw text into key facts before storing)')}`);
+  console.log(c.dim('Skip this entirely and ICARUS still works — raw text is stored and searchable as-is.\n'));
+  console.log(`  ${c.command('1)')} OpenRouter   — one key, routes to Claude/GPT/etc by model name`);
+  console.log(`  ${c.command('2)')} Anthropic API key — console.anthropic.com (NOT your Claude.ai subscription login)`);
+  console.log(`  ${c.command('3)')} Skip\n`);
   const ask = sharedAsk || makePrompter();
   const choice = (await ask('  Choice [1/2/3]: ')).trim() || '3';
-  if (choice === '3') { if (!sharedAsk) ask.close(); return console.log('  skipped. Staying raw-text mode.'); }
+  if (choice === '3') { if (!sharedAsk) ask.close(); return console.log(c.dim('  skipped. Staying raw-text mode.')); }
   const provider = choice === '2' ? 'anthropic' : 'openrouter';
   const defaults = provider === 'anthropic'
     ? { endpoint: 'https://api.anthropic.com', model: 'claude-3-5-haiku-20241022' }
@@ -327,12 +331,12 @@ async function cmdConnectLlm(flags, cfg, sharedAsk) {
   const apiKey = await ask(`  API key (or blank to use ${envVar} env var instead): `);
   if (!sharedAsk) ask.close();
   if (!apiKey && !process.env[envVar]) {
-    return console.log(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`);
+    return console.log(c.dim(`  no key given and ${envVar} not set — skipped. Staying raw-text mode.`));
   }
   cfg.llm = { disabled: false, provider, endpoint, model, apiKey: apiKey || null };
   saveCfg(cfg);
-  console.log(`  ✓ memory generation configured (${provider}: ${model} @ ${endpoint}). Config → ${CFG_PATH}`);
-  console.log('  Re-run `icarus ingest` for existing orgs to distill their content going forward.');
+  console.log(`  ${ok(`memory generation configured (${c.model(provider)}: ${model} @ ${c.path(endpoint)})`)}. Config → ${c.path(CFG_PATH)}`);
+  console.log(c.dim(`  Re-run ${c.command('icarus ingest')} for existing orgs to distill their content going forward.`));
 }
 
 // The guided, one-by-one flow: detect agents, ask per agent, then walk through memory-generation
@@ -341,50 +345,50 @@ async function cmdConnectLlm(flags, cfg, sharedAsk) {
 // just answered from stdin/env instead of a live terminal.
 async function cmdSetup(_flags, cfg) {
   const { detectAgents, installClaudeCode, installCodex, installCursor, resolveIcarusCommand } = require('./mcp-install.js');
-  console.log('\nicarus setup — guided, step by step. Answer or press enter to skip any step.\n');
+  console.log(`\n${heading('icarus setup')} ${c.dim('— guided, step by step. Answer or press enter to skip any step.')}\n`);
   // ONE prompter for the whole wizard: on piped/non-TTY input, makePrompter() does a single
   // fs.readFileSync(0) — a second instance mid-wizard would find the pipe already drained and
   // silently read nothing for every remaining question (a real bug, caught running this live).
   const ask = makePrompter();
-  console.log('Step 1/4 — coding agents on this machine\n');
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 1/4')} ${c.dim('— coding agents on this machine')}\n`);
   const found = detectAgents().filter((a) => a.found);
   if (!found.length) {
-    console.log('  none detected (no ~/.claude.json, ~/.codex, or ~/.cursor found). Skipping.\n');
+    console.log(c.dim('  none detected (no ~/.claude.json, ~/.codex, or ~/.cursor found). Skipping.\n'));
   } else {
     const command = resolveIcarusCommand();
     const installers = { 'claude-code': installClaudeCode, codex: installCodex, cursor: installCursor };
     for (const { agent } of found) {
       const yn = (await ask(`  Register ICARUS as an MCP server for ${agent}? [Y/n]: `)).trim().toLowerCase();
-      if (yn === 'n' || yn === 'no') { console.log(`  · ${agent}: skipped`); continue; }
+      if (yn === 'n' || yn === 'no') { console.log(c.dim(`  · ${agent}: skipped`)); continue; }
       const r = installers[agent](command);
-      console.log(r.installed ? `  ✓ ${agent}: registered in ${r.path}` : `  · ${agent}: ${r.reason}`);
+      console.log(r.installed ? `  ${ok(`${agent}: registered in ${c.path(r.path)}`)}` : c.dim(`  · ${agent}: ${r.reason}`));
     }
     if (found.some((a) => a.agent === 'codex')) {
-      console.log('  (Codex ChatGPT-subscription login via its app-server is a separate, not-yet-built');
-      console.log('   integration — this only registered icarus as a plain MCP tool for it.)');
+      console.log(c.dim('  (Codex ChatGPT-subscription login via its app-server is a separate, not-yet-built'));
+      console.log(c.dim('   integration — this only registered icarus as a plain MCP tool for it.)'));
     }
     console.log('');
   }
 
-  console.log('Step 2/4 — memory generation (distill ingested text into key facts)\n');
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 2/4')} ${c.dim('— memory generation (distill ingested text into key facts)')}\n`);
   if (llmConfigured(cfg)) {
-    console.log(`  already configured (${cfg.llm.provider} @ ${cfg.llm.endpoint}) — skipping.\n`);
+    console.log(c.dim(`  already configured (${cfg.llm.provider} @ ${cfg.llm.endpoint}) — skipping.\n`));
   } else {
     await cmdConnectLlm({ _: [] }, cfg, ask);
     console.log('');
   }
 
-  console.log('Step 3/4 — vector recall (semantic search on top of lexical/BM25)\n');
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 3/4')} ${c.dim('— vector recall (semantic search on top of lexical/BM25)')}\n`);
   if (embeddingsConfigured(cfg)) {
-    console.log(`  already configured (${cfg.embeddings.model} @ ${cfg.embeddings.endpoint}) — skipping.\n`);
+    console.log(c.dim(`  already configured (${cfg.embeddings.model} @ ${cfg.embeddings.endpoint}) — skipping.\n`));
   } else {
     await cmdConnectEmbeddings({ _: [] }, cfg, ask);
     console.log('');
   }
 
-  console.log('Step 4/4 — HIVEMIND account (optional)\n');
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND account (optional)')}\n`);
   if (cfg.hivemind && cfg.hivemind.connected) {
-    console.log('  already connected — skipping.\n');
+    console.log(c.dim('  already connected — skipping.\n'));
   } else {
     await cmdConnect({ _: [] }, cfg, ask);
     console.log('');
@@ -392,12 +396,13 @@ async function cmdSetup(_flags, cfg) {
   ask.close();
 
   const fresh = loadCfg();
-  console.log('Setup summary:');
-  console.log(`  agents registered : ${found.filter((a) => a.found).length ? 'see above' : 'none found'}`);
-  console.log(`  memory generation : ${llmConfigured(fresh) ? `on (${fresh.llm.provider})` : 'off (raw text)'}`);
-  console.log(`  vector recall     : ${embeddingsConfigured(fresh) ? `on (${fresh.embeddings.model})` : 'off (lexical/BM25)'}`);
-  console.log(`  HIVEMIND          : ${fresh.hivemind?.connected ? 'connected' : 'not connected'}`);
-  console.log('\nAll set. Try: icarus ingest <dir> --org <name>');
+  console.log(rule());
+  console.log(heading('Setup summary'));
+  console.log(`  ${c.dim('agents registered :')} ${found.filter((a) => a.found).length ? c.success('see above') : c.dim('none found')}`);
+  console.log(`  ${c.dim('memory generation :')} ${llmConfigured(fresh) ? c.success(`on (${fresh.llm.provider})`) : c.dim('off (raw text)')}`);
+  console.log(`  ${c.dim('vector recall     :')} ${embeddingsConfigured(fresh) ? c.success(`on (${fresh.embeddings.model})`) : c.dim('off (lexical/BM25)')}`);
+  console.log(`  ${c.dim('HIVEMIND          :')} ${fresh.hivemind?.connected ? c.success('connected') : c.dim('not connected')}`);
+  console.log(`\n${ok('All set.')} Try: ${c.command('icarus ingest <dir> --org <name>')}`);
 }
 
 // "Automatically enables skill generation" (as requested) has a real limit: ICARUS has no
@@ -444,9 +449,9 @@ function cmdVerify(flags, cfg) {
   const slotId = Number(flags._[0]);
   if (!Number.isInteger(slotId) || slotId < 0) throw new Error('usage: icarus verify <slot_id> --org <name>');
   const r = verifySlot(slotId, cfg, org);
-  if (!r.signed) return console.log(`slot ${slotId} in "${org}": no signature recorded (written before signing was enabled, or signing was off).`);
-  if (r.valid) return console.log(`✓ slot ${slotId} in "${org}": signature valid (signed ${r.signedAt}).`);
-  console.log(`✗ slot ${slotId} in "${org}": signature INVALID — content does not match what was signed at ${r.signedAt}.`);
+  if (!r.signed) return console.log(c.dim(`slot ${slotId} in "${org}": no signature recorded (written before signing was enabled, or signing was off).`));
+  if (r.valid) return console.log(ok(`slot ${c.path(slotId)} in "${c.path(org)}": signature valid (signed ${r.signedAt}).`));
+  console.log(err(`slot ${c.path(slotId)} in "${c.path(org)}": signature ${c.bold('INVALID')} — content does not match what was signed at ${r.signedAt}.`));
   process.exitCode = 1;
 }
 
@@ -460,25 +465,25 @@ function cmdAudit(flags, cfg) {
   const org = flags.org || 'default';
   if (sub === 'checkpoint') {
     const cp = checkpointAudit(cfg, org);
-    return console.log(`✓ checkpoint signed for "${org}" at seq ${cp.seq} (${cp.signed_at}).`);
+    return console.log(ok(`checkpoint signed for "${c.path(org)}" at seq ${c.bold(cp.seq)} (${cp.signed_at}).`));
   }
   if (sub === 'verify') {
     const r = verifyAuditChain(cfg, org);
-    if (!r.entries) return console.log(`org "${org}": no audit entries yet.`);
-    console.log(`${r.entries} audit entries for "${org}".`);
+    if (!r.entries) return console.log(c.dim(`org "${org}": no audit entries yet.`));
+    console.log(`${c.bold(r.entries)} audit entries for "${c.path(org)}".`);
     if (!r.chainValid) {
-      console.log(`✗ CHAIN BROKEN at seq ${r.brokenAt} — an entry was edited, reordered, or deleted.`);
+      console.log(err(`${c.bold('CHAIN BROKEN')} at seq ${r.brokenAt} — an entry was edited, reordered, or deleted.`));
       process.exitCode = 1;
       return;
     }
-    console.log(`✓ hash chain intact (genesis → tip, no gaps).`);
+    console.log(ok('hash chain intact (genesis → tip, no gaps).'));
     if (!r.checkpoint) {
-      console.log(`  no checkpoint signed yet — run: icarus audit checkpoint --org ${org}`);
+      console.log(c.dim(`  no checkpoint signed yet — run: ${c.command(`icarus audit checkpoint --org ${org}`)}`));
       return;
     }
-    console.log(`  latest checkpoint: seq ${r.checkpoint.seq}, signature ${r.checkpoint.valid ? 'valid' : 'INVALID'} (${r.checkpoint.signedAt})`);
+    console.log(`  ${c.dim('latest checkpoint:')} seq ${r.checkpoint.seq}, signature ${r.checkpoint.valid ? c.success('valid') : c.error('INVALID')} (${r.checkpoint.signedAt})`);
     if (r.checkpoint.entriesSinceCheckpoint > 0) {
-      console.log(`  ${r.checkpoint.entriesSinceCheckpoint} entries since the last checkpoint are hash-chained but not yet signed — run: icarus audit checkpoint --org ${org}`);
+      console.log(c.dim(`  ${r.checkpoint.entriesSinceCheckpoint} entries since the last checkpoint are hash-chained but not yet signed — run: ${c.command(`icarus audit checkpoint --org ${org}`)}`));
     }
     if (!r.checkpoint.valid) process.exitCode = 1;
     return;
@@ -567,35 +572,35 @@ async function cmdPrune(flags, _cfg) {
   const rcHits = shellRcFiles().filter((rc) => fs.readFileSync(rc, 'utf8').includes(line));
   const mcpHits = detectRemovable().filter((r) => r.found);
 
-  console.log('icarus prune — this will remove:\n');
-  if (icarusExists) console.log(`  ✓ ${HOME} (${dirSizeMb(HOME)} MB — bin, config, data, src)`);
-  else console.log(`  · ${HOME} — not found, nothing to remove`);
-  for (const rc of rcHits) console.log(`  ✓ PATH line in ${rc}`);
-  for (const r of mcpHits) console.log(`  ✓ MCP entr${r.entries.length > 1 ? 'ies' : 'y'} (${r.entries.join(', ')}) in ${r.path}`);
+  console.log(`${heading('icarus prune')} — this will remove:\n`);
+  if (icarusExists) console.log(`  ${c.error(glyphs.ballotX)} ${c.path(HOME)} (${dirSizeMb(HOME)} MB — bin, config, data, src)`);
+  else console.log(c.dim(`  · ${HOME} — not found, nothing to remove`));
+  for (const rc of rcHits) console.log(`  ${c.error(glyphs.ballotX)} PATH line in ${c.path(rc)}`);
+  for (const r of mcpHits) console.log(`  ${c.error(glyphs.ballotX)} MCP entr${r.entries.length > 1 ? 'ies' : 'y'} (${r.entries.join(', ')}) in ${c.path(r.path)}`);
   if (!icarusExists && !rcHits.length && !mcpHits.length) {
-    return console.log('\nNothing found — icarus is already fully removed.');
+    return console.log(c.dim('\nNothing found — icarus is already fully removed.'));
   }
-  console.log('\nData in ~/.icarus/data (ingested memories) and any HIVEMIND connection token go with it — this is not reversible.');
+  console.log(c.bold(c.error('\nData in ~/.icarus/data (ingested memories) and any HIVEMIND connection token go with it — this is not reversible.')));
 
   if (!flags.yes) {
     const ask = makePrompter();
     const ans = (await ask('\nProceed? [y/N] ')).trim().toLowerCase();
     ask.close();
-    if (ans !== 'y' && ans !== 'yes') return console.log('Aborted — nothing removed.');
+    if (ans !== 'y' && ans !== 'yes') return console.log(c.dim('Aborted — nothing removed.'));
   }
 
   const removed = removeAll();
-  for (const r of removed) if (r.removed) console.log(`  ✓ removed icarus MCP registration from ${r.path}`);
+  for (const r of removed) if (r.removed) console.log(ok(`removed icarus MCP registration from ${c.path(r.path)}`));
   for (const rc of rcHits) {
     const content = fs.readFileSync(rc, 'utf8');
     fs.writeFileSync(rc, content.split('\n').filter((l) => l.trim() !== line).join('\n'));
-    console.log(`  ✓ removed PATH line from ${rc}`);
+    console.log(ok(`removed PATH line from ${c.path(rc)}`));
   }
   if (icarusExists) {
     fs.rmSync(HOME, { recursive: true, force: true });
-    console.log(`  ✓ removed ${HOME}`);
+    console.log(ok(`removed ${c.path(HOME)}`));
   }
-  console.log('\nicarus fully removed from this machine. Restart any open Claude Code/Cursor/Codex session to drop the MCP registration.');
+  console.log(c.dim('\nicarus fully removed from this machine. Restart any open Claude Code/Cursor/Codex session to drop the MCP registration.'));
 }
 
 async function cmdMcpServe(_flags, _cfg) {
@@ -655,7 +660,7 @@ async function main() {
       case 'verify': cmdVerify(flags, cfg); break;
       case 'audit': cmdAudit(flags, cfg); break;
       default:
-        console.log(`icarus — memory filesystem CLI (the .amr engine)
+        console.log(colorizeHelp(`icarus — memory filesystem CLI (the .amr engine)
 
   icarus ingest <dir> --org <name>     extract + embed + store a folder. If icarus connect has a
                                         HIVEMIND token, routes through HIVEMIND's real API
@@ -732,10 +737,10 @@ async function main() {
   env: OPENROUTER_API_KEY (embeddings + memory generation, optional — see connect-embeddings/connect-llm)
        ANTHROPIC_API_KEY (memory generation via Anthropic's own API instead — see connect-llm)
        LITELLM_API_KEY / LITELLM_BASE_URL (embeddings via your own LiteLLM/blaiq gateway instead)
-       ICARUS_HOME (default ~/.icarus)`);
+       ICARUS_HOME (default ~/.icarus)`));
     }
   } catch (e) {
-    console.error('✗', e.message);
+    console.error(err(e.message));
     process.exit(1);
   }
 }
