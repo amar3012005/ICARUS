@@ -44,6 +44,20 @@ const LAYER_MEMORY = 0;
 const LAYER_EVIDENCE = 1;
 const LAYER_COGNITIVE = 2;
 const LAYER_SKILL = 3;
+
+// Exact parity with HIVEMIND's own real typed-edge convention (core/src/vector/mneme/
+// amr-store.mjs's REL_TYPE) — the native engine's addEdge()/traverseTyped() were built for this
+// exact enum (see mneme-node/src/lib.rs's own doc comment on add_edge). Reusing it verbatim
+// rather than inventing a second numbering.
+const REL_TYPE = { Mentions: 1, Updates: 2, Derives: 3, Contradicts: 4, PartOf: 5, Extends: 6 };
+const REL_NAME = [null, 'Mentions', 'Updates', 'Derives', 'Contradicts', 'PartOf', 'Extends'];
+// Agent-facing schema words (lowercase, singular verb — matching HIVEMIND's own tool schema:
+// "update | extend | derive") -> the real REL_TYPE keys above. A capitalize-first-letter
+// heuristic does NOT work here ('update' -> 'Update' vs the real key 'Updates') — explicit map.
+const REL_WORD_TO_TYPE = {
+  update: REL_TYPE.Updates, extend: REL_TYPE.Extends, derive: REL_TYPE.Derives,
+  contradict: REL_TYPE.Contradicts, partof: REL_TYPE.PartOf, mentions: REL_TYPE.Mentions,
+};
 // Skills also get written as real .md files here -- Claude Code's own `.claude/skills/*.md`
 // shape (frontmatter name/description + body). That's the canonical listing (skillList() just
 // reads this directory): bm25Search has no layer filter (only vector recall_layer() does), so a
@@ -739,6 +753,42 @@ function rrfMerge(listA, listB, k = 60) {
  * free-HIVEMIND-service fallback in this file). Not connected: the RRF-merged hybrid result IS
  * the final answer, truncated to topK directly — no rerank stage, by design (that's the explicit
  * "if not connected, just retrieve top-k" spec this pipeline was built to). */
+/** Real hit-text unwrap for structured-memory slots (see the "Structured memory" section below):
+ * a JSON-enveloped record's raw stored text is `{"id":"...","content":"...",...}` — showing that
+ * verbatim in recall output, or feeding it into the reranker, would be real noise (JSON syntax
+ * diluting relevance). Plain-prose hits (existing /save, /ingest, skills) pass through unchanged
+ * — tryParseMemoryRecord() returns null for anything that isn't the JSON-envelope shape. */
+function unwrapHit(h) {
+  const rec = tryParseMemoryRecord(h.text);
+  if (!rec) return h;
+  return { ...h, text: memoryDisplayText(rec), memoryId: rec.id, tags: rec.tags || [], isLatest: rec.is_latest !== false };
+}
+
+/** Real gap: native update()'s own doc comment claims "Recall then returns only the latest" —
+ * true only in the sense that HIVEMIND's own server enforces an is_latest=true filter itself
+ * (confirmed in amr-store.mjs/SQL mirror); the raw recall()/bm25Search() calls do NOT exclude a
+ * superseded slot on their own (caught live: after updateStructuredMemory() corrected a memory
+ * in place, both the old and new content kept surfacing side by side in recall, sharing the same
+ * memoryId). Drop superseded structured hits here so recallQuery matches the documented intent. */
+function dropSuperseded(hits) { return hits.filter((h) => h.isLatest !== false); }
+
+/** Tag-scoped recall — the primitive behind icarus_recall_bugs/icarus_why_code/icarus_test_coverage
+ * (real HIVEMIND parity: "Filters memory recall to entries tagged bug, fix, or gotcha"). Runs a
+ * wide semantic recall, then keeps only hits whose structured tags intersect requireAnyTags — a
+ * hit with no tags at all (plain prose from /save or /ingest, never tagged) is excluded, matching
+ * the real semantic exactly rather than a fuzzy best-effort fallback. */
+async function recallByTags(query, org, cfg, { requireAnyTags = [], requireAllTags = [], limit = 5 } = {}) {
+  const wide = await recallQuery(query, org, cfg, Math.max(limit * 6, 30), false);
+  return wide
+    .filter((h) => {
+      const tags = h.tags || [];
+      if (requireAnyTags.length && !requireAnyTags.some((t) => tags.includes(t))) return false;
+      if (requireAllTags.length && !requireAllTags.every((t) => tags.includes(t))) return false;
+      return true;
+    })
+    .slice(0, limit);
+}
+
 async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   const store = openStore(cfg, org);
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
@@ -752,7 +802,7 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
     if (!store.pqTrained()) throw new Error(`no PQ codebook trained for org "${org}" yet — run train_pq first`);
     const [qv] = await embed([query], cfg);
     const hits = store.recallPq(qv, topK);
-    return hits.map((h) => ({ score: h.score, text: h.text, mode: 'vector' }));
+    return dropSuperseded(hits.map((h) => unwrapHit({ score: h.score, text: h.text, mode: 'vector' })));
   }
 
   const viaHivemind = hivemindConfigured(cfg);
@@ -774,19 +824,20 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
 
   // Parallel retrieval — both run against the SAME wide window, independently, before either one
   // knows about the other. bm25Search() always runs (it's local, free, instant); the dense HNSW
-  // side only runs if a query vector was actually obtained above.
-  const lexicalHits = store.bm25Search(query, wideK).map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
+  // side only runs if a query vector was actually obtained above. Unwrapped HERE, before RRF
+  // merge/rerank — both operate on real display text from this point on, not raw JSON envelopes.
+  const lexicalHits = dropSuperseded(store.bm25Search(query, wideK).map((h) => unwrapHit({ score: h.score, text: h.text, mode: 'lexical' })));
   let denseHits = [];
   if (qv) {
     store.enableHnsw();
-    denseHits = store.recall(qv, wideK).map((h) => ({ score: h.score, text: h.text, mode: 'vector' }));
+    denseHits = dropSuperseded(store.recall(qv, wideK).map((h) => unwrapHit({ score: h.score, text: h.text, mode: 'vector' })));
   }
   const merged = qv ? rrfMerge(denseHits, lexicalHits) : lexicalHits;
 
   if (!viaHivemind) {
     // Disconnected: the hybrid merge IS the final result — no rerank stage.
     return merged.slice(0, topK).map((h) => ({
-      score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical',
+      score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical', memoryId: h.memoryId, tags: h.tags,
     }));
   }
   // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
@@ -1073,6 +1124,216 @@ async function saveLocalMemory(text, org, cfg, opts = {}) {
   return slotId;
 }
 
+// ── Structured memory (agent-facing MCP tools) ──────────────────────────────────────────────
+//
+// The human /save path above stores plain prose text — a person typing into the TUI has no
+// schema to follow. An AI agent calling an MCP tool is different: it's given a real schema
+// (title/content/tags/source_type/relationship/related_to, matching HIVEMIND's own
+// hivemind_save_memory) and — being the LLM itself — fills it in thoughtfully, the same way it
+// would call hivemind_save_memory server-side. icarus's job here is just to store what the
+// agent already decided, not to run its own extraction on top.
+//
+// Storage convention deliberately reused, not invented: HIVEMIND's own real .amr storage
+// backend (core/src/vector/mneme/amr-store.mjs) already stores every record as
+// `JSON.stringify({id, content, title, tags, ...})` via insertLayered(), and the native engine's
+// findById()/addEdge()/traverseTyped()/update()/delete() were built specifically to operate on
+// that convention (confirmed by lib.rs's own doc comments — "HIVEMIND traverse_graph parity",
+// "the agent always serializes {"id":"<uuid>",...}"). Reusing that exact shape end-to-end means
+// icarus's structured memories are the same real format HIVEMIND's own server-side embedded
+// engine already uses, not a second, incompatible one.
+//
+// Plain-prose slots (existing /save, /ingest, /save --cloud mirror) and JSON-enveloped slots
+// (this section) coexist safely in the same shard: extractId()/findById() simply skip any slot
+// whose text isn't `{"id":"..."}`-shaped (real, by design — see lib.rs's extract_id, which
+// returns None on no match), and recall's own hybrid search treats both as plain searchable
+// text either way.
+
+function newMemoryId() { return crypto.randomUUID(); }
+
+/** Parses a slot's stored text as a structured-memory record, or returns null for anything that
+ * isn't one (plain prose from /save, evidence segments from /ingest, skill markdown — all real,
+ * expected non-JSON text sharing the same shard). Never throws. */
+function tryParseMemoryRecord(text) {
+  if (!text || text[0] !== '{') return null;
+  try {
+    const rec = JSON.parse(text);
+    return rec && typeof rec === 'object' && typeof rec.id === 'string' ? rec : null;
+  } catch (_) { return null; }
+}
+
+/** The text actually worth embedding/displaying for a structured record — just `content` (and
+ * `title` when present), never the raw JSON envelope. Embedding the full JSON blob would dilute
+ * the vector with field-name/punctuation noise (the exact chunk-dilution lesson from earlier
+ * this session); BM25 self-corrects for repeated boilerplate keys via IDF, but dense embedding
+ * does not, so this matters most for the embed-time text, not just display. */
+function memoryDisplayText(rec) {
+  return rec.title ? `${rec.title}\n${rec.content || ''}` : (rec.content || '');
+}
+
+/** Real, deliberate memory save with HIVEMIND's own schema (title/content/tags/source_type/
+ * relationship/related_to) — the primitive behind the icarus_save_memory MCP tool. `relationship`
+ * + `relatedTo` records a real typed edge (native addEdge(), exact HIVEMIND enum) from the new
+ * memory to the target — a genuinely SEPARATE memory that relates to an existing one, distinct
+ * from icarus_update_memory below (which corrects an EXISTING memory in place, same id). Returns
+ * the new memory's real id (a UUID an agent can pass back into related_to/get/update/delete). */
+async function saveStructuredMemory(content, org, cfg, opts = {}) {
+  const store = openStore(cfg, org);
+  const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  const id = newMemoryId();
+  const now = new Date();
+  const rec = {
+    id, content, title: opts.title || null, tags: Array.isArray(opts.tags) ? opts.tags : [],
+    source_type: opts.sourceType || null, layer: 'memory', created_at: now.toISOString(),
+    valid_from: now.getTime(), is_latest: true, project: opts.project || null,
+  };
+  let vec = new Float32Array(cfg.dim);
+  let vectorMode = false;
+  if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
+    try {
+      [vec] = hasOwnEmbeddings ? await embed([content], cfg) : await embedViaHivemindService([content]);
+      vectorMode = true;
+    } catch (_) { /* keep the zero-vector placeholder — same degrade-gracefully rule as saveLocalMemory */ }
+  }
+  const slotId = store.insertLayered(JSON.stringify(rec), vec, now.getTime(), LAYER_MEMORY);
+  appendAuditEntry(cfg, org, 'insert', slotId, { source: 'save-memory-structured', sourceFile: opts.title || null });
+  let edge = null;
+  if (opts.relationship && opts.relatedTo) {
+    const relType = REL_WORD_TO_TYPE[opts.relationship.toLowerCase()];
+    if (!relType) throw new Error(`unknown relationship "${opts.relationship}" — one of update, extend, derive, contradict, partof, mentions`);
+    const targetSlot = store.findById(opts.relatedTo);
+    if (targetSlot < 0) throw new Error(`related_to "${opts.relatedTo}" — no live memory with that id in org "${org}"`);
+    store.addEdge(slotId, targetSlot, relType, 255);
+    // "update" specifically means the new memory supersedes the old one for normal recall — flip
+    // the OLD record's is_latest via rewriteText (metadata-only mutation, vector/layer/edges
+    // untouched — exactly what rewriteText's own doc comment says it's for).
+    if (opts.relationship === 'update') {
+      const oldText = store.slotText(targetSlot);
+      const oldRec = tryParseMemoryRecord(oldText);
+      if (oldRec && oldRec.is_latest !== false) {
+        oldRec.is_latest = false;
+        store.rewriteText(targetSlot, JSON.stringify(oldRec));
+      }
+    }
+    edge = { type: opts.relationship, target: opts.relatedTo };
+  }
+  if (vectorMode) store.enableHnsw();
+  store.flush();
+  return { id, slot: slotId, edge };
+}
+
+/** Fetch one structured memory by its real id — native findById() + slotText(), O(1) off the
+ * engine's own id index, no JS-side Map. Returns null if not found or tombstoned (a deleted
+ * memory's slot fails findById's own liveness check — see lib.rs's find_by_id doc comment). */
+function getStructuredMemory(memoryId, org, cfg) {
+  const store = openStore(cfg, org);
+  const slot = store.findById(memoryId);
+  if (slot < 0) return null;
+  const rec = tryParseMemoryRecord(store.slotText(slot));
+  return rec ? { ...rec, slot } : null;
+}
+
+/** Lists structured memories for an org, newest-first, optionally AND-filtered by tags.
+ * Streams via the native recordsPage() page-by-page (bounded JS heap, same pattern HIVEMIND's own
+ * amr-store.mjs uses) rather than allRecords() — real for shards of any size, not just small
+ * test ones. Plain-prose slots (non-JSON text) are silently skipped, not counted against limit. */
+function listStructuredMemories(org, cfg, { tags = [], limit = 20, includeSuperseded = false } = {}) {
+  const store = openStore(cfg, org);
+  const PAGE = 500;
+  const out = [];
+  let from = 0;
+  for (;;) {
+    const { rows, nextSlot } = store.recordsPage(from, PAGE);
+    for (const { slotId, text } of rows) {
+      const rec = tryParseMemoryRecord(text);
+      if (!rec) continue;
+      if (!includeSuperseded && rec.is_latest === false) continue;
+      if (tags.length && !tags.every((t) => (rec.tags || []).includes(t))) continue;
+      out.push({ ...rec, slot: slotId });
+    }
+    if (nextSlot === 0xffffffff || out.length >= limit * 4) break; // real cap: don't scan a huge shard fully for a small limit
+    from = nextSlot;
+  }
+  out.sort((a, b) => (b.valid_from || 0) - (a.valid_from || 0));
+  return out.slice(0, limit);
+}
+
+/** Corrects an EXISTING memory in place — same id, matching HIVEMIND's real hivemind_update_memory
+ * semantics ("Use when a stored fact is outdated and needs correction"), NOT a new related memory
+ * (see saveStructuredMemory's relationship+relatedTo for that). Uses the native update() primitive
+ * directly — it auto-adds a real Updates edge (new slot -> old slot) and tombstones the old slot
+ * internally, so findById(id) naturally resolves to the live new slot afterward (same "id" field,
+ * old candidate just fails the liveness check) — exactly the real, built-in HIVEMIND-parity
+ * mechanism, not a hand-rolled one. */
+async function updateStructuredMemory(memoryId, patch, org, cfg) {
+  const store = openStore(cfg, org);
+  const slot = store.findById(memoryId);
+  if (slot < 0) throw new Error(`no live memory with id "${memoryId}" in org "${org}"`);
+  const old = tryParseMemoryRecord(store.slotText(slot));
+  if (!old) throw new Error(`memory "${memoryId}" exists but isn't a structured record — can't update it with this tool`);
+  const merged = {
+    ...old,
+    content: patch.content ?? old.content,
+    title: patch.title !== undefined ? patch.title : old.title,
+    tags: Array.isArray(patch.tags) ? patch.tags : old.tags,
+  };
+  const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  let vec = new Float32Array(cfg.dim);
+  if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
+    try { [vec] = hasOwnEmbeddings ? await embed([merged.content], cfg) : await embedViaHivemindService([merged.content]); }
+    catch (_) { /* zero-vector placeholder */ }
+  }
+  const now = Date.now();
+  const newSlot = store.update(slot, JSON.stringify(merged), vec, now, old.valid_from || now);
+  // Real gap caught live: native update() removes the OLD slot from the id-index (so findById
+  // correctly resolves to the new slot afterward) but does NOT rewrite the old slot's own stored
+  // JSON text — it stays "is_latest":true forever, so plain recall()/bm25Search() (which scan
+  // live slots directly, not the id-index) kept surfacing the stale pre-correction content
+  // alongside the corrected version, both under the same memoryId. Flip it explicitly.
+  if (old.is_latest !== false) {
+    try { store.rewriteText(slot, JSON.stringify({ ...old, is_latest: false })); }
+    catch (_) { /* best-effort — the correction itself already succeeded above either way */ }
+  }
+  appendAuditEntry(cfg, org, 'update', newSlot, { source: 'update-memory', sourceFile: null });
+  store.flush();
+  return { id: memoryId, slot: newSlot };
+}
+
+/** Permanently deletes (tombstones) a memory by id — native delete(), matching HIVEMIND's real
+ * hivemind_delete_memory semantics. `reason` is audit-only (never sent anywhere, just recorded
+ * locally for "why was this removed" later). */
+function deleteStructuredMemory(memoryId, reason, org, cfg) {
+  const store = openStore(cfg, org);
+  const slot = store.findById(memoryId);
+  if (slot < 0) throw new Error(`no live memory with id "${memoryId}" in org "${org}"`);
+  store.delete(slot);
+  appendAuditEntry(cfg, org, 'delete', slot, { source: 'delete-memory', sourceFile: reason || null });
+  store.flush();
+  return { id: memoryId, deleted: true };
+}
+
+/** BFS graph walk from a seed memory along real typed edges — native traverseTyped(), exact
+ * HIVEMIND traverse_graph parity (per lib.rs's own doc comment). `relationship` filters to one
+ * edge type; omitted/"all" walks every type and unions the reachable set. */
+function traverseStructuredGraph(memoryId, org, cfg, { relationship, depth = 2 } = {}) {
+  const store = openStore(cfg, org);
+  const seed = store.findById(memoryId);
+  if (seed < 0) throw new Error(`no live memory with id "${memoryId}" in org "${org}"`);
+  const types = relationship && relationship !== 'all'
+    ? [REL_WORD_TO_TYPE[relationship.toLowerCase()]]
+    : Object.values(REL_TYPE);
+  const seen = new Set();
+  for (const t of types) {
+    if (!t) continue;
+    for (const slot of store.traverseTyped(seed, t, depth)) seen.add(slot);
+  }
+  const out = [];
+  for (const slot of seen) {
+    let rec; try { rec = tryParseMemoryRecord(store.slotText(slot)); } catch (_) { rec = null; }
+    if (rec) out.push({ ...rec, slot });
+  }
+  return out;
+}
+
 /** Fetch a HIVEMIND-processed document's segments back — GET /api/documents/:id (real, confirmed
  * endpoint: core/src/server.js's `documentId` route, returns `{document, segments, promotedMemories,
  * segmentCount, promotedCount}` where each segment row has a real `.content` (the chunk text)).
@@ -1348,7 +1609,7 @@ function statusReport(cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.16';
+const ICARUS_VERSION = '0.3.17';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1429,4 +1690,6 @@ module.exports = {
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory,
   purgeHivemindDocument,
+  REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
+  updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
 };

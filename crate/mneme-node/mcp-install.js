@@ -248,8 +248,70 @@ function removeCodex() {
   return { agent: 'codex', removed, path: p };
 }
 
+// Standing instruction — the real lever for "does the agent start using icarus without being
+// told to": MCP tool descriptions alone (even directive ones) aren't fully reliable on their
+// own — HIVEMIND's own best-practices doc admits this and recommends exactly this kind of
+// system-prompt line for OpenClaw ("recall before you act, save what's durable"). Written to
+// ~/.claude/CLAUDE.md — Claude Code's real, confirmed-loaded-every-session global instructions
+// file (not a project-local CLAUDE.md, which most repos don't have and shouldn't be forced to).
+// Marker-wrapped so re-running `mcp install` is idempotent and `icarus prune` can remove exactly
+// this block without touching anything else the user has in that file.
+const STANDING_MARK_START = '<!-- icarus:standing-instructions -->';
+const STANDING_MARK_END = '<!-- /icarus:standing-instructions -->';
+const STANDING_BLOCK = `${STANDING_MARK_START}
+## ICARUS memory
+
+ICARUS is a local, persistent memory tool registered as an MCP server. Use it reflexively:
+
+- Call \`icarus_recall\` before answering anything that might already be known — a past
+  decision, a preference, prior conversation, or code context. It is cheap and local.
+- When the user shares a durable fact, preference, or decision, call \`icarus_save_memory\`
+  (title/content/tags/relationship) rather than letting it live only in this conversation.
+- Before touching unfamiliar code, call \`icarus_why_code\` / \`icarus_recall_bugs\`. After a
+  meaningful edit, call \`icarus_ingest_code\`. When choosing between real options, call
+  \`icarus_log_decision\`.
+- When a stored fact changes, prefer \`relationship: "update"\` (or \`icarus_update_memory\` for
+  an in-place correction) over saving a duplicate — the old version is marked superseded and
+  excluded from future recall automatically.
+${STANDING_MARK_END}`;
+
+function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
+
+function detectStandingInstructions() {
+  const p = globalClaudeMdPath();
+  if (!fs.existsSync(p)) return { found: false, path: p };
+  return { found: fs.readFileSync(p, 'utf8').includes(STANDING_MARK_START), path: p };
+}
+
+function installStandingInstructions() {
+  const p = globalClaudeMdPath();
+  const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+  if (existing.includes(STANDING_MARK_START)) return { installed: false, reason: 'already installed', path: p };
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const sep = existing && !existing.endsWith('\n\n') ? (existing.endsWith('\n') ? '\n' : '\n\n') : '';
+  fs.writeFileSync(p, existing + sep + STANDING_BLOCK + '\n');
+  return { installed: true, path: p };
+}
+
+// Surgical block removal — same start/end marker delete pattern as removeCodex's TOML section
+// removal, adapted for markdown: drop every line from the start marker to the end marker
+// (inclusive), leave everything else in the file untouched.
+function removeStandingInstructions() {
+  const p = globalClaudeMdPath();
+  if (!fs.existsSync(p)) return { removed: false };
+  const lines = fs.readFileSync(p, 'utf8').split('\n');
+  const startIdx = lines.findIndex((l) => l.includes(STANDING_MARK_START));
+  if (startIdx === -1) return { removed: false, path: p };
+  let endIdx = lines.findIndex((l, i) => i > startIdx && l.includes(STANDING_MARK_END));
+  if (endIdx === -1) endIdx = lines.length - 1;
+  lines.splice(startIdx, endIdx - startIdx + 1);
+  const text = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  fs.writeFileSync(p, text);
+  return { removed: true, path: p };
+}
+
 function detectRemovable() { return [detectClaudeCode(), detectCodex(), detectCursor()]; }
-function removeAll() { return [removeClaudeCode(), removeCodex(), removeCursor()]; }
+function removeAll() { return [removeClaudeCode(), removeCodex(), removeCursor(), removeStandingInstructions()]; }
 
 async function run(_flags) {
   const command = resolveIcarusCommand();
@@ -264,16 +326,34 @@ async function run(_flags) {
       console.log(`  · ${r.agent}: skipped (${r.reason})`);
     }
   }
+  // Real lever for auto-recognition without an explicit ask, per HIVEMIND's own best-practices
+  // doc ("give the agent one standing instruction"). Claude-Code-specific for now (Codex/Cursor
+  // have no equally-confirmed global instruction-file convention) — printed as an honest note
+  // below rather than silently guessed at for those agents.
+  const std = installStandingInstructions();
+  if (std.installed) {
+    any = true;
+    console.log(`  ✓ standing instructions: added to ${std.path} (Claude Code loads this every session)`);
+  } else if (std.reason === 'already installed') {
+    console.log(`  · standing instructions: already in ${std.path}`);
+  }
   if (any) {
     console.log('\nRestart the agent(s) above to pick up the new MCP server.');
   } else {
     console.log('\nNothing to do — either no supported agent was found, or icarus is already registered everywhere it was.');
   }
-  console.log('Tools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_train_pq, icarus_compact,');
-  console.log('               icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph).');
+  console.log('\nTools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_save, icarus_train_pq, icarus_compact,');
+  console.log('  memory: icarus_save_memory, icarus_get_memory, icarus_list_memories, icarus_update_memory,');
+  console.log('          icarus_delete_memory, icarus_save_conversation, icarus_traverse_graph');
+  console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
+  console.log('          icarus_test_coverage, icarus_why_code');
+  console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
+  console.log('\nCodex/Cursor: no equally-confirmed global standing-instruction file for those agents yet —');
+  console.log('consider adding a similar "recall before you answer, save what\'s durable" line to their own config by hand.');
 }
 
 module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
   detectRemovable, removeAll, detectHook, installHook, removeHook,
+  detectStandingInstructions, installStandingInstructions, removeStandingInstructions,
 };
