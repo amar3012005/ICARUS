@@ -29,7 +29,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'full']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'full', 'oauth-only']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -179,8 +179,17 @@ function makePrompter() {
   return ask;
 }
 
+// Default target: Singulance's own hosted HIVEMIND control-plane — api.singulancelabs.com, the
+// real, live-verified host for /auth/cli/start (confirmed via direct curl: 400 with no params,
+// 302 to the branded login page with valid params — NOT core.singulancelabs.com, which is a
+// different service, hm-core's generic OAuth-spec discovery endpoint, and 404s on this route).
+// Matches "just like claude does it": zero typing for the common case. HIVEMIND_URL (or
+// --api-url) still overrides for anyone self-hosting or pointing ICARUS at a different
+// HIVEMIND-shaped server; this is a default, not a hardcoded requirement.
+const DEFAULT_HIVEMIND_URL = 'https://api.singulancelabs.com';
+
 async function cmdConnect(flags, cfg, sharedAsk) {
-  const base = process.env.HIVEMIND_URL || 'https://hivemind.blaiq.ai';
+  const defaultUrl = process.env.HIVEMIND_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_URL;
   // --token makes this fully non-interactive — install.sh's guided section uses this instead of
   // spawning a second interactive read inside a curl|bash pipeline's child process. A real bug
   // was caught running the actual `curl | bash` install: a long-lived Node process doing several
@@ -193,44 +202,48 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // one read at a time.
   if (flags.token !== undefined) {
     if (!flags.token) return console.log(c.dim('  skipped.'));
-    cfg.hivemind = { connected: true, url: base, token: flags.token, apiUrl: flags['api-url'] || cfg.hivemind?.apiUrl, connectedAt: new Date().toISOString() };
+    const apiUrl = flags['api-url'] || cfg.hivemind?.apiUrl || defaultUrl;
+    cfg.hivemind = { connected: true, url: apiUrl, token: flags.token, apiUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
-    if (!cfg.hivemind.apiUrl) console.log(c.dim(`  (no --api-url given — icarus ingest/recall will use the local engine until you set one: ${c.command('icarus connect --api-url <url>')})`));
     return;
   }
   console.log(`\n${heading('Connect ICARUS ↔ HIVEMIND')}`);
+  // Real browser-login handshake (GET /auth/cli/start — see attemptHivemindOAuth's own doc
+  // comment) tried FIRST against the default/configured server, no prompt needed for the common
+  // case. Only if that fails (unreachable server, timed out, or user closes the tab) does this
+  // fall to asking for a URL + a manually pasted token.
+  console.log(c.dim(`  Signing in via ${c.path(defaultUrl)} ${defaultUrl === DEFAULT_HIVEMIND_URL ? '(default — override with HIVEMIND_URL)' : ''}`));
+  console.log(c.running('  Opening your browser...'));
+  const oauth = await attemptHivemindOAuth(defaultUrl);
+  if (oauth) {
+    cfg.hivemind = { connected: true, url: defaultUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: defaultUrl, connectedAt: new Date().toISOString() };
+    saveCfg(cfg);
+    return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)}`);
+  }
+  // --oauth-only: browser-flow-or-fail, no interactive fallback — this is what install.sh's
+  // guided_setup calls, so it (not this Node process) owns every /dev/tty read. A real bug this
+  // session: a Node child doing SEQUENTIAL /dev/tty reads died silently when spawned from inside
+  // a `curl | bash` pipe — the browser-flow-only path here does zero tty reads (its callback
+  // server is a plain loopback HTTP listener, not stdin), so it's safe to call directly; install.sh
+  // does its own single-read fallback if this returns nonzero.
+  if (flags['oauth-only']) {
+    console.log(c.dim('  Browser sign-in didn\'t complete.'));
+    process.exitCode = 1;
+    return;
+  }
+  console.log(c.dim('  Browser sign-in didn\'t complete — falling back to a manual URL + token.'));
   // A caller (icarus setup) that's already mid-wizard passes its own prompter through, so this
   // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
   // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
   const ask = sharedAsk || makePrompter();
-  // Deliberately asked FIRST and separately from the console URL above — that's an OAuth/
-  // authorize page, not necessarily the same host as the REST API base (a real TLS failure was
-  // hit earlier assuming they were interchangeable; see cli-lib.js's hivemindApiBase()). Needed
-  // up front regardless of which auth path follows: OAuth discovery needs it to know where to
-  // look, and manual-token entry needs it to know where to send requests.
-  const apiUrl = await ask('  Memory server REST API base URL (e.g. https://your-server.example.com, or blank to stay local-only for now): ');
-  if (!apiUrl) { if (!sharedAsk) ask.close(); return console.log(c.dim('  skipped — staying on the local engine.')); }
-
-  // Try real OAuth first (authorization-code + PKCE + dynamic client registration — see
-  // attemptHivemindOAuth's own doc comment for why this never throws and what it needs from the
-  // server). Only on failure does this fall to the manual paste-your-own-token flow below —
-  // exactly the "first run redirect oauth, fallback is api key" order this was built for.
-  console.log(c.running('  Trying OAuth...'));
-  const oauth = await attemptHivemindOAuth(apiUrl);
-  if (oauth) {
-    if (!sharedAsk) ask.close();
-    cfg.hivemind = { connected: true, url: base, token: oauth.token, refreshToken: oauth.refreshToken, apiUrl, connectedAt: new Date().toISOString() };
-    saveCfg(cfg);
-    return console.log(`  ${ok('HIVEMIND connected via OAuth.')} Token stored in ${c.path(CFG_PATH)}`);
-  }
-  console.log(c.dim('  OAuth isn\'t available for this server (or the flow didn\'t complete) — falling back to a manual token.'));
-  console.log(`  1. Open: ${c.path(`${base}/settings/connections`)} (authorize "icarus local")`);
+  const apiUrl = (await ask(`  Memory server REST API base URL [${defaultUrl}]: `)) || defaultUrl;
+  console.log(`  1. Open: ${c.path(`${apiUrl}/settings/connections`)} (authorize "icarus local")`);
   console.log(`  2. Copy the access token shown after authorizing.\n`);
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
   if (!token) return console.log(c.dim('  skipped.'));
-  cfg.hivemind = { connected: true, url: base, token, apiUrl, connectedAt: new Date().toISOString() };
+  cfg.hivemind = { connected: true, url: apiUrl, token, apiUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
   console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
 }
@@ -676,7 +689,13 @@ async function main() {
   icarus status                        shards + disk usage
   icarus setup                         guided, one-by-one wizard: detect coding agents, connect
                                         memory generation, embeddings, HIVEMIND — do this first
-  icarus connect                       link your HIVEMIND account
+  icarus connect [--api-url <url>] [--token <tok>] [--oauth-only]
+                                        link your HIVEMIND account. Default flow: opens your
+                                        browser to sign in (defaults to api.singulancelabs.com,
+                                        override with --api-url or HIVEMIND_URL), no token to
+                                        paste — falls back to a manual token if that doesn't
+                                        complete. --oauth-only tries only the browser flow and
+                                        exits nonzero on failure, no prompt (used by install.sh).
   icarus connect-embeddings [--disable]
                                         configure an embedding provider for vector recall — OPT
                                         IN, not required: with none configured, ingest/recall

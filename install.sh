@@ -306,13 +306,21 @@ guided_setup() {
   read -r -p "  Connect your HIVEMIND account? [y/N] " hm_ans < /dev/tty
   case "$hm_ans" in
     y|Y)
-      if [ -n "${HIVEMIND_URL:-}" ]; then
-        dim "  Open: ${HIVEMIND_URL}/settings/connections (authorize \"icarus local\")"
+      # Real browser sign-in (GET /auth/cli/start on the server, same UX as `gh auth login`) —
+      # `icarus connect --oauth-only` does zero /dev/tty reads itself (its callback listener is a
+      # plain loopback HTTP server, not stdin), so it's safe to call directly even inside this
+      # curl|bash pipe. Only the fallback below reads /dev/tty, and THIS script owns that read —
+      # never hand a Node child more than one /dev/tty read at a time (see the comment above
+      # guided_setup for the real bug that taught us this).
+      hm_url="${HIVEMIND_URL:-https://api.singulancelabs.com}"
+      if "$BIN_DIR/icarus" connect --oauth-only --api-url "$hm_url"; then
+        :
       else
-        dim "  Set HIVEMIND_URL to your server first (e.g. HIVEMIND_URL=https://your-server.example.com) — no default is baked in."
-      fi
-      read -r -s -p "  Paste HIVEMIND token: " hm_token < /dev/tty; printf '\n'
-      "$BIN_DIR/icarus" connect --token "$hm_token" ;;
+        warn "Browser sign-in didn't complete — falling back to a manual token."
+        echo "  Open: ${hm_url}/settings/connections (authorize \"icarus local\")"
+        read -r -s -p "  Paste HIVEMIND token: " hm_token < /dev/tty; printf '\n'
+        [ -n "$hm_token" ] && "$BIN_DIR/icarus" connect --token "$hm_token" --api-url "$hm_url"
+      fi ;;
     *) dim "    Skipped. Run later:  icarus connect" ;;
   esac
 }

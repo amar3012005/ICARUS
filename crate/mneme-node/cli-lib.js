@@ -692,113 +692,82 @@ function hivemindApiBase(cfg) {
   return base;
 }
 
-// Real OAuth2 authorization-code + PKCE + Dynamic Client Registration (RFC 8414/7591/7636) — a
-// server exposing this shape doesn't need a pre-registered client_id or secret; ICARUS registers
-// itself on the fly, then does a real browser redirect + local callback, exactly like `gh auth
-// login`/`vercel login`. Verified this shape is real (not guessed) against a live server's own
-// `/.well-known/oauth-authorization-server` discovery document before writing any of this.
+// Browser-login handshake, matching the server's REAL, already-shipped CLI-auth endpoint —
+// GET /auth/cli/start?callback=<loopback-url>&state=<rand> (control-plane-server.js's own doc
+// comment: "same UX as `gh auth login --web` / `vercel login`"). This replaced an earlier
+// generic OAuth2 PKCE + Dynamic Client Registration attempt that guessed at RFC 8414/7591/7636
+// support and hit real 404s on /oauth/register and /oauth/token — /auth/cli/start needs none of
+// that: no client registration, no PKCE, no discovery document. Server-side it:
+//   1. Requires the caller already be logged in (browser session cookie) — if not, redirects
+//      through the branded /hivemind/login page first, then loops back here automatically.
+//   2. Mints (or reuses) a revocable API key for that user/org.
+//   3. Parks the key behind a single-use, 60s-TTL exchange code and shows a branded
+//      "Verified as <email>" confirmation page — the token is NEVER placed in a URL the user's
+//      browser displays. Only after the user clicks Continue does the page redirect to our
+//      localhost callback below with the real token.
+//   4. Refuses to redirect anywhere except 127.0.0.1/localhost/::1 (or a chromiumapp.org
+//      extension callback) — the token cannot leak to a remote host even if `callback` were
+//      tampered with, so this is safe to point at by default.
 //
-// Deliberately NEVER throws — every failure path (discovery 404s, registration 404s, browser
-// redirect times out, token exchange fails) returns `null` so the caller falls back to the
-// existing manual paste-your-own-key flow. A real, current gap found testing this against a
-// live HIVEMIND-shaped deployment: the authorization endpoint was genuinely live (responded
-// 400/401 for missing/invalid params, not 404), but the registration and token endpoints both
-// 404'd on the public-facing domain — the discovery document's own `issuer` field pointed at an
-// internal-only hostname unreachable from outside instead of the public one. That's a real gap
-// on that server's own side, not fixable here — this function is written so it starts working
-// the moment registration+token exchange are routed publicly, with zero client-side changes.
-const crypto_ = crypto; // (module already required at top of file; local alias for clarity in this block only)
-function base64url(buf) {
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+// Deliberately NEVER throws — timeout, a non-loopback rejection, or any network hiccup all
+// return `null` so the caller falls back to the manual paste-your-own-key flow.
 function openBrowser(url) {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
   try { require('child_process').spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref(); } catch (_) { /* user copies the URL manually below */ }
 }
 
-async function attemptHivemindOAuth(baseUrl, { timeoutMs = 120000 } = {}) {
+async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000 } = {}) {
   const http = require('http');
   try {
-    const discoRes = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
-    if (!discoRes.ok) return null;
-    const disco = await discoRes.json();
-    if (!disco.authorization_endpoint || !disco.token_endpoint) return null;
-
-    // Local callback server FIRST — the redirect_uri registered below must exactly match what
-    // the browser is actually sent back to, so the real port has to be known before registering.
-    const { server, port, waitForCode } = await new Promise((resolve, reject) => {
-      let resolveCode, rejectCode;
+    const { server, port, waitForCallback } = await new Promise((resolve, reject) => {
+      let resolveCb, rejectCb;
       const srv = http.createServer((req, res) => {
-        const url = new URL(req.url, 'http://127.0.0.1');
-        if (url.pathname !== '/callback') { res.writeHead(404); res.end(); return; }
-        const code = url.searchParams.get('code');
-        const err = url.searchParams.get('error');
+        const u = new URL(req.url, 'http://127.0.0.1');
+        if (u.pathname !== '/callback') { res.writeHead(404); res.end(); return; }
+        const token = u.searchParams.get('token');
+        const state = u.searchParams.get('state');
+        const email = u.searchParams.get('user_email') || '';
+        const err = u.searchParams.get('error');
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(err ? `<h2>ICARUS: authorization failed (${err}) — return to your terminal.</h2>` : '<h2>ICARUS connected — you can close this tab and return to your terminal.</h2>');
-        if (err) rejectCode(new Error(err)); else resolveCode(code);
+        res.end(err
+          ? `<h2>ICARUS: sign-in failed (${err}) — return to your terminal.</h2>`
+          : `<h2>ICARUS connected${email ? ` as ${email}` : ''} — you can close this tab and return to your terminal.</h2>`);
+        if (err) rejectCb(new Error(err));
+        else resolveCb({ token, state, email, userId: u.searchParams.get('user_id') || null, orgId: u.searchParams.get('org_id') || null });
       });
       srv.on('error', reject);
       srv.listen(0, '127.0.0.1', () => {
         const p = srv.address().port;
-        resolve({
-          server: srv, port: p,
-          waitForCode: () => new Promise((res, rej) => { resolveCode = res; rejectCode = rej; }),
-        });
+        resolve({ server: srv, port: p, waitForCallback: () => new Promise((res, rej) => { resolveCb = res; rejectCb = rej; }) });
       });
     });
 
     try {
       const redirectUri = `http://127.0.0.1:${port}/callback`;
-      const regRes = await fetch(disco.registration_endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          redirect_uris: [redirectUri],
-          token_endpoint_auth_method: 'none',
-          grant_types: ['authorization_code', 'refresh_token'],
-          response_types: ['code'],
-          client_name: 'icarus-cli',
-        }),
-      });
-      if (!regRes.ok) return null; // e.g. registration_endpoint 404s — the real gap found this session
-      const { client_id } = await regRes.json();
-      if (!client_id) return null;
+      const state = base64url(crypto.randomBytes(16));
+      const startUrl = `${baseUrl}/auth/cli/start?${new URLSearchParams({ callback: redirectUri, state })}`;
 
-      const codeVerifier = base64url(crypto_.randomBytes(32));
-      const codeChallenge = base64url(crypto_.createHash('sha256').update(codeVerifier).digest());
-      const state = base64url(crypto_.randomBytes(16));
-      const scopes = (disco.scopes_supported || ['memory.read', 'memory.write', 'workspace.connect']).join(' ');
-      const authUrl = `${disco.authorization_endpoint}?${new URLSearchParams({
-        response_type: 'code', client_id, redirect_uri: redirectUri, scope: scopes,
-        code_challenge: codeChallenge, code_challenge_method: 'S256', state,
-      })}`;
+      console.log('\n  Opening your browser to sign in...');
+      console.log(`  If it doesn't open automatically: ${startUrl}\n`);
+      openBrowser(startUrl);
 
-      console.log('\n  Opening your browser to authorize ICARUS...');
-      console.log(`  If it doesn't open automatically: ${authUrl}\n`);
-      openBrowser(authUrl);
-
-      const code = await Promise.race([
-        waitForCode(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out waiting for browser authorization')), timeoutMs)),
+      const result = await Promise.race([
+        waitForCallback(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out waiting for browser login')), timeoutMs)),
       ]);
-
-      const tokenRes = await fetch(disco.token_endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id, code_verifier: codeVerifier,
-        }),
-      });
-      if (!tokenRes.ok) return null; // e.g. token_endpoint 404s — the other half of the real gap found this session
-      const tokenBody = await tokenRes.json();
-      if (!tokenBody.access_token) return null;
-      return { token: tokenBody.access_token, refreshToken: tokenBody.refresh_token || null };
+      if (result.state !== state) throw new Error('state mismatch on callback — possible CSRF, aborting');
+      if (!result.token) return null;
+      return { token: result.token, userEmail: result.email || null, userId: result.userId, orgId: result.orgId };
     } finally {
       server.close();
     }
   } catch (_) {
-    return null; // any network/timeout/parse failure -> caller falls back to manual key entry
+    return null; // any network/timeout/state-mismatch failure -> caller falls back to manual key entry
   }
+}
+
+function base64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function hivemindUploadFile(filePath, org, cfg, { fullMemoryGeneration = false } = {}) {
