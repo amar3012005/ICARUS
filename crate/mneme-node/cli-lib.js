@@ -23,14 +23,54 @@ function getNative() { return require('./native.js'); }
 // uses for the identical reason, and a real efficiency win too (skips re-scanning the shard's
 // id index on every call).
 const _storeCache = new Map(); // `${dataRoot}::${org}` -> open store handle
+// Real, synchronous blocking sleep (Node/Bun both allow Atomics.wait on the main thread, unlike
+// browsers — confirmed working under a Bun-compiled binary too, the actual distribution target).
+// openStore() itself must stay synchronous (many callers use it outside an async context), so a
+// promise-based delay isn't an option here.
+function sleepSyncMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) {
+    const end = Date.now() + ms; // last-resort busy-wait if Atomics.wait is ever unavailable
+    while (Date.now() < end) { /* spin */ }
+  }
+}
+
+// The native shard lock is flock(LOCK_EX|LOCK_NB) — exclusive, non-blocking, fails INSTANTLY if
+// any other process (even one that's about to close) holds the same org's shard open. Real,
+// repeated failure mode this session: a second `icarus` process (a lingering `mcp-serve`, the
+// TUI, or a one-shot CLI call) briefly overlapping another one's open() — not a genuine deadlock,
+// just two processes racing by a few hundred ms. A single hard failure on the very first attempt
+// made this look far worse than it was. Retries with bounded backoff before giving up, so the
+// common transient case resolves itself silently instead of erroring on any process overlap at
+// all. Total worst-case wait ~6.3s across 5 attempts — short enough not to make a genuine stuck
+// lock feel broken, long enough to ride out real transient overlap.
+const LOCK_RETRY_DELAYS_MS = [200, 400, 800, 1600, 3200];
+
 function openStore(cfg, org) {
   const key = `${cfg.dataRoot}::${org}`;
   let store = _storeCache.get(key);
-  if (!store) {
-    store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
-    _storeCache.set(key, store);
+  if (store) return store;
+  let lastErr;
+  for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
+      _storeCache.set(key, store);
+      return store;
+    } catch (e) {
+      lastErr = e;
+      if (!/locked by another process/i.test(e.message || '')) throw e; // a different error — don't mask it with retries
+      if (attempt < LOCK_RETRY_DELAYS_MS.length) sleepSyncMs(LOCK_RETRY_DELAYS_MS[attempt]);
+    }
   }
-  return store;
+  // Genuinely still stuck after ~6.3s of retrying — a real, actionable message instead of the raw
+  // native error, since "shard is locked by another process" alone gives no next step.
+  throw new Error(
+    `org "${org}"'s shard is still locked after retrying for ~6s — another icarus process is genuinely holding it open, not just briefly overlapping.\n`
+    + `Find it: ps aux | grep "icarus mcp-serve"  (or plain "icarus")\n`
+    + `If it's a stale/orphaned process (its parent coding-agent session already ended), it's safe to stop it: kill <pid>\n`
+    + `If it's a live session actively using this org, wait for it to finish, or use a different --org.`
+  );
 }
 
 const HOME = process.env.ICARUS_HOME || process.env.MNEME_HOME || path.join(os.homedir(), '.icarus');
@@ -1609,7 +1649,7 @@ function statusReport(cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.17';
+const ICARUS_VERSION = '0.3.18';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
