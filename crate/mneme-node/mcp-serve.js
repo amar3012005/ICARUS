@@ -42,20 +42,21 @@ async function run() {
     'icarus_ingest',
     {
       title: 'Ingest a folder into ICARUS',
-      description: 'Extract and store files under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead -- accepts everything that server supports (pdf/docx/xlsx/pptx/images/audio, a much broader set than the local engine\'s text-only formats) -- set local=true to force the local .amr engine even when connected (text-only: txt/md/json/csv/log). By default, segment text processed by HIVEMIND is also pulled back and re-embedded + stored in the LOCAL shard (mirrorLocal=false to skip and leave it purely server-side) -- the server never exposes its own embedding vectors over HTTP (checked, confirmed absent), so this is cloud chunking + local re-embedding, not cloud embedding. There is no real way to request "evidence-only vs full memory generation" on this endpoint -- the server decides based on what it actually extracts, not a request parameter.',
+      description: 'Extract and store files under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead -- accepts everything that server supports (pdf/docx/xlsx/pptx/images/audio, a much broader set than the local engine\'s text-only formats) -- set local=true to force the local .amr engine even when connected (text-only: txt/md/json/csv/log). By default, segment text processed by HIVEMIND is also pulled back and re-embedded + stored in the LOCAL shard (mirrorLocal=false to skip and leave it purely server-side) -- the server never exposes its own embedding vectors over HTTP (checked, confirmed absent), so this is cloud chunking + local re-embedding, not cloud embedding. HIVEMIND is used as a stateless extraction PIPELINE only: once segments are mirrored locally, the document icarus itself just created server-side is deleted (purgeCloud=false to skip and leave it there) -- a pre-existing duplicate found server-side is never deleted, only what this run itself created. There is no real way to request "evidence-only vs full memory generation" on the upload endpoint itself -- the server decides based on what it actually extracts, not a request parameter; the purge step is what keeps the cloud memory box clean instead.',
       inputSchema: {
         dir: z.string().describe('Absolute path to the directory to ingest'),
         org: z.string().default('default').describe('Org/shard name to store into'),
         local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
         force: z.boolean().default(false).describe('Matches the real FE\'s own "force" field (bypass the same-checksum dedup gate) -- not yet read server-side, sent to match the real upload contract exactly'),
         mirrorLocal: z.boolean().default(true).describe('When routed through HIVEMIND, also pull back the processed segment text and store it (re-embedded) in the local .amr shard. Set false to leave data purely server-side.'),
+        purgeCloud: z.boolean().default(true).describe('After mirroring locally, delete the HIVEMIND document this run itself created (never a pre-existing duplicate). Set false to leave it server-side.'),
       },
     },
-    async ({ dir, org, local, force, mirrorLocal }) => {
+    async ({ dir, org, local, force, mirrorLocal, purgeCloud }) => {
       try {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && !local) {
-          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force, mirrorLocal: mirrorLocal !== false }));
+          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force, mirrorLocal: mirrorLocal !== false, purgeCloud: purgeCloud !== false }));
         }
         return textResult(await ingestDir(dir, org || 'default', cfg));
       } catch (e) { return errorResult(e); }
@@ -87,17 +88,17 @@ async function run() {
     'icarus_save',
     {
       title: 'Save a real memory to ICARUS',
-      description: 'Saves text as a real, deliberate memory -- full embedding + smart-router when HIVEMIND-routed (mode:\'atomic\', the same primitive MCP\'s own save_memory tool uses server-side), real local embedding otherwise. NOT evidence-only -- recallable via icarus_recall alongside anything icarus_ingest promoted. Set local=true to force the local .amr engine even if a HIVEMIND token is configured.',
+      description: 'LOCAL ONLY by default -- real embedding, stored in the local .amr shard, never touches HIVEMIND\'s cloud memory box on its own (a real user directive: icarus\'s own calls must not create cloud-side state without being asked). Set cloud=true to also create a real, permanent HIVEMIND memory (mode:\'atomic\', full smart-router + contradiction-check, same primitive MCP\'s own save_memory tool uses server-side) -- still mirrored locally either way, so icarus_recall keeps working regardless. NOT evidence-only when cloud=true -- recallable via icarus_recall alongside anything icarus_ingest promoted.',
       inputSchema: {
         text: z.string().describe('The memory content to save'),
         org: z.string().default('default'),
-        local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
+        cloud: z.boolean().default(false).describe('Also create a real, permanent memory in HIVEMIND\'s cloud (mode:\'atomic\') -- opt-in, off by default'),
       },
     },
-    async ({ text, org, local }) => {
+    async ({ text, org, cloud }) => {
       try {
         const cfg = loadCfg();
-        if (hivemindConfigured(cfg) && !local) {
+        if (hivemindConfigured(cfg) && cloud) {
           const r = await hivemindSaveMemory(text, org || 'default', cfg);
           await saveLocalMemory(text, org || 'default', cfg); // mirror — icarus_recall is local-only
           return textResult(r);

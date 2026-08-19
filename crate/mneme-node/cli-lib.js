@@ -979,6 +979,29 @@ async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60
   throw new Error(`HIVEMIND job ${jobId} did not finish within ${(maxAttempts * intervalMs) / 1000}s — check later with the job_id above`);
 }
 
+/** Purges a HIVEMIND-side document icarus itself just created — DELETE /api/knowledge/document,
+ * confirmed real (server.js's "KNOWLEDGE BASE — Document Delete (cascading)" handler): removes
+ * the knowledge_document row, its segments, evidence vectors, AND any memory it promoted
+ * server-side. Real user directive this exists for: connected-mode ingest should use HIVEMIND's
+ * server as a stateless extraction PIPELINE (real PDF/OCR/etc — the local engine can't do that),
+ * never as permanent storage — icarus mirrors the extracted segments into the local .amr shard
+ * first, then calls this to leave nothing of its own behind in the cloud "memory box". Best-
+ * effort: a failed purge logs and is reported, never throws — the local mirror already
+ * succeeded, and failing the whole ingest over a cleanup step would be worse than a leftover
+ * cloud copy. Callers must only pass a document_id THIS ingest itself created (the fresh-upload
+ * path) — never a pre-existing duplicate's id, which this ingest didn't create and may be relied
+ * on elsewhere. */
+async function purgeHivemindDocument(documentId, cfg) {
+  const base = hivemindApiBase(cfg);
+  const res = await fetch(`${base}/api/knowledge/document`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${cfg.hivemind.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: documentId }),
+  });
+  if (!res.ok) throw new Error(`HIVEMIND document delete ${res.status}: ${await res.text()}`);
+  return true;
+}
+
 /** Real, deliberate memory save — POST /api/ingest/source with `mode: 'atomic'`: confirmed real
  * via document-first-ingestion.js's own doc comment ("one memory through the canonical engine
  * gateway") — same primitive MCP's save_memory / chat autosave use. Goes through the server's
@@ -1195,6 +1218,8 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   let pending = 0; // uploaded, still processing past the poll window — not a failure
   let failed = 0; // genuinely errored (network blip, 5xx, etc.) — logged, batch keeps going
   let mirrored = 0; // segments actually written into the local .amr shard this run
+  let purged = 0; // cloud documents (this ingest itself created) deleted after mirroring
+  const purgeCloud = opts.purgeCloud !== false; // default ON — see purgeHivemindDocument's doc comment
   let n = 0;
   // The WHOLE per-file body is wrapped, not just the poll — a real bug, same class as the
   // 409-duplicate one this function already guards against but caught SEPARATELY, live: a
@@ -1234,9 +1259,20 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
         } else {
           totalMemories += result.counts?.memories || 0;
           totalSegments += result.counts?.segments || 0;
+          let mirrorOk = false;
           if (mirrorLocal && result.document_id) {
-            try { mirrored += await mirrorHivemindDocumentLocally(result.document_id, path.basename(f), org, cfg); }
-            catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
+            try {
+              mirrored += await mirrorHivemindDocumentLocally(result.document_id, path.basename(f), org, cfg);
+              mirrorOk = true;
+            } catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
+          }
+          // Only purge a document THIS ingest just created via the fresh-upload path (never the
+          // job.duplicate branch above — that document pre-existed this call and may be relied on
+          // elsewhere). Only after a successful local mirror — purging before confirming the
+          // extracted text actually landed locally would lose it outright on a mirror failure.
+          if (purgeCloud && mirrorOk && result.document_id) {
+            try { await purgeHivemindDocument(result.document_id, cfg); purged++; }
+            catch (e) { console.error(`icarus: cloud purge failed for ${path.basename(f)} — ${e.message} (mirrored locally either way, but a server-side copy remains)`); }
           }
         }
       }
@@ -1252,7 +1288,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     // `distilled` reflects what the server actually did (memories > 0), not a request flag —
     // there's no real way to ask for "full" vs "evidence-only" on this endpoint (see
     // hivemindUploadFile's own doc comment).
-    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages,
+    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages, purged,
   };
 }
 
@@ -1293,7 +1329,7 @@ function statusReport(cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.14';
+const ICARUS_VERSION = '0.3.15';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1373,4 +1409,5 @@ module.exports = {
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory,
+  purgeHivemindDocument,
 };

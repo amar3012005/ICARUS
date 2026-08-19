@@ -78,12 +78,13 @@ async function cmdIngest(flags, cfg) {
   if (viaHivemind) {
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"${flags['no-mirror'] ? '' : c.dim(' (mirroring segments into the local shard too)')}`)));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'] });
+    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
     if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
     if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
+    if (result.purged) notes.push(`${result.purged} cloud document(s) deleted after mirroring — HIVEMIND used as extraction pipeline only`);
     if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — HIVEMIND doesn't create a fetchable document for images`);
     console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
@@ -138,8 +139,12 @@ async function cmdRecall(flags, cfg) {
 async function cmdSave(flags, cfg) {
   const text = flags._.join(' ');
   const org = flags.org || 'default';
-  if (!text.trim()) throw new Error('usage: icarus save "<text>" --org <name> [--local]');
-  if (hivemindConfigured(cfg) && !flags.local) {
+  if (!text.trim()) throw new Error('usage: icarus save "<text>" --org <name> [--cloud]');
+  // LOCAL ONLY BY DEFAULT — real user directive: icarus's own calls must never create a
+  // permanent memory in HIVEMIND's cloud box on their own. --cloud opts back in explicitly when
+  // a real, permanent, smart-routed HIVEMIND memory is actually wanted (still mirrored locally
+  // too, same as before, so /recall keeps working either way).
+  if (hivemindConfigured(cfg) && flags.cloud) {
     const r = await hivemindSaveMemory(text, org, cfg);
     await saveLocalMemory(text, org, cfg);
     console.log(ok(`saved as a real memory (id ${c.path(r.memoryId || r.memoryIds?.[0] || '?')}) in ${c.path(org)} — full embedding + smart-router, mirrored locally, recallable via icarus recall.`));
@@ -761,7 +766,12 @@ async function main() {
                                         (--no-mirror to skip and stay purely server-side) — the
                                         server never exposes its own embedding vectors over HTTP
                                         (confirmed absent), so this is cloud chunking + local
-                                        re-embedding, not cloud embedding.
+                                        re-embedding, not cloud embedding. HIVEMIND is used as a
+                                        stateless extraction PIPELINE only: once mirrored locally,
+                                        icarus deletes the document it just created server-side
+                                        (--keep-cloud to skip that and leave it there) -- a
+                                        pre-existing duplicate found server-side is never deleted,
+                                        only what this run itself created.
                                         --local forces the local .amr engine even if connected.
                                         --force matches the real FE's own force field (bypass
                                         dedup) -- not yet read server-side, sent to match the
@@ -776,12 +786,14 @@ async function main() {
                                         real bge-reranker-v2-m3 cross-encoder on top of that wide
                                         hybrid merge. If not: the hybrid merge IS the answer, no
                                         rerank stage.
-  icarus save "<text>" --org <name> [--local]
-                                        save a real, deliberate memory -- full embedding +
-                                        smart-router when HIVEMIND-routed (mode:'atomic', the
-                                        same primitive MCP save_memory uses), real local
-                                        embedding otherwise. NOT evidence-only -- recallable via
-                                        icarus recall alongside anything icarus ingest promoted.
+  icarus save "<text>" --org <name> [--cloud]
+                                        LOCAL ONLY by default -- real embedding, stored in the
+                                        local .amr shard, never touches HIVEMIND's cloud memory
+                                        box on its own. --cloud opts back in explicitly: a real,
+                                        permanent HIVEMIND memory too (mode:'atomic', full
+                                        smart-router + contradiction-check, same primitive MCP
+                                        save_memory uses) -- still mirrored locally either way, so
+                                        icarus recall keeps working regardless.
   icarus compact --org <name>          reclaim deleted memories' bytes
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)

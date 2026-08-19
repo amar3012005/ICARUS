@@ -105,9 +105,9 @@ function drawBanner(cfg) {
 function printHelp() {
   console.log(`
 ${heading('Commands')}
-  ${c.command('/ingest')} <dir> [--org name] [--local] [--force]  ingest a folder
+  ${c.command('/ingest')} <dir> [--org name] [--local] [--force] [--keep-cloud]  ingest a folder. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).
   ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).
-  ${c.command('/save')} <text> [--org name] [--local]              save a real memory (full embedding + smart-router; NOT evidence-only) — recallable via /recall
+  ${c.command('/save')} <text> [--org name] [--cloud]              LOCAL ONLY by default — real embedding, never touches HIVEMIND's cloud memory box on its own. --cloud opts in to a real, permanent, smart-routed HIVEMIND memory too — recallable via /recall either way.
   ${c.command('/status')}                                          org shards + engine status
   ${c.command('/connect')}                                         browser sign-in to HIVEMIND
   ${c.command('/org')} <name>                                      switch the default org for this session
@@ -200,19 +200,20 @@ async function dispatch(line, state, cfg) {
   switch (cmd) {
     case 'ingest': {
       const dir = flags._[0];
-      if (!dir) { console.log(err('usage: /ingest <dir> [--org name] [--local] [--force] [--no-mirror]')); break; }
+      if (!dir) { console.log(err('usage: /ingest <dir> [--org name] [--local] [--force] [--no-mirror] [--keep-cloud]')); break; }
       const viaHivemind = hivemindConfigured(cfg) && !flags.local;
       const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
       if (skipReason) { console.log(err(skipReason)); break; }
       if (viaHivemind) {
         console.log(bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'] });
+        const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
         if (result.failed) notes.push(`${result.failed} failed — see errors above`);
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
+        if (result.purged) notes.push(`${result.purged} cloud doc(s) purged after mirroring`);
         if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — no fetchable HIVEMIND document for images`);
         console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
@@ -243,8 +244,10 @@ async function dispatch(line, state, cfg) {
     }
     case 'save': {
       const text = argStr.trim();
-      if (!text) { console.log(err('usage: /save <text> [--org name]')); break; }
-      if (hivemindConfigured(cfg) && !flags.local) {
+      if (!text) { console.log(err('usage: /save <text> [--org name] [--cloud]')); break; }
+      // LOCAL ONLY BY DEFAULT — icarus's own calls must never create a permanent memory in
+      // HIVEMIND's cloud box on their own. --cloud opts back in explicitly.
+      if (hivemindConfigured(cfg) && flags.cloud) {
         const r = await hivemindSaveMemory(text, org, cfg);
         await saveLocalMemory(text, org, cfg); // mirror — /recall is local-only, this text must exist locally to ever surface
         console.log(ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
