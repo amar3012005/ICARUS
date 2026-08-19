@@ -44,15 +44,49 @@ die()  { rgb 247 118 142 "✗ $1"; exit 1; }       # accent_error (red)
 dim()  { rgb 108 108 108 "$1"; }                 # comment (muted gray)
 step() { printf '\n'; rgb 122 162 247 "◆ $1"; }  # accent_system + diamond, matches icarus setup's steps
 
+# Boxed hero banner — same rounded-border + colored-content structure as the interactive shell's
+# own banner (tui.js's heroBox()), so install.sh and `icarus` share one visual identity instead
+# of the installer looking like a different product.
+#
+# Every content string below is pre-padded BY HAND to a fixed 48-visible-column inner width — a
+# real bug caught before shipping: an earlier draft used `printf '%-54b'`, but printf's width
+# flag counts the RAW bytes of the embedded ANSI escape codes (`\033[38;2;...m`) as part of the
+# width, not just the visible characters they color — so the padding came out short and the
+# border misaligned. Bash has no reliable, dependency-free way to measure the true display width
+# of a string containing both multi-byte box-drawing characters AND ANSI escapes across every
+# user's locale, so for this small, fixed, never-changing set of lines, hand-computing the pad
+# once (confirmed via a real character count, not guessed) is the honest choice over a printf
+# width trick that would silently misalign.
+boxline() { # boxline "<content with embedded ANSI color codes, already padded to 48 visible cols>"
+  if [ "$C_ENABLED" = "1" ]; then
+    printf '\033[38;2;108;108;108m│\033[0m %b \033[38;2;108;108;108m│\033[0m\n' "$1"
+  else
+    printf '| %s |\n' "$(printf '%b' "$1" | sed 's/\x1b\[[0-9;]*m//g')"
+  fi
+}
 banner() {
-  rgb 187 154 247 "
-   ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗
-   ██║██╔════╝██╔══██╗██╔══██╗██║   ██║██╔════╝
-   ██║██║     ███████║██████╔╝██║   ██║███████╗
-   ██║██║     ██╔══██║██╔══██╗██║   ██║╚════██║
-   ██║╚██████╗██║  ██║██║  ██║╚██████╔╝███████║
-   ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
-   memory filesystem for AI agents — one file per tenant"
+  rgb 108 108 108 "◆ SINGULANCE presents"
+  if [ "$C_ENABLED" = "1" ]; then
+    printf '\033[38;2;108;108;108m╭──────────────────────────────────────────────────╮\033[0m\n'
+  else
+    printf '+------------------------------------------------+\n'
+  fi
+  boxline "                                                "
+  boxline "\033[38;2;187;154;247m ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗\033[0m   "
+  boxline "\033[38;2;187;154;247m ██║██╔════╝██╔══██╗██╔══██╗██║   ██║██╔════╝\033[0m   "
+  boxline "\033[38;2;187;154;247m ██║██║     ███████║██████╔╝██║   ██║███████╗\033[0m   "
+  boxline "\033[38;2;187;154;247m ██║██║     ██╔══██║██╔══██╗██║   ██║╚════██║\033[0m   "
+  boxline "\033[38;2;187;154;247m ██║╚██████╗██║  ██║██║  ██║╚██████╔╝███████║\033[0m   "
+  boxline "\033[38;2;187;154;247m ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝\033[0m   "
+  boxline "                                                "
+  boxline "\033[38;2;108;108;108m memory filesystem for AI agents\033[0m                "
+  boxline "\033[38;2;108;108;108m one mmap'd file per tenant, no server\033[0m          "
+  boxline "                                                "
+  if [ "$C_ENABLED" = "1" ]; then
+    printf '\033[38;2;108;108;108m╰──────────────────────────────────────────────────╯\033[0m\n'
+  else
+    printf '+------------------------------------------------+\n'
+  fi
 }
 
 need() { command -v "$1" >/dev/null 2>&1; }
