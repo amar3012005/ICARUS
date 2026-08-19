@@ -686,18 +686,36 @@ async function ingestDir(dir, org, cfg, onProgress) {
  * lexical search — the engine is still fully usable, just not semantic. */
 async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   const store = openStore(cfg, org);
-  const vectorMode = embeddingsConfigured(cfg);
-  if (usePq && !vectorMode) {
+  const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  // PQ specifically requires the user's OWN provider — the codebook was trained on cfg.embeddings'
+  // own vector space (train_pq itself requires embeddingsConfigured(cfg)), so query vectors for a
+  // PQ search must come from that exact same space, not HIVEMIND's free fallback below.
+  if (usePq && !hasOwnEmbeddings) {
     throw new Error('usePq requires an embedding provider — run `icarus connect-embeddings` first (PQ trains on real vectors)');
   }
-  if (!vectorMode) {
+  // Real vector-space parity, same reasoning as mirrorHivemindDocumentLocally(): HIVEMIND's own
+  // free embeddings.singulancelabs.com service (confirmed live, unauthenticated, real bge-m3
+  // 1024-dim vectors) is a real fallback for the QUERY side too when the user has no own
+  // provider configured but IS connected — without this, vectors written by the mirror path
+  // above would sit in the shard unreachable, since a query embedded via plain BM25 can't do a
+  // vector-space HNSW search at all.
+  const canEmbedQuery = hasOwnEmbeddings || hivemindConfigured(cfg);
+  if (!canEmbedQuery) {
     const hits = store.bm25Search(query, topK);
     return hits.map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
   }
   if (usePq && !store.pqTrained()) {
     throw new Error(`no PQ codebook trained for org "${org}" yet — run train_pq first`);
   }
-  const [qv] = await embed([query], cfg);
+  let qv;
+  try {
+    [qv] = hasOwnEmbeddings ? await embed([query], cfg) : await embedViaHivemindService([query]);
+  } catch (e) {
+    // Query embedding failed (network hiccup, etc.) — degrade to lexical rather than erroring;
+    // the shard may hold a mix of real vectors and zero-vector/lexical-only slots anyway.
+    const hits = store.bm25Search(query, topK);
+    return hits.map((h) => ({ score: h.score, text: h.text, mode: 'lexical' }));
+  }
   let hits;
   if (usePq) {
     hits = store.recallPq(qv, topK);
@@ -937,6 +955,34 @@ async function hivemindFetchDocumentSegments(documentId, cfg) {
  * embedding provider is configured, it stores lexical-only (BM25, zero-vector placeholder) —
  * exactly ingestDir()'s own degrade-gracefully behavior, not a new failure mode. Returns the
  * number of segments mirrored (0 if the document had none, e.g. still processing). */
+// Real, live, UNAUTHENTICATED OpenAI-compatible embeddings service — confirmed via direct curl:
+// POST https://embeddings.singulancelabs.com/v1/embeddings with no Authorization header returns
+// real bge-m3, 1024-dim vectors (200 OK; note the path is `/v1/embeddings`, not bare
+// `/embeddings` — that 404s). This is the SAME service HIVEMIND's own server uses as its primary
+// embedding route (Cloudflare-hosted, ~79-149ms measured, OpenRouter as its own fallback) — so
+// vectors computed here land in the exact same embedding space the server's own recall/storage
+// already uses. Real vector-space parity, not a guess or a different model landing in the same
+// dimension by coincidence.
+const HIVEMIND_EMBEDDINGS_URL = 'https://embeddings.singulancelabs.com/v1/embeddings';
+
+async function embedViaHivemindService(texts) {
+  const res = await fetch(HIVEMIND_EMBEDDINGS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'bge-m3', input: texts }),
+  });
+  if (!res.ok) throw new Error(`HIVEMIND embeddings ${res.status}: ${await res.text()}`);
+  const j = await res.json();
+  return j.data.map((d) => {
+    const v = Float32Array.from(d.embedding);
+    let n = 0;
+    for (const x of v) n += x * x;
+    n = Math.sqrt(n) || 1;
+    for (let i = 0; i < v.length; i++) v[i] /= n; // L2-normalize for cosine, same as embed()
+    return v;
+  });
+}
+
 async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) {
   const { segments } = await hivemindFetchDocumentSegments(documentId, cfg);
   const texts = (segments || [])
@@ -945,7 +991,6 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
   if (!texts.length) return 0;
 
   const store = openStore(cfg, org);
-  const vectorMode = embeddingsConfigured(cfg);
   const signMode = signingEnabled(cfg);
   const zero = new Float32Array(cfg.dim);
   let stored = 0;
@@ -955,16 +1000,26 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
     appendAuditEntry(cfg, org, 'insert', slotId);
     stored++;
   };
-  if (vectorMode) {
-    for (let i = 0; i < texts.length; i += 16) {
-      const batch = texts.slice(i, i + 16);
-      const vecs = await embed(batch, cfg);
+  // Prefer the user's OWN configured provider if they set one up (respect their explicit choice
+  // — e.g. a self-hosted LiteLLM gateway). Otherwise, since HIVEMIND is connected anyway, use its
+  // free embeddings service instead of degrading straight to lexical-only zero-vectors — a real
+  // improvement: anyone connected to HIVEMIND without their own OpenRouter key still gets real
+  // semantic vectors locally, not just BM25. Falls back to lexical-only per-batch (not aborting
+  // the whole mirror) if even the free service errors — network hiccups shouldn't lose the text.
+  const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  let usedVectors = false;
+  for (let i = 0; i < texts.length; i += 16) {
+    const batch = texts.slice(i, i + 16);
+    try {
+      const vecs = hasOwnEmbeddings ? await embed(batch, cfg) : await embedViaHivemindService(batch);
       batch.forEach((text, j) => insertOne(text, vecs[j]));
+      usedVectors = true;
+    } catch (e) {
+      console.error(`icarus: local embedding failed for a batch of ${sourceLabel} — ${e.message} — storing lexical-only`);
+      batch.forEach((text) => insertOne(text, zero));
     }
-    store.enableHnsw();
-  } else {
-    for (const text of texts) insertOne(text, zero);
   }
+  if (usedVectors) store.enableHnsw();
   store.flush();
   return stored;
 }
