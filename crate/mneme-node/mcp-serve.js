@@ -42,19 +42,19 @@ async function run() {
     'icarus_ingest',
     {
       title: 'Ingest a folder into ICARUS',
-      description: 'Extract and store every text/markdown/json/csv/log file under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead (evidence-only: lexical + semantic, no memory generation, unless fullMemoryGeneration) -- set local=true to force the local .amr engine even when connected. Otherwise: real vectors if an embedding provider is configured (icarus connect-embeddings), text-only lexical (BM25) if not -- never errors just because no embedding provider exists, it degrades gracefully.',
+      description: 'Extract and store files under a directory into an org\'s memory shard. If icarus connect has a HIVEMIND token, routes through HIVEMIND\'s real hosted API instead -- accepts everything that server supports (pdf/docx/xlsx/pptx/images/audio, a much broader set than the local engine\'s text-only formats) -- set local=true to force the local .amr engine even when connected (text-only: txt/md/json/csv/log). There is no real way to request "evidence-only vs full memory generation" on this endpoint -- the server decides based on what it actually extracts, not a request parameter.',
       inputSchema: {
         dir: z.string().describe('Absolute path to the directory to ingest'),
         org: z.string().default('default').describe('Org/shard name to store into'),
         local: z.boolean().default(false).describe('Force the local .amr engine even if a HIVEMIND token is configured'),
-        fullMemoryGeneration: z.boolean().default(false).describe('When routed through HIVEMIND, request its own memory-generation pipeline (ingestMode=both) instead of evidence-only'),
+        force: z.boolean().default(false).describe('Matches the real FE\'s own "force" field (bypass the same-checksum dedup gate) -- not yet read server-side, sent to match the real upload contract exactly'),
       },
     },
-    async ({ dir, org, local, fullMemoryGeneration }) => {
+    async ({ dir, org, local, force }) => {
       try {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && !local) {
-          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { fullMemoryGeneration: !!fullMemoryGeneration }));
+          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force }));
         }
         return textResult(await ingestDir(dir, org || 'default', cfg));
       } catch (e) { return errorResult(e); }

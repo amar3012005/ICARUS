@@ -21,7 +21,7 @@ const {
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
@@ -31,7 +31,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'full', 'oauth-only']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -54,19 +54,27 @@ function parseFlags(args) {
 // HIVEMIND's real hosted API instead of the local v2 engine — automatic, no separate command,
 // per the explicit design choice for this feature. `--local` is the escape hatch for anyone who
 // wants the local engine even with HIVEMIND connected (e.g. testing, or content that should
-// stay off a shared server); `--full` requests HIVEMIND's own memory-generation pipeline
-// (ingestMode=both) instead of the default evidence-only mode this was built for.
+// stay off a shared server). `--force` matches the real FE's own `force` field (bypass the
+// same-checksum dedup gate) — sent to match the exact real payload, though the server doesn't
+// actually read it yet (see hivemindUploadFile's doc comment for the full story: there is no
+// real "evidence vs full memory generation" request parameter on this endpoint — a fabricated
+// --full/ingestMode flag existed here earlier and did nothing server-side; removed).
 async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
-  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--full]');
-  const skipReason = noIngestableFilesReason(dir);
+  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--force]');
+  const viaHivemind = hivemindConfigured(cfg) && !flags.local;
+  const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
   if (skipReason) return console.log(err(skipReason));
-  if (hivemindConfigured(cfg) && !flags.local) {
-    console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}" ${c.dim(`(${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`)}`)));
+  if (viaHivemind) {
+    console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"`)));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { fullMemoryGeneration: !!flags.full });
-    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${result.duplicates ? c.dim(` — ${result.duplicates} already in your knowledge base, skipped`) : ''}`);
+    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force });
+    const notes = [];
+    if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
+    if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
+    if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
+    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }
   if (!embeddingsConfigured(cfg)) {
@@ -707,10 +715,13 @@ async function main() {
 
   icarus ingest <dir> --org <name>     extract + embed + store a folder. If icarus connect has a
                                         HIVEMIND token, routes through HIVEMIND's real API
-                                        instead of the local engine (evidence-only: lexical +
-                                        semantic, no memory generation, unless --full).
+                                        instead of the local engine — accepts everything the
+                                        server itself supports (pdf/docx/xlsx/pptx/images/audio),
+                                        a broader set than the local engine's text-only formats.
                                         --local forces the local .amr engine even if connected.
-                                        --full requests HIVEMIND's own memory generation instead.
+                                        --force matches the real FE's own force field (bypass
+                                        dedup) -- not yet read server-side, sent to match the
+                                        real contract exactly.
   icarus recall "<query>" --org <name> [--k 5] [--pq] [--local]
                                         same HIVEMIND-if-connected routing as ingest above.
   icarus compact --org <name>          reclaim deleted memories' bytes

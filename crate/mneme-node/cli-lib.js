@@ -551,27 +551,48 @@ function chunk(text, size = 900) {
   return out.filter((c) => c.trim().length > 20);
 }
 
+// Local .amr engine: text-only, since the Rust engine has no extraction/OCR pipeline — reading a
+// PDF's raw bytes as text would just index binary noise.
 const INGESTABLE_EXTS = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.log']);
 
-function walkText(dir) {
+// HIVEMIND-routed uploads: mirrors the REAL server-side allowlist — core/src/knowledge/
+// upload-contract.js's KB_EXTENSIONS (document/image/audio kinds), verified by reading that
+// file directly, not guessed. The server has a real extraction/OCR pipeline for these (PDF text
+// extraction, vision-model OCR on images, etc.), so filtering client-side to ICARUS's own narrow
+// local-text set was needlessly rejecting files the server would happily accept and process —
+// a real bug: a folder of PDFs/DOCX/images reported "0 ingestable files" when routed through
+// HIVEMIND, even though every one of them would have uploaded and processed fine. `.json`/`.log`
+// are NOT in the server's list (real, confirmed) even though ICARUS's local engine accepts them.
+const HIVEMIND_INGESTABLE_EXTS = new Set([
+  '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.txt', '.md', '.markdown', '.csv', '.tsv', '.html', '.htm',
+  '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.gif',
+  '.mp3', '.wav', '.m4a', '.flac', '.ogg',
+]);
+
+function walkFiles(dir, extSet) {
   const files = [];
   (function rec(d) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) rec(p);
-      else if (INGESTABLE_EXTS.has(path.extname(e.name).toLowerCase())) files.push(p);
+      else if (extSet.has(path.extname(e.name).toLowerCase())) files.push(p);
     }
   })(dir);
   return files;
 }
 
-/** Same walk as walkText(), but also reports what got SKIPPED and why — a real, confusing
- * outcome caught this session: ingesting a folder of PDFs/DOCX/images correctly returns 0 files
- * (none of those are supported yet), but "✓ ingested 0 files → 0 memories" reads as a silent,
- * unexplained no-op rather than the real reason. Only used by the CLI/TUI layer to build that
- * explanation when files.length would be 0 — ingestDir/hivemindIngestDir keep calling walkText()
- * directly, since they only need the file list. */
-function scanIngestable(dir) {
+function walkText(dir) { return walkFiles(dir, INGESTABLE_EXTS); }
+function walkHivemindIngestable(dir) { return walkFiles(dir, HIVEMIND_INGESTABLE_EXTS); }
+
+/** Same walk as walkFiles(), but also reports what got SKIPPED and why — a real, confusing
+ * outcome caught this session: ingesting a folder of PDFs/DOCX/images against the LOCAL engine
+ * correctly returns 0 files (that engine can't extract them), but "✓ ingested 0 files → 0
+ * memories" reads as a silent, unexplained no-op rather than the real reason. Takes an explicit
+ * extSet so callers can check against whichever set actually applies (HIVEMIND_INGESTABLE_EXTS
+ * when routed through HIVEMIND — that path accepts far more than the local engine does). Only
+ * used by the CLI/TUI layer to build the explanation — ingestDir/hivemindIngestDir keep calling
+ * walkFiles() directly, since they only need the file list. */
+function scanIngestable(dir, extSet = INGESTABLE_EXTS) {
   const files = [];
   const skippedByExt = new Map();
   (function rec(d) {
@@ -579,7 +600,7 @@ function scanIngestable(dir) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) { rec(p); continue; }
       const ext = path.extname(e.name).toLowerCase() || '(no extension)';
-      if (INGESTABLE_EXTS.has(ext)) files.push(p);
+      if (extSet.has(ext)) files.push(p);
       else skippedByExt.set(ext, (skippedByExt.get(ext) || 0) + 1);
     }
   })(dir);
@@ -589,15 +610,16 @@ function scanIngestable(dir) {
 /** Plain (uncolored — caller applies its own theme) explanation for a real "0 ingestable files"
  * outcome, or null if there's nothing to explain (files found, or dir is empty outright). Lists
  * the actual extensions seen so "found 32 .pdf, 8 .png, ... — none supported yet" replaces a
- * silent, confusing "✓ ingested 0 files". */
-function noIngestableFilesReason(dir) {
-  const { files, skippedByExt } = scanIngestable(dir);
+ * silent, confusing "✓ ingested 0 files". Pass HIVEMIND_INGESTABLE_EXTS when checking the
+ * HIVEMIND-routed path — its real accepted set is much broader than the local engine's. */
+function noIngestableFilesReason(dir, extSet = INGESTABLE_EXTS) {
+  const { files, skippedByExt } = scanIngestable(dir, extSet);
   if (files.length || !skippedByExt.size) return null;
   const breakdown = [...skippedByExt.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([ext, n]) => `${n} ${ext}`)
     .join(', ');
-  return `found ${breakdown} under ${dir} — none of these are supported yet (only ${[...INGESTABLE_EXTS].join('/')}).`;
+  return `found ${breakdown} under ${dir} — none of these are supported yet (only ${[...extSet].join('/')}).`;
 }
 
 /** Ingest every text file under `dir` into `org`. Returns the number of chunks stored, and
@@ -815,14 +837,42 @@ function base64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function hivemindUploadFile(filePath, org, cfg, { fullMemoryGeneration = false } = {}) {
+// Matches the REAL fields the real FE sends — frontend/Da-vinci's api-client.js `uploadDocument()`
+// (file, tags, containerTag, targetScope, force, async) — verified by reading that file directly,
+// not the docs page. A real, materially different finding from what ICARUS shipped with earlier
+// this cycle: `ingestMode` (evidence-vs-full, ICARUS's own --full flag) was NEVER read anywhere
+// in core/src/ for this multipart upload path — a fabricated field that did nothing server-side,
+// the whole time. The real pipeline (core/src/knowledge/kb-ingest-queue.js) always attempts full
+// ingestion; "evidence-only" is a server-computed OUTCOME label (promoted===0 && segments>0), not
+// a request parameter — there is no way to ask for evidence-only via this endpoint today. `force`
+// (bypass the same-checksum dedup gate) IS a real field the FE sends, but routes/knowledge.js's
+// handleKnowledgeUploadRoute never reads it either — sent here to match the real contract exactly
+// (so this starts working the moment the server wires it up, zero client changes needed), but
+// don't rely on it actually bypassing dedup today; it doesn't.
+// Exact mirror of upload-contract.js's MIME_PREFIX — the server rejects a mismatched
+// extension/content-type pair with 415 MIME_EXTENSION_MISMATCH. A real bug caught by testing an
+// actual upload: `new Blob([buf])` with no `type` sends no meaningful content-type, which the
+// server's `allowedMimes && contentType && !allowedMimes.includes(...)` check treated as a
+// mismatch for every extension IT restricts (pdf/png/jpg/webp/gif/mp3/wav/m4a) — a browser's real
+// File object carries its own detected MIME type, which is what the FE actually sends; ICARUS
+// has to set it explicitly since it isn't a browser. Extensions with no entry here (docx/pptx/
+// xlsx/txt/md/csv/tsv/html/htm/doc/ppt/tiff/flac/ogg) aren't MIME-checked server-side at all, so
+// they don't need one.
+const UPLOAD_MIME_BY_EXT = {
+  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+};
+
+async function hivemindUploadFile(filePath, org, cfg, { force = false } = {}) {
   const base = hivemindApiBase(cfg);
   const buf = fs.readFileSync(filePath);
+  const mime = UPLOAD_MIME_BY_EXT[path.extname(filePath).toLowerCase()];
   const form = new FormData();
-  form.append('file', new Blob([buf]), path.basename(filePath));
+  form.append('file', new Blob([buf], mime ? { type: mime } : undefined), path.basename(filePath));
   form.append('targetScope', 'personal');
-  form.append('ingestMode', fullMemoryGeneration ? 'both' : 'evidence');
   form.append('tags', `icarus-org:${org}`);
+  if (force) form.append('force', 'true');
   const res = await fetch(`${base}/api/knowledge/upload?async=true`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.hivemind.token}` },
@@ -863,36 +913,59 @@ async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60
  * which path ran. `files`/`chunks`/`live` come from HIVEMIND's own per-job counts, not invented
  * locally — a real report of what its server actually did, not an assumption. */
 async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
-  const files = walkText(dir);
+  const files = walkHivemindIngestable(dir);
   let totalMemories = 0;
   let totalSegments = 0;
   let duplicates = 0;
+  let pending = 0; // uploaded, still processing past the poll window — not a failure
+  let failed = 0; // genuinely errored (network blip, 5xx, etc.) — logged, batch keeps going
   let n = 0;
+  // The WHOLE per-file body is wrapped, not just the poll — a real bug, same class as the
+  // 409-duplicate one this function already guards against but caught SEPARATELY, live: a
+  // transient 502 from hivemindUploadFile on file #9 of a real 55-file batch was left
+  // unguarded, aborting files #10-55 outright. Nothing in this loop may ever let ONE file's
+  // failure — upload error, poll timeout, transient 5xx — kill the rest of the batch; that's
+  // the whole point of iterating a folder instead of hand-calling upload once per file.
   for (const f of files) {
-    const job = await hivemindUploadFile(f, org, cfg, opts);
-    if (job.duplicate) {
-      // Already ingested — a skip, not a failure. Keep going; one re-ingested file must never
-      // stop the rest of the batch (the real bug this whole duplicate-handling path fixes).
-      duplicates++;
-      n++;
-      if (onProgress) onProgress(n);
-      continue;
+    try {
+      const job = await hivemindUploadFile(f, org, cfg, opts);
+      if (job.duplicate) {
+        duplicates++; // already ingested — a skip, not a failure
+      } else {
+        let result;
+        try {
+          result = await hivemindPollJob(job.job_id, cfg);
+        } catch (e) {
+          // Poll window (60s default) elapsed — a real, legitimate outcome for OCR/vision
+          // extraction on a large PDF/PPTX, not an error. The upload already succeeded
+          // server-side; only the CLI's wait-and-report gave up, the job keeps running.
+          console.error(`icarus: ${path.basename(f)} still processing past the wait window — ${e.message}`);
+          pending++;
+          n++;
+          if (onProgress) onProgress(n);
+          continue;
+        }
+        if (result.status === 'failed') {
+          console.error(`icarus: HIVEMIND ingest failed for ${f} — ${result.error || 'unknown error'}`);
+          failed++;
+        } else {
+          totalMemories += result.counts?.memories || 0;
+          totalSegments += result.counts?.segments || 0;
+        }
+      }
+    } catch (e) {
+      console.error(`icarus: ${path.basename(f)} — ${e.message}`);
+      failed++;
     }
-    const result = await hivemindPollJob(job.job_id, cfg);
-    if (result.status === 'failed') {
-      console.error(`icarus: HIVEMIND ingest failed for ${f} — ${result.error || 'unknown error'}`);
-      n++;
-      if (onProgress) onProgress(n);
-      continue;
-    }
-    totalMemories += result.counts?.memories || 0;
-    totalSegments += result.counts?.segments || 0;
     n++;
     if (onProgress) onProgress(n);
   }
   return {
     files: files.length, chunks: totalSegments || totalMemories, live: totalMemories,
-    mode: 'hivemind', distilled: !!opts.fullMemoryGeneration, signed: 0, duplicates,
+    // `distilled` reflects what the server actually did (memories > 0), not a request flag —
+    // there's no real way to ask for "full" vs "evidence-only" on this endpoint (see
+    // hivemindUploadFile's own doc comment).
+    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed,
   };
 }
 
@@ -1007,7 +1080,8 @@ async function performSelfUpdate(onProgress) {
 }
 
 module.exports = {
-  HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, scanIngestable, noIngestableFilesReason,
+  HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, walkHivemindIngestable,
+  INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, scanIngestable, noIngestableFilesReason,
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
