@@ -1644,12 +1644,38 @@ function statusReport(cfg) {
   };
 }
 
+/** Real per-org content breakdown for a richer /status: memories (structured, real exact count
+ * via a full recordsPage scan), relationships (real native edges — sum of slotEdges() over every
+ * structured memory found), and evidence/other (everything else live in the shard: /ingest
+ * segments, plain /save prose, skills). Deliberately does NOT report an "entities" count —
+ * icarus has no local entity-extraction/NER of its own (that's a real HIVEMIND server-side
+ * capability, not something this engine does), so a fabricated number would be worse than
+ * admitting the gap. Bounded to a real shard size (500k cap) so a huge shard's full scan can't
+ * hang a status call indefinitely — same page-by-page streaming pattern listStructuredMemories
+ * already uses. */
+function richOrgStats(org, cfg) {
+  const store = openStore(cfg, org);
+  const live = store.liveCount();
+  const memories = listStructuredMemories(org, cfg, { limit: 500000, includeSuperseded: true });
+  let relationships = 0;
+  for (const m of memories) {
+    try { relationships += (store.slotEdges(m.slot) || []).length; } catch (_) { /* tombstoned mid-scan — skip */ }
+  }
+  return {
+    live,
+    memories: memories.length,
+    memoriesLatest: memories.filter((m) => m.is_latest !== false).length,
+    relationships,
+    evidenceAndOther: Math.max(0, live - memories.length),
+  };
+}
+
 // Bump on every release cut (matches the git tag, without the leading "v") — this IS the release
 // version, not package.json's (that one tracks the napi addon package, currently 0.1.1, and is
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.18';
+const ICARUS_VERSION = '0.3.19';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1732,4 +1758,5 @@ module.exports = {
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
+  richOrgStats,
 };

@@ -1,192 +1,348 @@
 'use strict';
-// icarus TUI — launched by bare `icarus` (no subcommand) on a real TTY. Modeled directly on
-// grok-build's own startup screen (xai-grok-pager's boxed banner + slash-command prompt): a
-// bordered banner box up top, then a scrolling REPL below it where `/ingest`, `/recall`,
-// `/status`, `/connect` etc. are typed and answered inline — same interaction shape, ICARUS's
-// own content.
+// icarus TUI — launched by bare `icarus` (no subcommand) on a real TTY. Full alt-screen
+// raw-mode redraw: a fixed top bar, a scrolling chat/output pane, and a bottom-pinned bordered
+// prompt with live slash-command autocomplete — the real structural pattern grok-build's own
+// Rust/ratatui pager uses (studied its actual source: welcome/mod.rs's fixed top-bar/content/
+// prompt row layout, prompt_widget's bordered input). NOT a port of that code — ratatui is a
+// full Rust TUI framework (tens of thousands of lines, session pickers/auth flows/mouse/credit
+// balances icarus has no equivalent of); this is a right-sized, dependency-free reimplementation
+// of the same LAYOUT SHAPE in Node, using raw ANSI directly.
 //
-// Deliberately NOT a full alt-screen curses redraw (grok's pager repaints a fixed-position
-// bottom input bar on every keystroke via raw terminal control) — that's a materially bigger
-// build (raw mode, manual line editing, cursor save/restore per frame) for a one-shot memory
-// CLI. This draws the banner once, then hands off to a normal scrolling readline REPL: visually
-// "boxed banner, then a running shell below it," which is what a slash-command CLI shell reads
-// as in practice (psql/redis-cli/mongosh all work this way) even though it isn't pixel-identical
-// to a bottom-pinned curses bar.
-const path = require('path');
-const readline = require('readline');
+// Deliberately no TUI library (blessed, etc.): confirmed live that blessed's own internals use
+// dynamic `require()` calls Bun's bundler can't statically resolve, so it crashes at runtime
+// inside a `bun build --compile` single binary ("Cannot find module './widgets/node'") — a hard
+// blocker for icarus's actual distribution model. Raw ANSI has no such risk: it's only our own
+// code, holding zero dynamic requires.
+//
+// All existing command logic (dispatch()'s /ingest, /recall, /save, /status, etc. cases) is
+// UNCHANGED from the previous readline-based version — only the rendering shell around it is
+// new. dispatch() still just calls console.log/console.error and writes progress ticks via
+// process.stdout.write('\r...'); this file intercepts process.stdout.write globally for the
+// whole session and routes it into the transcript pane instead of letting it hit the real
+// terminal directly (which would corrupt the manually-controlled alt-screen layout). A bare `\r`
+// -prefixed write (the spinner tick pattern already used by /ingest's progress callback) replaces
+// the transcript's last line instead of appending a new one, so progress ticks still look like a
+// single evolving status line, not a scroll of hundreds of ticks.
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
-  loadCfg, saveCfg, ingestDir, recallQuery, statusReport, signingEnabled, embeddingsConfigured,
+  loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS,
   hivemindSaveMemory, saveLocalMemory,
 } = require('./cli-lib.js');
 
-function boxWidth() {
-  const cols = process.stdout.columns || 78;
-  return Math.max(60, Math.min(cols - 4, 96));
-}
+// ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
+const ENTER_ALT = '\x1b[?1049h';
+const EXIT_ALT = '\x1b[?1049l';
+const HIDE_CURSOR = '\x1b[?25l';
+const SHOW_CURSOR = '\x1b[?25h';
+const CLEAR_HOME = '\x1b[2J\x1b[H';
+const moveTo = (row, col) => `\x1b[${row};${col}H`;
 
-function visibleLen(s) { return s.replace(/\x1b\[[0-9;]*m/g, '').length; }
+function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
+function visLen(s) { return stripAnsi(s).length; }
 
-function padLine(s, width) {
-  // Strip ANSI for width math, then pad the ORIGINAL (colored) string using the visible length.
-  const pad = Math.max(0, width - visibleLen(s));
-  return s + ' '.repeat(pad);
-}
-
-// Right-align a key/hint against a left label within `width` columns — matches grok-build's
-// hero-box menu rows (welcome/mod.rs's rendered "label ... key" pattern, e.g. "New worktree
-// ctrl+w"): label left, hint right, both on one row, padded to fill the column exactly.
-function menuRow(label, hint, width) {
-  const gap = Math.max(1, width - visibleLen(label) - visibleLen(hint));
-  return `${label}${' '.repeat(gap)}${hint}`;
-}
-
-// Original ICARUS mark, NOT a copy of any other product's logo asset — an abstract ascending-
-// wing motif in the same dot-matrix visual language grok-build's own small logo uses (braille
-// block characters, compact ~11x5), rendered as its own thing.
-const ICARUS_MARK = [
-  '⠀⠀⢀⣠⣴⣾⣷⣦⣀⠀⠀',
-  '⠀⣰⡿⠋⠀⠀⠀⠙⢿⣆⠀',
-  '⢰⡟⠀⠀⢀⣀⡀⠀⠀⢻⡆',
-  '⠈⠻⣦⡀⠀⠉⠀⢀⣼⠟⠁',
-  '⠀⠀⠈⠛⠶⠶⠞⠛⠁⠀⠀',
-];
-const MARK_WIDTH = 11;
-
-// Rounded border, two columns inside — mark left, version/status/menu right — mirroring
-// grok-build's hero_box.rs structure (logo left column, version+subtitle+menu right column,
-// rounded border) without its mouse hit-testing/live-announcement machinery, which needs a real
-// alt-screen curses runtime this CLI deliberately doesn't build (see this file's header comment).
-function heroBox(rightLines, width) {
-  const leftW = MARK_WIDTH + 2;
-  const rightW = width - leftW - 3; // 3 = the gap column + 2 border-adjacent spaces
-  const rows = Math.max(ICARUS_MARK.length, rightLines.length);
-  const top = c.dim('╭' + '─'.repeat(width) + '╮');
-  const bot = c.dim('╰' + '─'.repeat(width) + '╯');
-  const body = [];
-  for (let i = 0; i < rows; i++) {
-    const left = i < ICARUS_MARK.length ? c.assistant(ICARUS_MARK[i]) : ' '.repeat(MARK_WIDTH);
-    const right = i < rightLines.length ? rightLines[i] : '';
-    body.push(`${c.dim('│')} ${padLine(left, leftW - 1)} ${padLine(right, rightW)} ${c.dim('│')}`);
+// Wraps a single (possibly ANSI-colored) line to `width` VISIBLE columns. Real terminals don't
+// reset color state across a bare `\n` — a color escape stays active until explicitly reset —
+// so this only needs to track visible-column count and break there; it never has to re-emit a
+// color code after the break for the wrapped continuation to render correctly.
+function wrapLine(line, width) {
+  if (visLen(line) <= width) return [line];
+  const out = [];
+  let cur = '';
+  let vis = 0;
+  let i = 0;
+  while (i < line.length) {
+    const esc = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+    if (esc) { cur += esc[0]; i += esc[0].length; continue; }
+    if (vis >= width) { out.push(cur); cur = ''; vis = 0; }
+    cur += line[i]; vis++; i++;
   }
-  return [top, ...body, bot].join('\n');
+  out.push(cur);
+  return out;
 }
 
-function drawBanner(cfg) {
-  const w = boxWidth();
-  const cwd = process.cwd().replace(process.env.HOME || '', '~');
-  console.log(`${c.dim(glyphs.diamond)} ${c.dim(cwd)}\n`);
+// ── Slash-command catalog (autocomplete source) ─────────────────────────────────────────────
+const SLASH_COMMANDS = [
+  { cmd: '/ingest', hint: '<dir> [--org name] [--local] [--force] [--keep-cloud]' },
+  { cmd: '/recall', hint: '<query> [--org name] [--k 5] [--pq]' },
+  { cmd: '/save', hint: '<text> [--org name] [--cloud]' },
+  { cmd: '/status', hint: 'memories, evidence, relationships, shards' },
+  { cmd: '/org', hint: '<name> — switch the default org for this session' },
+  { cmd: '/connect', hint: 'browser sign-in to HIVEMIND' },
+  { cmd: '/update', hint: 'download + verify the latest release' },
+  { cmd: '/help', hint: 'full command list' },
+  { cmd: '/quit', hint: 'ctrl+d also works' },
+];
 
-  const hmLine = cfg.hivemind?.connected
-    ? c.success(`HIVEMIND connected${cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''}`)
-    : c.dim('HIVEMIND not connected');
-  const right = [
-    `${c.bold(c.assistant('ICARUS'))}  ${c.dim(`v${ICARUS_VERSION}`)}`,
-    c.dim('memory filesystem for AI agents'),
-    '',
-    hmLine,
-    '',
-    menuRow(`${c.command('/ingest')} ${c.dim('<dir>')}`, c.dim('extract + store a folder'), 48),
-    menuRow(`${c.command('/recall')} ${c.dim('<query>')}`, c.dim('local semantic + lexical search'), 48),
-    menuRow(`${c.command('/save')} ${c.dim('<text>')}`, c.dim('save a real memory'), 48),
-    menuRow(c.command('/status'), c.dim('shards, signing, audit'), 48),
-    menuRow(c.command('/connect'), c.dim('sign in to HIVEMIND'), 48),
-    menuRow(c.command('/update'), c.dim('download the latest release'), 48),
-    menuRow(c.command('/help'), c.dim('full command list'), 48),
-    menuRow(c.command('/quit'), c.dim('ctrl+d'), 48),
-  ];
-  console.log(heroBox(right, w));
-  console.log(`\n${c.dim('Type a command, or plain text to recall.')}\n`);
-}
-
-function printHelp() {
-  console.log(`
-${heading('Commands')}
-  ${c.command('/ingest')} <dir> [--org name] [--local] [--force] [--keep-cloud]  ingest a folder. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).
-  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).
-  ${c.command('/save')} <text> [--org name] [--cloud]              LOCAL ONLY by default — real embedding, never touches HIVEMIND's cloud memory box on its own. --cloud opts in to a real, permanent, smart-routed HIVEMIND memory too — recallable via /recall either way.
-  ${c.command('/status')}                                          org shards + engine status
-  ${c.command('/connect')}                                         browser sign-in to HIVEMIND
-  ${c.command('/org')} <name>                                      switch the default org for this session
-  ${c.command('/update')}                                          download + verify the latest release, replace this binary
-  ${c.command('/help')}                                             this list
-  ${c.command('/quit')} / ${c.command('ctrl+d')}                                   exit
-
-Anything not starting with "/" is treated as ${c.command('/recall <text>')} against the current org.
-`);
+function printHelp(state) {
+  out(state, '');
+  out(state, heading('Commands'));
+  out(state, `  ${c.command('/ingest')} <dir> [--org name] [--local] [--force] [--keep-cloud]  ingest a folder. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).`);
+  out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
+  out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              LOCAL ONLY by default — real embedding, never touches HIVEMIND's cloud memory box on its own. --cloud opts in to a real, permanent, smart-routed HIVEMIND memory too — recallable via /recall either way.`);
+  out(state, `  ${c.command('/status')}                                          org shards + real memory/evidence/relationship counts + signing/audit`);
+  out(state, `  ${c.command('/connect')}                                         browser sign-in to HIVEMIND`);
+  out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
+  out(state, `  ${c.command('/update')}                                          download + verify the latest release, replace this binary`);
+  out(state, `  ${c.command('/help')}                                             this list`);
+  out(state, `  ${c.command('/quit')} / ${c.command('ctrl+d')}                                   exit`);
+  out(state, '');
+  out(state, 'Anything not starting with "/" is treated as ' + c.command('/recall <text>') + ' against the current org.');
 }
 
 function parseArgs(argStr) {
-  // Same tiny flag grammar as the CLI's own parseFlags — reused conceptually, not imported, since
-  // this operates on a single already-split line rather than process.argv.
   const tokens = argStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
   const clean = tokens.map((t) => t.replace(/^["']|["']$/g, ''));
-  const out = { _: [] };
+  const out2 = { _: [] };
   for (let i = 0; i < clean.length; i++) {
     if (clean[i].startsWith('--')) {
       const name = clean[i].slice(2);
-      const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror']);
-      if (boolFlags.has(name)) out[name] = true;
-      else out[name] = clean[++i];
-    } else out._.push(clean[i]);
+      const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud']);
+      if (boolFlags.has(name)) out2[name] = true;
+      else out2[name] = clean[++i];
+    } else out2._.push(clean[i]);
   }
-  return out;
+  return out2;
+}
+
+// ── Output capture: routes dispatch()'s console.log/stdout.write into the transcript pane ──
+function out(state, text) { writeToTranscript(state, String(text) + '\n'); }
+
+function writeToTranscript(state, chunk) {
+  const text = (state._pendingPartial || '') + chunk;
+  state._pendingPartial = '';
+  const endsWithNewline = text.endsWith('\n');
+  const lines = text.split('\n');
+  if (!endsWithNewline) state._pendingPartial = lines.pop();
+  for (const line of lines) {
+    if (line.startsWith('\r')) {
+      const content = line.slice(1);
+      if (state._spinnerActive && state.transcript.length) state.transcript[state.transcript.length - 1] = content;
+      else { state.transcript.push(content); state._spinnerActive = true; }
+    } else {
+      state.transcript.push(line);
+      state._spinnerActive = false;
+    }
+  }
+  scheduleRedraw(state);
+}
+
+let redrawScheduled = false;
+function scheduleRedraw(state) {
+  if (redrawScheduled) return;
+  redrawScheduled = true;
+  setImmediate(() => { redrawScheduled = false; redraw(state); });
+}
+
+// ── Frame rendering ──────────────────────────────────────────────────────────────────────────
+function topBarLine(cfg, state) {
+  const hm = cfg.hivemind?.connected
+    ? c.success('HIVEMIND connected' + (cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''))
+    : c.dim('HIVEMIND not connected');
+  return ` ${c.bold(c.assistant('ICARUS'))} ${c.dim(`v${ICARUS_VERSION}`)}  ${c.dim('org:')} ${c.path(state.org)}  ${hm}`;
+}
+
+function inputBoxFrame(state, cols) {
+  const width = cols - 2;
+  const top = c.dim('╭' + '─'.repeat(width) + '╮');
+  const bot = c.dim('╰' + '─'.repeat(width) + '╯');
+  const prefix = `${c.assistant(glyphs.promptArrow)} `;
+  const visiblePrefixLen = visLen(prefix);
+  const maxTextWidth = width - visiblePrefixLen - 2;
+  // Keep the cursor's column visible if the line is longer than the box — scroll the visible
+  // window of `state.input` so `state.cursor` always stays on-screen.
+  let viewStart = 0;
+  if (state.cursor > maxTextWidth) viewStart = state.cursor - maxTextWidth;
+  const visibleText = state.input.slice(viewStart, viewStart + maxTextWidth);
+  const pad = Math.max(0, maxTextWidth - visLen(visibleText));
+  const mid = `${c.dim('│')} ${prefix}${visibleText}${' '.repeat(pad)} ${c.dim('│')}`;
+  const cursorCol = 2 + visiblePrefixLen + (state.cursor - viewStart) + 1; // 1-indexed terminal column within the row
+  return { lines: [top, mid, bot], cursorCol };
+}
+
+function autocompleteMatches(input) {
+  if (!input.startsWith('/') || input.includes(' ')) return [];
+  return SLASH_COMMANDS.filter((s) => s.cmd.startsWith(input));
+}
+
+function redraw(state) {
+  const cols = process.stdout.columns || 80;
+  const rows = process.stdout.rows || 24;
+  const matches = autocompleteMatches(state.input);
+  const dropdown = matches.slice(0, 6);
+  const dropdownH = dropdown.length;
+  const topBarH = 1;
+  const inputH = 3;
+  const tipH = 1;
+  const contentH = Math.max(1, rows - topBarH - dropdownH - inputH - tipH);
+
+  // Word/ANSI-wrap the transcript to the real terminal width, then take the last `contentH`
+  // wrapped rows — a real scrollback window, not a fixed-size ring buffer that silently drops
+  // history off the front before it's ever been seen.
+  const pending = state._pendingPartial ? [state._pendingPartial] : [];
+  const allLines = state.transcript.concat(pending);
+  const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
+  const visible = wrapped.slice(Math.max(0, wrapped.length - contentH));
+  const padCount = Math.max(0, contentH - visible.length);
+
+  const frame = [];
+  frame.push(topBarLine(loadCfg(), state));
+  frame.push(...visible);
+  frame.push(...Array(padCount).fill(''));
+  for (const m of dropdown) {
+    frame.push(`  ${c.command(m.cmd)} ${c.dim(m.hint)}`);
+  }
+  frame.push(c.dim('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history.'));
+  const { lines: inputLines, cursorCol } = inputBoxFrame(state, cols);
+  frame.push(...inputLines);
+
+  const body = frame.map((l) => {
+    const pad = Math.max(0, cols - visLen(l));
+    return l + ' '.repeat(pad);
+  }).join('\r\n');
+
+  const inputRowIndex = 1 + visible.length + padCount + dropdownH + 1 + 1; // 1-indexed row of the input line (middle border row)
+  realWrite(HIDE_CURSOR + moveTo(1, 1) + body + moveTo(inputRowIndex, cursorCol) + SHOW_CURSOR);
+}
+
+// ── Raw stdout interception (installed for the whole session) ──────────────────────────────
+let realWrite = process.stdout.write.bind(process.stdout);
+function installOutputCapture(state) {
+  realWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, ...rest) => { writeToTranscript(state, chunk.toString()); return true; };
+  process.stderr.write = (chunk, ...rest) => { writeToTranscript(state, chunk.toString()); return true; };
+}
+function restoreOutput() {
+  process.stdout.write = realWrite;
+}
+
+// ── Terminal lifecycle ───────────────────────────────────────────────────────────────────────
+function enterScreen() { realWrite(ENTER_ALT + CLEAR_HOME); }
+let exited = false;
+function exitScreen() {
+  if (exited) return;
+  exited = true;
+  restoreOutput();
+  try { process.stdin.setRawMode(false); } catch (_) { /* not a TTY / already restored */ }
+  realWrite(SHOW_CURSOR + EXIT_ALT);
 }
 
 async function run() {
   const cfg = loadCfg();
-  process.stdout.write('\x1b[2J\x1b[H'); // clear screen — banner starts at a known top
-  drawBanner(cfg);
+  const state = {
+    org: 'default', transcript: [], input: '', cursor: 0, history: [], historyIdx: -1,
+    _pendingPartial: '', _spinnerActive: false,
+  };
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${c.assistant(glyphs.promptArrow)} `,
-  });
-  const state = { org: 'default', rl };
-  rl.prompt();
+  enterScreen();
+  installOutputCapture(state);
+  out(state, c.dim(`${glyphs.diamond} ${process.cwd().replace(process.env.HOME || '', '~')}`));
+  out(state, '');
+  out(state, c.dim('Type /help for the full command list.'));
 
-  // Queue + drain rather than `rl.on('line', async ...)` directly — readline's `line` event
-  // fires for every buffered newline as soon as it arrives, NOT after the previous line's async
-  // handler resolves, and `close` fires independently once the input stream hits EOF. Piped
-  // input (multiple lines delivered in one chunk, immediately EOF) raced past pending `dispatch`
-  // calls straight to `close` -> process.exit(0), silently dropping the command output — caught
-  // by actually testing piped input, not just interactive typing (which never lines up enough
-  // commands back-to-back to hit the race in practice, but is exposed to the exact same bug on a
-  // fast paste or a command triggered right as the user hits ctrl+d).
-  const queue = [];
-  let draining = false;
-  let closing = false;
-  async function drain() {
-    if (draining) return;
-    draining = true;
-    while (queue.length) {
-      const line = queue.shift();
-      try { await dispatch(line, state, cfg); } catch (e) { console.log(err(e.message || String(e))); }
-    }
-    draining = false;
-    if (closing) return finish();
-    rl.prompt();
+  process.on('exit', exitScreen);
+  process.on('SIGINT', () => { exitScreen(); process.exit(0); });
+  process.on('SIGTERM', () => { exitScreen(); process.exit(0); });
+  process.on('uncaughtException', (e) => { exitScreen(); console.error(e); process.exit(1); });
+  process.stdout.on && process.stdout.columns; // touch to ensure columns is read at least once
+  try { process.stdout.on('resize', () => scheduleRedraw(state)); } catch (_) { /* non-TTY stdout in a test harness */ }
+
+  if (!process.stdin.isTTY) {
+    // Non-interactive stdin (piped/test harness) — no raw-mode key loop possible. Fail loud
+    // rather than hang forever waiting for keys that will never arrive.
+    exitScreen();
+    console.error('icarus: the TUI needs an interactive TTY on stdin. For scripted/piped use, call icarus\'s one-shot subcommands instead (icarus recall/save/ingest/status).');
+    process.exitCode = 1;
+    return;
   }
-  // No process.exit() here — a real bug caught by testing piped input (not just interactive
-  // typing): process.exit() can truncate stdout that hasn't finished flushing to a pipe/pty yet,
-  // silently swallowing the LAST command's own output. Just stop reading and let Node exit
-  // naturally once the event loop drains (nothing else keeps it alive once readline is closed).
-  function finish() { console.log(c.dim('\nbye.')); }
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
 
-  rl.on('line', (raw) => {
-    const line = raw.trim();
-    if (line) queue.push(line);
-    drain();
+  let running = true;
+  let dispatching = false;
+  const submitQueue = [];
+
+  async function drainQueue() {
+    if (dispatching) return;
+    dispatching = true;
+    while (submitQueue.length) {
+      const line = submitQueue.shift();
+      out(state, `${c.assistant(glyphs.promptArrow)} ${line}`);
+      try { await dispatch(line, state, cfg); } catch (e) { out(state, err(e.message || String(e))); }
+      if (!running) break;
+    }
+    dispatching = false;
+    scheduleRedraw(state);
+  }
+
+  function submit() {
+    const line = state.input.trim();
+    state.input = ''; state.cursor = 0;
+    if (!line) return;
+    state.history.push(line);
+    state.historyIdx = state.history.length;
+    if (line === '/quit' || line === '/exit') { running = false; scheduleRedraw(state); setTimeout(() => process.exit(0), 30); return; }
+    submitQueue.push(line);
+    drainQueue();
+  }
+
+  function acceptAutocomplete() {
+    const matches = autocompleteMatches(state.input);
+    if (matches.length) { state.input = matches[0].cmd + ' '; state.cursor = state.input.length; }
+  }
+
+  // Parses a raw stdin chunk into individual key tokens — a chunk can contain more than one key
+  // (fast typing, paste, or a multi-byte escape sequence bundled with a following printable char).
+  function tokenize(chunk) {
+    const tokens = [];
+    let i = 0;
+    while (i < chunk.length) {
+      if (chunk[i] === '\x1b' && chunk[i + 1] === '[') {
+        const m = /^\x1b\[[A-D]/.exec(chunk.slice(i));
+        if (m) { tokens.push(m[0]); i += m[0].length; continue; }
+      }
+      tokens.push(chunk[i]); i++;
+    }
+    return tokens;
+  }
+
+  process.stdin.on('data', (chunk) => {
+    if (!running) return;
+    for (const key of tokenize(chunk)) {
+      if (key === '') { running = false; process.exit(0); return; } // ctrl+c
+      if (key === '') { if (!state.input) { running = false; process.exit(0); return; } continue; } // ctrl+d on empty line
+      if (key === '\r' || key === '\n') { submit(); continue; }
+      if (key === '' || key === '\b') {
+        if (state.cursor > 0) { state.input = state.input.slice(0, state.cursor - 1) + state.input.slice(state.cursor); state.cursor--; }
+        continue;
+      }
+      if (key === '\t') { acceptAutocomplete(); continue; }
+      if (key === '\x1b[D') { if (state.cursor > 0) state.cursor--; continue; }
+      if (key === '\x1b[C') { if (state.cursor < state.input.length) state.cursor++; continue; }
+      if (key === '\x1b[A') {
+        if (autocompleteMatches(state.input).length) continue; // reserved for future dropdown-select; history for now falls through below when no dropdown
+        if (state.historyIdx > 0) { state.historyIdx--; state.input = state.history[state.historyIdx]; state.cursor = state.input.length; }
+        continue;
+      }
+      if (key === '\x1b[B') {
+        if (state.historyIdx < state.history.length - 1) { state.historyIdx++; state.input = state.history[state.historyIdx]; state.cursor = state.input.length; }
+        else { state.historyIdx = state.history.length; state.input = ''; state.cursor = 0; }
+        continue;
+      }
+      if (key.length === 1 && key >= ' ') {
+        state.input = state.input.slice(0, state.cursor) + key + state.input.slice(state.cursor);
+        state.cursor++;
+        continue;
+      }
+      // unrecognized control sequence — ignore rather than insert garbage into the input line
+    }
+    scheduleRedraw(state);
   });
-  rl.on('close', () => {
-    closing = true;
-    if (!draining && !queue.length) finish();
-    // else: drain()'s own tail handles it once the queue empties.
-  });
+
+  scheduleRedraw(state);
 }
 
 async function dispatch(line, state, cfg) {
@@ -224,10 +380,6 @@ async function dispatch(line, state, cfg) {
       break;
     }
     case 'recall': {
-      // LOCAL ONLY, always — see cli-lib.js's comment where hivemindRecallQuery used to live:
-      // a real cross-tenant leak was found on HIVEMIND's shared /api/recall (other orgs' private
-      // content came back for this org's queries). recallQuery() still uses HIVEMIND's free
-      // embed+rerank services for query processing when connected — never as the search index.
       const q = argStr.trim();
       if (!q) { console.log(err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
@@ -245,11 +397,9 @@ async function dispatch(line, state, cfg) {
     case 'save': {
       const text = argStr.trim();
       if (!text) { console.log(err('usage: /save <text> [--org name] [--cloud]')); break; }
-      // LOCAL ONLY BY DEFAULT — icarus's own calls must never create a permanent memory in
-      // HIVEMIND's cloud box on their own. --cloud opts back in explicitly.
       if (hivemindConfigured(cfg) && flags.cloud) {
         const r = await hivemindSaveMemory(text, org, cfg);
-        await saveLocalMemory(text, org, cfg, { viaCloud: true }); // mirror — /recall is local-only, this text must exist locally to ever surface
+        await saveLocalMemory(text, org, cfg, { viaCloud: true });
         console.log(ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
       } else {
         await saveLocalMemory(text, org, cfg);
@@ -261,8 +411,18 @@ async function dispatch(line, state, cfg) {
       const s = statusReport(cfg);
       console.log(`${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
       console.log(`HIVEMIND: ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}   Signing: ${signingEnabled(cfg) ? c.success('on') : c.dim('off')}`);
-      if (!s.shards.length) console.log(c.dim('no shards yet'));
-      else s.shards.forEach((sh) => console.log(`  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`));
+      if (!s.shards.length) { console.log(c.dim('no shards yet')); break; }
+      for (const sh of s.shards) {
+        let rich = null, richErr = null;
+        try { rich = richOrgStats(sh.org, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
+        console.log(`  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`);
+        if (rich) {
+          console.log(`    ${c.dim('memories:')} ${c.bold(rich.memoriesLatest)}${rich.memories !== rich.memoriesLatest ? c.dim(` (${rich.memories - rich.memoriesLatest} superseded)`) : ''}   ${c.dim('relationships:')} ${c.bold(rich.relationships)}   ${c.dim('evidence/other:')} ${c.bold(rich.evidenceAndOther)}`);
+          console.log(`    ${c.dim('entities: not tracked locally (no local entity extraction — a real HIVEMIND server-side capability)')}`);
+        } else {
+          console.log(`    ${c.command(`(memory/relationship counts unavailable — ${richErr})`)}`);
+        }
+      }
       break;
     }
     case 'org': {
@@ -296,8 +456,8 @@ async function dispatch(line, state, cfg) {
       console.log(c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
       break;
     }
-    case 'help': printHelp(); break;
-    case 'quit': case 'exit': state.rl.close(); break;
+    case 'help': printHelp(state); break;
+    case 'quit': case 'exit': break; // handled in submit() before reaching dispatch
     default: console.log(err(`unknown command: /${cmd} — try /help`));
   }
 }
