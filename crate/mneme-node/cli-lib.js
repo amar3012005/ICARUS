@@ -677,17 +677,26 @@ function hivemindConfigured(cfg) {
   return !!(cfg.hivemind && cfg.hivemind.connected && cfg.hivemind.token && hasApiBase);
 }
 
-// Deliberately NO hardcoded default here, unlike embed()'s OpenRouter default above — that one
-// is a genuinely neutral third-party provider; a HIVEMIND-shaped memory server is somebody's own
-// deployment, and ICARUS (an open-source, provider-agnostic local engine) shouldn't ship with
-// any one company's hostname baked in as the fallback. Also a real, concrete reason a fallback
-// would be actively wrong: testing this against the console URL `icarus connect` itself offers
-// (a DIFFERENT real endpoint from the REST API base) hit a genuine TLS failure — that host was
-// serving a fallback self-signed certificate, not a real one for that domain, and a correct
-// client refuses that handshake. The console/OAuth URL and the REST API base are not
-// interchangeable; require the API base explicitly rather than guess at either.
+// Two DIFFERENT services, confirmed live and NOT interchangeable — a real bug caught by an
+// actual failed `icarus ingest` (404 Not Found) right after a successful connect:
+//   - DEFAULT_HIVEMIND_AUTH_URL (api.singulancelabs.com) = hivemind-control-plane:
+//     /auth/cli/start, session/API-key minting. POST /api/knowledge/upload here -> 404.
+//   - DEFAULT_HIVEMIND_API_URL (core.singulancelabs.com) = hm-core: the actual REST API
+//     (/api/knowledge/upload, /api/recall, ...). POST /api/knowledge/upload here -> 401
+//     (route exists, needs the bearer token — the SAME token minted by the auth host works
+//     here too, one shared revocable API key across both services).
+// Defined ONCE here — cli-lib.js — and reused by mneme-cli.js's cmdConnect and tui.js's /connect
+// so the default can never drift into two different hardcoded copies (a real duplication bug
+// caught by the publish scanner flagging a second hardcoded copy in tui.js). Explicitly
+// user-approved as ICARUS's default this cycle (matches "just like claude/gh auth login does
+// it" — zero typing for the common case); still fully overridable via HIVEMIND_URL/
+// HIVEMIND_API_URL/--api-url for anyone self-hosting or pointing ICARUS at a different
+// HIVEMIND-shaped server.
+const DEFAULT_HIVEMIND_AUTH_URL = 'https://api.singulancelabs.com';
+const DEFAULT_HIVEMIND_API_URL = 'https://core.singulancelabs.com';
+
 function hivemindApiBase(cfg) {
-  const base = process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl;
+  const base = process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
   if (!base) throw new Error('no HIVEMIND API base configured — set HIVEMIND_API_URL or cfg.hivemind.apiUrl to your memory server\'s REST API base URL');
   return base;
 }
@@ -872,4 +881,5 @@ module.exports = {
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
+  DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
 };
