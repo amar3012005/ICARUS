@@ -83,6 +83,7 @@ async function cmdIngest(flags, cfg) {
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
     if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
     if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
+    if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — HIVEMIND doesn't create a fetchable document for images`);
     console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }

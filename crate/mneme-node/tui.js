@@ -210,6 +210,7 @@ async function dispatch(line, state, cfg) {
         if (result.pending) notes.push(`${result.pending} still processing`);
         if (result.failed) notes.push(`${result.failed} failed — see errors above`);
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
+        if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — no fetchable HIVEMIND document for images`);
         console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;

@@ -569,6 +569,17 @@ const HIVEMIND_INGESTABLE_EXTS = new Set([
   '.mp3', '.wav', '.m4a', '.flac', '.ogg',
 ]);
 
+// Real server behavior, confirmed by reading the actual ingestion code, not guessed: images
+// (this set) are routed through a DIFFERENT internal pipeline than every other format —
+// `mode: 'atomic'` (a plain memory insert), not `mode: 'document'` (real extraction + a real
+// `knowledgeDocument` row). An image upload's `document_id` is actually a memory id, so
+// GET /api/documents/:id always 404s for it. HIVEMIND_UPLOAD_EXTS (below) excludes this set so
+// ICARUS never sends an image through /api/knowledge/upload in the first place — every OTHER
+// supported format still goes through the real server extraction pipeline unconditionally; there
+// is no client-side "evidence only" mode for those (the server decides what it promotes).
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.gif']);
+const HIVEMIND_UPLOAD_EXTS = new Set([...HIVEMIND_INGESTABLE_EXTS].filter((e) => !IMAGE_EXTS.has(e)));
+
 function walkFiles(dir, extSet) {
   const files = [];
   (function rec(d) {
@@ -1027,9 +1038,19 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
 /** Upload every file under `dir` to HIVEMIND (real REST API, async job per file) instead of the
  * local engine. Returns the same shape ingestDir() does, so callers (CLI/MCP) don't need to know
  * which path ran. `files`/`chunks`/`live` come from HIVEMIND's own per-job counts, not invented
- * locally — a real report of what its server actually did, not an assumption. */
+ * locally — a real report of what its server actually did, not an assumption.
+ *
+ * Every file goes through the real server extraction pipeline (`mode: 'document'` under
+ * /api/knowledge/upload) — no evidence-only client shortcut; the server decides what it promotes.
+ * Images (IMAGE_EXTS) are filtered out of the upload set BEFORE sending anything: confirmed by
+ * reading the real server code that images are routed through a DIFFERENT internal pipeline
+ * (`mode: 'atomic'`, a plain memory insert) that never creates a `knowledgeDocument` — the
+ * `document_id` an image upload returns is actually a memory id, so GET /api/documents/:id
+ * always 404s for it and mirrorHivemindDocumentLocally can never work for images. Skipping them
+ * client-side avoids the pointless upload + guaranteed-404 mirror attempt entirely. */
 async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
-  const files = walkHivemindIngestable(dir);
+  const files = walkFiles(dir, HIVEMIND_UPLOAD_EXTS); // excludes images — see this function's own doc comment
+  const skippedImages = walkFiles(dir, IMAGE_EXTS).length;
   const mirrorLocal = opts.mirrorLocal !== false; // default ON — see mirrorHivemindDocumentLocally's doc comment
   let totalMemories = 0;
   let totalSegments = 0;
@@ -1094,7 +1115,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     // `distilled` reflects what the server actually did (memories > 0), not a request flag —
     // there's no real way to ask for "full" vs "evidence-only" on this endpoint (see
     // hivemindUploadFile's own doc comment).
-    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored,
+    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages,
   };
 }
 
@@ -1210,7 +1231,7 @@ async function performSelfUpdate(onProgress) {
 
 module.exports = {
   HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, walkHivemindIngestable,
-  INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, scanIngestable, noIngestableFilesReason,
+  INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, HIVEMIND_UPLOAD_EXTS, IMAGE_EXTS, scanIngestable, noIngestableFilesReason,
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
