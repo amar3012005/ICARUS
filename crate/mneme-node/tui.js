@@ -19,6 +19,7 @@ const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, signingEnabled,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason,
 } = require('./cli-lib.js');
 
 function boxWidth() {
@@ -46,7 +47,7 @@ function drawBanner(cfg) {
     ? c.success(`HIVEMIND connected${cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''}`)
     : c.dim('HIVEMIND not connected — /connect to link your account');
   const lines = [
-    `${c.bold(c.assistant('ICARUS'))}  ${c.dim('memory filesystem for AI agents')}`,
+    `${c.bold(c.assistant('ICARUS'))} ${c.dim(`v${ICARUS_VERSION}`)}  ${c.dim('memory filesystem for AI agents')}`,
     '',
     hmLine,
     '',
@@ -54,6 +55,7 @@ function drawBanner(cfg) {
     `${c.command('/recall')} ${c.dim('<query> [--org name]')}        semantic + lexical search`,
     `${c.command('/status')}                              shards, signing, audit, HIVEMIND`,
     `${c.command('/connect')}                             sign in to HIVEMIND (browser)`,
+    `${c.command('/update')}                              download the latest release`,
     `${c.command('/help')}                                full command list`,
     `${c.command('/quit')}${' '.repeat(31)}${c.dim('ctrl+d')}`,
   ];
@@ -68,6 +70,7 @@ ${heading('Commands')}
   ${c.command('/status')}                                          org shards + engine status
   ${c.command('/connect')}                                         browser sign-in to HIVEMIND
   ${c.command('/org')} <name>                                      switch the default org for this session
+  ${c.command('/update')}                                          download + verify the latest release, replace this binary
   ${c.command('/help')}                                             this list
   ${c.command('/quit')} / ${c.command('ctrl+d')}                                   exit
 
@@ -158,6 +161,8 @@ async function dispatch(line, state, cfg) {
     case 'ingest': {
       const dir = flags._[0];
       if (!dir) { console.log(err('usage: /ingest <dir> [--org name] [--local] [--full]')); break; }
+      const skipReason = noIngestableFilesReason(dir);
+      if (skipReason) { console.log(err(skipReason)); break; }
       if (hivemindConfigured(cfg) && !flags.local) {
         console.log(bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
         let tick = 0;
@@ -210,6 +215,18 @@ async function dispatch(line, state, cfg) {
       } else {
         console.log(err('browser sign-in didn\'t complete — run `icarus connect` outside the TUI for the manual-token fallback.'));
       }
+      break;
+    }
+    case 'update': {
+      console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
+      const { current, latest, upToDate } = await checkForUpdate();
+      if (upToDate) { console.log(ok(`already up to date (${current}).`)); break; }
+      if (upToDate === null) console.log(c.dim('  couldn\'t check the latest version — trying the update anyway.'));
+      else console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
+      console.log(bullet(c.system('downloading and verifying the new binary...')));
+      const bytes = await performSelfUpdate();
+      console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB).`));
+      console.log(c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
       break;
     }
     case 'help': printHelp(); break;

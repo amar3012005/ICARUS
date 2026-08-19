@@ -551,17 +551,53 @@ function chunk(text, size = 900) {
   return out.filter((c) => c.trim().length > 20);
 }
 
+const INGESTABLE_EXTS = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.log']);
+
 function walkText(dir) {
-  const exts = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.log']);
   const files = [];
   (function rec(d) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) rec(p);
-      else if (exts.has(path.extname(e.name).toLowerCase())) files.push(p);
+      else if (INGESTABLE_EXTS.has(path.extname(e.name).toLowerCase())) files.push(p);
     }
   })(dir);
   return files;
+}
+
+/** Same walk as walkText(), but also reports what got SKIPPED and why — a real, confusing
+ * outcome caught this session: ingesting a folder of PDFs/DOCX/images correctly returns 0 files
+ * (none of those are supported yet), but "✓ ingested 0 files → 0 memories" reads as a silent,
+ * unexplained no-op rather than the real reason. Only used by the CLI/TUI layer to build that
+ * explanation when files.length would be 0 — ingestDir/hivemindIngestDir keep calling walkText()
+ * directly, since they only need the file list. */
+function scanIngestable(dir) {
+  const files = [];
+  const skippedByExt = new Map();
+  (function rec(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { rec(p); continue; }
+      const ext = path.extname(e.name).toLowerCase() || '(no extension)';
+      if (INGESTABLE_EXTS.has(ext)) files.push(p);
+      else skippedByExt.set(ext, (skippedByExt.get(ext) || 0) + 1);
+    }
+  })(dir);
+  return { files, skippedByExt };
+}
+
+/** Plain (uncolored — caller applies its own theme) explanation for a real "0 ingestable files"
+ * outcome, or null if there's nothing to explain (files found, or dir is empty outright). Lists
+ * the actual extensions seen so "found 32 .pdf, 8 .png, ... — none supported yet" replaces a
+ * silent, confusing "✓ ingested 0 files". */
+function noIngestableFilesReason(dir) {
+  const { files, skippedByExt } = scanIngestable(dir);
+  if (files.length || !skippedByExt.size) return null;
+  const breakdown = [...skippedByExt.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([ext, n]) => `${n} ${ext}`)
+    .join(', ');
+  return `found ${breakdown} under ${dir} — none of these are supported yet (only ${[...INGESTABLE_EXTS].join('/')}).`;
 }
 
 /** Ingest every text file under `dir` into `org`. Returns the number of chunks stored, and
@@ -897,12 +933,87 @@ function statusReport(cfg) {
   };
 }
 
+// Bump on every release cut (matches the git tag, without the leading "v") — this IS the release
+// version, not package.json's (that one tracks the napi addon package, currently 0.1.1, and is
+// unrelated to the CLI's own release cadence). No build step reads this from git automatically;
+// it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
+// CLI without a build-time version-stamping step.
+const ICARUS_VERSION = '0.3.8';
+
+// Maps to install.sh's own binary_asset_name() — same asset-naming convention
+// (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
+function updateAssetName() {
+  const osMap = { darwin: 'darwin', linux: 'linux' };
+  const archMap = { x64: 'x64', arm64: 'arm64' };
+  const os_ = osMap[process.platform];
+  const arch = archMap[process.arch];
+  if (!os_ || !arch) return null; // Windows/other: no prebuilt binary yet, same as install.sh
+  return `icarus-${os_}-${arch}`;
+}
+
+/** Check GitHub's real /releases/latest for a newer tag than ICARUS_VERSION. Returns
+ * { current, latest, upToDate } — never throws; a network failure surfaces as upToDate:null so
+ * callers can tell "checked, you're current" apart from "couldn't check". */
+async function checkForUpdate() {
+  const current = `v${ICARUS_VERSION}`;
+  try {
+    const res = await fetch('https://api.github.com/repos/amar3012005/ICARUS/releases/latest', {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) return { current, latest: null, upToDate: null };
+    const body = await res.json();
+    const latest = body.tag_name || null;
+    return { current, latest, upToDate: latest ? latest === current : null };
+  } catch (_) {
+    return { current, latest: null, upToDate: null };
+  }
+}
+
+/** Self-update: download the latest release's binary for this platform, sanity-check it
+ * actually runs, then atomically replace the CURRENTLY RUNNING binary (process.execPath under
+ * Bun's single-file-executable runtime — verified by `typeof Bun !== 'undefined'`, the same test
+ * native.js already uses to detect "am I the compiled artifact"). Refuses on a source/dev
+ * install (plain `node mneme-cli.js`) since there's no single binary to replace there — git
+ * pull + rebuild is that install's own update path, already documented in its own README.
+ * onProgress(bytesDownloaded) is optional, for a progress indicator. */
+async function performSelfUpdate(onProgress) {
+  if (typeof Bun === 'undefined') {
+    throw new Error('running from source (node mneme-cli.js), not the compiled binary — update via `git pull` in your ICARUS checkout instead');
+  }
+  const asset = updateAssetName();
+  if (!asset) throw new Error(`no prebuilt binary for ${process.platform}/${process.arch} — update from source: https://github.com/amar3012005/ICARUS`);
+  const url = `https://github.com/amar3012005/ICARUS/releases/latest/download/${asset}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (onProgress) onProgress(buf.length);
+
+  const target = process.execPath; // the real, currently-running binary path under Bun
+  const tmp = `${target}.update-tmp`;
+  fs.writeFileSync(tmp, buf, { mode: 0o755 });
+  // Sanity check BEFORE committing — a corrupt/incompatible download must never replace a
+  // working install (same principle install.sh's own try_binary_install already applies).
+  const { execFileSync } = require('child_process');
+  try {
+    execFileSync(tmp, ['status'], { stdio: 'ignore', timeout: 15000 });
+  } catch (e) {
+    fs.unlinkSync(tmp);
+    throw new Error(`downloaded binary failed to run (${e.message}) — kept your current install`);
+  }
+  fs.renameSync(tmp, target); // same filesystem (same dir) -> atomic; safe even while target is
+  // the currently-executing binary — POSIX keeps the old inode open under this process until it
+  // exits, exactly how rustup/gh/other self-updating CLIs replace themselves while running.
+  return buf.length;
+}
+
 module.exports = {
-  HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, ingestDir, recallQuery, statusReport,
+  HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, scanIngestable, noIngestableFilesReason,
+  ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate,
 };

@@ -21,6 +21,7 @@ const {
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindRecallQuery, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
@@ -59,6 +60,8 @@ async function cmdIngest(flags, cfg) {
   const dir = flags._[0];
   const org = flags.org || 'default';
   if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--full]');
+  const skipReason = noIngestableFilesReason(dir);
+  if (skipReason) return console.log(err(skipReason));
   if (hivemindConfigured(cfg) && !flags.local) {
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}" ${c.dim(`(${flags.full ? 'full memory generation' : 'evidence-only: lexical + semantic, no memory generation'})`)}`)));
     let tick = 0;
@@ -103,7 +106,7 @@ async function cmdRecall(flags, cfg) {
 
 function cmdStatus(_flags, cfg) {
   const s = statusReport(cfg);
-  console.log(`${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
+  console.log(`${heading('icarus')} ${c.dim(`v${ICARUS_VERSION}`)}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
   console.log(rule());
   console.log(`${c.dim(glyphs.accentBar)} HIVEMIND   ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}`);
   console.log(`${c.dim(glyphs.accentBar)} Signing    ${signingEnabled(cfg) ? c.success('ML-DSA-65 (FIPS 204), on') : c.dim('disabled')}`);
@@ -113,6 +116,24 @@ function cmdStatus(_flags, cfg) {
   for (const sh of s.shards) {
     console.log(`  ${c.dim(glyphs.accentBar)} ${c.path(sh.org.padEnd(24))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB on disk')}`);
   }
+}
+
+async function cmdUpdate(_flags, _cfg) {
+  console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
+  const { current, latest, upToDate } = await checkForUpdate();
+  if (upToDate === null) {
+    // Network hiccup or GitHub API rate-limit -- try the update anyway rather than block on a
+    // check that couldn't complete; performSelfUpdate's own sanity-check (run the download once
+    // before committing) is the real safety net, not this version comparison.
+    console.log(c.dim('  couldn\'t check the latest version — trying the update anyway.'));
+  } else if (upToDate) {
+    return console.log(ok(`already up to date (${current}).`));
+  } else {
+    console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
+  }
+  console.log(bullet(c.system('downloading and verifying the new binary...')));
+  const bytes = await performSelfUpdate();
+  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB). Run ${c.command('icarus status')} to confirm.`));
 }
 
 function cmdCompact(flags, cfg) {
@@ -677,6 +698,7 @@ async function main() {
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
       case 'audit': cmdAudit(flags, cfg); break;
+      case 'update': await cmdUpdate(flags, cfg); break;
       default:
         console.log(colorizeHelp(`icarus — memory filesystem CLI (the .amr engine)
 
@@ -738,6 +760,9 @@ async function main() {
                                         process reached over http://127.0.0.1:<port>.
   icarus daemon stop
   icarus daemon status
+  icarus update                        self-update: download + verify the latest release binary,
+                                        atomically replace the currently running one. Compiled-
+                                        binary installs only (source builds: git pull instead).
   icarus prune [--yes]                 remove EVERYTHING icarus installed: ~/.icarus (bin,
                                         config, data, src), the PATH line install.sh added, and
                                         its MCP registration from Claude Code/Cursor/Codex. Shows
