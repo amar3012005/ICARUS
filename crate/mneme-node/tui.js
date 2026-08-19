@@ -231,7 +231,13 @@ async function dispatch(line, state, cfg) {
       if (!q) { console.log(err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
       const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
-      console.log(`\n${heading(`top ${hits.length}`)}\n`);
+      const modeLabel = hits[0]?.rerankFailed
+        ? c.command(` (rerank failed — showing raw RRF scores, not calibrated: ${hits[0].rerankError})`)
+        : hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked)')
+        : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 only)')
+        : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid, RRF-merged — too few candidates to rerank)')
+        : '';
+      console.log(`\n${heading(`top ${hits.length}`)}${modeLabel}\n`);
       hits.forEach((h, i) => console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${h.text.replace(/\s+/g, ' ').slice(0, 140)}`));
       break;
     }

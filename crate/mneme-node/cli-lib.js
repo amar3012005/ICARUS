@@ -1120,9 +1120,14 @@ async function rerankHits(query, hits, topK) {
   if (hits.length <= 1) return hits.slice(0, topK);
   try {
     const results = await rerankViaHivemindService(query, hits.map((h) => h.text), topK);
-    return results.map((r) => ({ ...hits[r.index], score: r.relevance_score }));
-  } catch (_) {
-    return hits.slice(0, topK);
+    return results.map((r) => ({ ...hits[r.index], score: r.relevance_score, mode: 'hybrid-reranked' }));
+  } catch (e) {
+    // Real failure mode caught in testing: a rerank-service blip (network/timeout/DNS) used to
+    // return here silently with the old RRF-scale score still attached, so a HIVEMIND-connected
+    // recall could show tiny [0.03]-style numbers indistinguishable from a real low-confidence
+    // hit. Tag mode so the CLI/TUI can surface "rerank failed, showing raw hybrid scores" instead
+    // of pretending a calibrated relevance score was returned.
+    return hits.slice(0, topK).map((h) => ({ ...h, rerankFailed: true, rerankError: e.message || String(e) }));
   }
 }
 
@@ -1288,7 +1293,7 @@ function statusReport(cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.13';
+const ICARUS_VERSION = '0.3.14';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

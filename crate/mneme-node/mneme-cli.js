@@ -113,8 +113,10 @@ async function cmdRecall(flags, cfg) {
   if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq]');
   const hits = await recallQuery(q, org, cfg, k, usePq);
   const modeLabel = usePq ? c.dim(' (PQ/ADC recall)')
+    : hits[0]?.rerankFailed ? c.command(` (rerank failed — showing raw RRF scores, not calibrated: ${hits[0].rerankError})`)
+    : hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked — bge-reranker-v2-m3)')
     : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 — no embedding provider configured)')
-    : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid: dense + lexical, RRF-merged)')
+    : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid: dense + lexical, RRF-merged — too few candidates to rerank)')
     : '';
   console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}"${modeLabel}:\n`);
   hits.forEach((h, i) => {
