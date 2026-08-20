@@ -144,6 +144,31 @@ pub fn harness_seal_task(repo_root: String, task_id: String) -> Result<String> {
 }
 
 #[napi]
+pub fn harness_propose_skill(repo_root: String, skill_json: String) -> Result<String> {
+    let skill = serde_json::from_str(&skill_json)
+        .map_err(|error| Error::from_reason(format!("invalid harness skill JSON: {error}")))?;
+    let result = harness::propose_skill(std::path::Path::new(&repo_root), skill)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(result).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_promote_skill(
+    repo_root: String,
+    skill_id: String,
+    owner_approval: Option<String>,
+) -> Result<String> {
+    let result =
+        harness::promote_skill(std::path::Path::new(&repo_root), &skill_id, owner_approval)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(result).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_amend_task_contract(
     repo_root: String,
     task_id: String,

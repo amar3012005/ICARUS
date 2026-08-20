@@ -237,6 +237,30 @@ pub struct SealResult {
     pub final_receipt_path: Option<String>,
 }
 
+/// A harness procedure, never a chat persona. Candidates have no execution authority until the
+/// Rust promotion gate places them in `.icarus/skills/active`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessSkill {
+    pub schema_version: u32,
+    pub id: String,
+    pub state: String,
+    pub triggers: Vec<String>,
+    pub instructions: String,
+    pub allowed_tools: Vec<String>,
+    pub policy_requirements: Vec<String>,
+    pub verification_steps: Vec<String>,
+    pub source_tasks: Vec<String>,
+    #[serde(default)]
+    pub decision_references: Vec<String>,
+    pub risk: String,
+    pub owner: String,
+    pub version: u32,
+    pub confidence: f64,
+    #[serde(default)]
+    pub replay_results: Vec<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -1440,6 +1464,127 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
     atomic_write(&final_path, format!("{}\n", serde_json::to_string_pretty(&json!({"seal": result, "git_sha": current_sha, "dirty_state_fingerprint": current_dirty, "diff_digest": sha256(diff.as_bytes()), "receipts": receipts}))?).as_bytes())?;
     transition_task(&root, task_id, "sealed")?;
     Ok(result)
+}
+
+fn skill_id_valid(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 96
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+}
+fn skill_contains_secret(skill: &HarnessSkill) -> bool {
+    let material = format!(
+        "{} {}",
+        skill.instructions,
+        skill.policy_requirements.join(" ")
+    )
+    .to_ascii_lowercase();
+    [
+        "api_key",
+        "password=",
+        "private key",
+        "authorization: bearer",
+    ]
+    .iter()
+    .any(|needle| material.contains(needle))
+}
+pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<HarnessSkill> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)?;
+    if !skill_id_valid(&skill.id)
+        || skill.instructions.trim().is_empty()
+        || skill.source_tasks.is_empty()
+    {
+        return Err(HarnessError::invalid(
+            "skill requires a safe id, instructions, and sealed source task",
+        ));
+    }
+    if skill_contains_secret(&skill) {
+        return Err(HarnessError::invalid(
+            "skill candidate appears to contain a secret",
+        ));
+    }
+    for task_id in &skill.source_tasks {
+        if task_status(&root, task_id)?.status != "sealed" {
+            return Err(HarnessError::invalid(format!(
+                "source task `{task_id}` is not sealed"
+            )));
+        }
+    }
+    skill.schema_version = 1;
+    skill.state = "proposed".into();
+    skill.version = skill.version.max(1);
+    let path = runtime_root(&root)
+        .join("skills/proposed")
+        .join(format!("{}.json", skill.id));
+    atomic_write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+    )?;
+    Ok(skill)
+}
+pub fn promote_skill(
+    repo_root: &Path,
+    skill_id: &str,
+    owner_approval: Option<String>,
+) -> Result<HarnessSkill> {
+    let root = canonical_root(repo_root)?;
+    let proposed = runtime_root(&root)
+        .join("skills/proposed")
+        .join(format!("{skill_id}.json"));
+    let mut skill: HarnessSkill = serde_json::from_reader(
+        File::open(&proposed)
+            .map_err(|_| HarnessError::invalid("proposed skill does not exist"))?,
+    )?;
+    if skill_contains_secret(&skill) {
+        return Err(HarnessError::invalid(
+            "skill candidate appears to contain a secret",
+        ));
+    }
+    let high_risk = [
+        "security",
+        "deploy",
+        "credential",
+        "migration",
+        "destructive",
+        "external",
+    ]
+    .iter()
+    .any(|word| skill.risk.to_ascii_lowercase().contains(word));
+    if high_risk && owner_approval.as_deref().unwrap_or("").is_empty() {
+        return Err(HarnessError::invalid(
+            "high-risk skill promotion requires owner approval",
+        ));
+    }
+    if !high_risk
+        && (skill.source_tasks.len() < 3
+            || skill
+                .replay_results
+                .iter()
+                .filter(|result| result.get("success").and_then(Value::as_bool) == Some(true))
+                .count()
+                < 2
+            || skill.confidence <= 0.0)
+    {
+        return Err(HarnessError::invalid("low-risk promotion requires 3 sealed sources, 2 successful replays, and measurable confidence"));
+    }
+    for task_id in &skill.source_tasks {
+        if task_status(&root, task_id)?.status != "sealed" {
+            return Err(HarnessError::invalid(format!(
+                "source task `{task_id}` is no longer sealed"
+            )));
+        }
+    }
+    skill.state = "active".into();
+    let active = root
+        .join(".icarus/skills")
+        .join(format!("{}.json", skill.id));
+    atomic_write(
+        &active,
+        format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+    )?;
+    Ok(skill)
 }
 
 fn read_checkpoints(root: &Path, task_id: &str) -> Result<Vec<Checkpoint>> {

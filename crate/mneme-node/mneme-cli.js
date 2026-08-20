@@ -276,6 +276,24 @@ function cmdRun(flags) {
   }
 }
 
+function cmdHarnessSkill(flags) {
+  const [subcommand, skillId] = flags._;
+  const repo = flags.repo || process.cwd();
+  const harness = require('./harness.js');
+  if (subcommand === 'propose') {
+    if (!flags.file) throw new Error('usage: icarus harness-skill propose --file <skill.json> [--repo <dir>]');
+    const skill = JSON.parse(fs.readFileSync(flags.file, 'utf8'));
+    console.log(ok(`proposed harness skill ${harness.proposeSkill(repo, skill).id}`));
+    return;
+  }
+  if (subcommand === 'promote') {
+    if (!skillId) throw new Error('usage: icarus harness-skill promote <skill-id> [--approval <id>] [--repo <dir>]');
+    console.log(ok(`activated harness skill ${harness.promoteSkill(repo, skillId, flags.approval).id}`));
+    return;
+  }
+  throw new Error('usage: icarus harness-skill <propose|promote>');
+}
+
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
 // connection state. Real reason, not a style choice: an actual test session against a real
 // HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
@@ -939,6 +957,7 @@ async function main() {
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
       case 'run': cmdRun(flags); break;
+      case 'harness-skill': cmdHarnessSkill(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
