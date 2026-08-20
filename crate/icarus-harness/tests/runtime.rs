@@ -1,6 +1,6 @@
 use icarus_harness::{
-    amend_task_contract, append_event, authorize_action, checkpoint_task, doctor, init,
-    read_snapshot, resume_task, start_task, task_status, transition_task, verify_event_chain,
+    amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
+    init, read_snapshot, resume_task, start_task, task_status, transition_task, verify_event_chain,
     write_snapshot, Action, EventInput, InitOptions, TaskContract,
 };
 use std::fs;
@@ -283,4 +283,28 @@ fn resume_refuses_worktree_divergence_since_the_last_checkpoint() {
     fs::write(repo.path().join("src/changed.rs"), "changed\n").unwrap();
     let error = resume_task(repo.path(), &task.task_id).unwrap_err();
     assert!(error.to_string().contains("worktree divergence"));
+}
+
+#[test]
+fn context_compiler_is_deterministic_traceable_and_budgeted() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "compile context", contract()).unwrap();
+    let first = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    let second = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.task_id, task.task_id);
+    assert!(first
+        .items
+        .iter()
+        .any(|item| item.kind == "contract" && item.mandatory));
+    assert!(first
+        .items
+        .iter()
+        .all(|item| !item.digest.is_empty() && !item.source.is_empty()));
+    assert!(first.upper_bound_tokens <= first.budget_tokens);
+    assert!(build_context(repo.path(), &task.task_id, 1)
+        .unwrap_err()
+        .to_string()
+        .contains("budget_unsatisfied"));
 }

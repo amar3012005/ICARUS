@@ -203,6 +203,18 @@ function cmdTask(flags) {
   throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize>');
 }
 
+function cmdContext(flags) {
+  const subcommand = flags._[0];
+  if (subcommand !== 'build') throw new Error('usage: icarus context build --task <TASK-ID> [--budget <tokens>] [--format json|markdown] [--repo <dir>]');
+  if (!flags.task) throw new Error('context build requires --task <TASK-ID>');
+  const budget = Number(flags.budget || 12_000);
+  if (!Number.isInteger(budget) || budget <= 0) throw new Error('--budget must be a positive integer');
+  const result = require('./harness.js').buildContext(flags.repo || process.cwd(), flags.task, budget);
+  if (flags.format && !['json', 'markdown'].includes(flags.format)) throw new Error('--format must be json or markdown');
+  if (flags.format === 'json') console.log(JSON.stringify(result.pack, null, 2));
+  else console.log(result.markdown);
+}
+
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
 // connection state. Real reason, not a style choice: an actual test session against a real
 // HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
@@ -864,6 +876,7 @@ async function main() {
       case 'harness': await cmdHarness(flags); break;
       case 'doctor': cmdDoctor(flags); break;
       case 'task': cmdTask(flags); break;
+      case 'context': cmdContext(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -963,6 +976,9 @@ async function main() {
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]
+  icarus context build --task <TASK-ID> [--budget <tokens>] [--format json|markdown] [--repo <dir>]
+                                        compile a deterministic, source-traceable context pack
+                                        without making an LLM or network call.
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
                                         inspect, resume, transition, or ask the Rust authority
                                         whether a scoped action is allowed. No LLM is invoked.

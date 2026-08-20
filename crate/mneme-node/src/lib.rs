@@ -138,6 +138,22 @@ pub fn harness_checkpoint_task(
 }
 
 #[napi]
+pub fn harness_build_context(
+    repo_root: String,
+    task_id: String,
+    budget_tokens: u32,
+) -> Result<String> {
+    let pack = harness::build_context(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        budget_tokens as usize,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    let markdown = harness::render_context_markdown(&pack);
+    harness_json(serde_json::json!({"pack": pack, "markdown": markdown}))
+}
+
+#[napi]
 pub fn harness_authorize_action(
     repo_root: String,
     task_id: String,

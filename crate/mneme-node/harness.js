@@ -49,6 +49,10 @@ function checkpointTask(repoRoot, taskId, phase, input) {
   return invoke('harnessCheckpointTask', [repoRoot, taskId, phase, JSON.stringify(input)]);
 }
 
+function buildContext(repoRoot, taskId, budgetTokens) {
+  return invoke('harnessBuildContext', [repoRoot, taskId, budgetTokens]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -66,6 +70,7 @@ module.exports = {
   resumeTask,
   amendTaskContract,
   checkpointTask,
+  buildContext,
   authorizeAction,
   __setNativeHarnessBridgeForTest,
 };

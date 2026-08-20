@@ -626,6 +626,23 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_context_get',
+    {
+      title: 'Compile a bounded, traceable ICARUS context pack',
+      description: 'Call before planning and after resume, compaction, or a material repository change. Produces deterministic JSON plus Markdown from the same Rust pack. It includes mandatory contract/policy/worktree items or fails budget_unsatisfied; ICARUS never calls an LLM to summarize it.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), budget_tokens: z.number().int().positive().max(1_000_000).default(12_000), format: z.enum(['json', 'markdown', 'both']).default('both') },
+    },
+    async ({ repo, task_id, budget_tokens, format }) => {
+      try {
+        const result = harnessFor().buildContext(repo, task_id, budget_tokens || 12_000);
+        if (format === 'json') return textResult(result.pack);
+        if (format === 'markdown') return textResult(result.markdown);
+        return textResult(result);
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_graph_build',
     {
       title: 'Build the native symbol/call graph for a codebase',

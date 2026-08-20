@@ -217,6 +217,36 @@ pub struct Checkpoint {
     pub input: Value,
 }
 
+/// One traceable context item. `digest` identifies exact source content; the compiler never
+/// turns repository material into untraceable model prose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContextItem {
+    pub kind: String,
+    pub source: String,
+    pub digest: String,
+    pub freshness: String,
+    pub authority: String,
+    pub retrieval_reason: String,
+    pub mandatory: bool,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContextPack {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub status: String,
+    pub budget_tokens: usize,
+    /// Conservative upper bound: UTF-8 bytes are never fewer than tokens for byte-based BPE
+    /// tokenizers. It is deliberately conservative until a selected adapter supplies its exact
+    /// tokenizer; the compiler must never promise a pack fits when it does not.
+    pub upper_bound_tokens: usize,
+    pub items: Vec<ContextItem>,
+}
+
 fn sha256(value: &[u8]) -> String {
     format!("{:x}", Sha256::digest(value))
 }
@@ -909,6 +939,178 @@ fn graph_digest(root: &Path) -> Option<String> {
     fs::read(runtime_root(root).join("graph/graph.db"))
         .ok()
         .map(|bytes| sha256(&bytes))
+}
+
+/// Compile a deterministic context pack. This is intentionally extraction and ordering, not
+/// summarization: ICARUS has no LLM in this path, and every included byte is source-addressable.
+pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> Result<ContextPack> {
+    if budget_tokens == 0 {
+        return Err(HarnessError::invalid(
+            "budget_unsatisfied: context budget must be positive",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    let mut pack = ContextPack {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        status: task.status.clone(),
+        budget_tokens,
+        upper_bound_tokens: 0,
+        items: Vec::new(),
+    };
+    let contract = fs::read_to_string(contract_path(&root, task_id, task.contract_version)?)?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "contract",
+            format!(
+                ".icarus/runtime/tasks/{task_id}/contract.v{}.json",
+                task.contract_version
+            ),
+            "snapshot",
+            "task contract",
+            "mandatory execution scope and acceptance criteria",
+            true,
+            contract,
+        ),
+    )?;
+    let policy_path = root.join(".icarus/policies/default.yaml");
+    let policy = fs::read_to_string(&policy_path)
+        .map_err(|_| HarnessError::invalid("ICARUS harness policy is missing"))?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "policy",
+            ".icarus/policies/default.yaml",
+            "current",
+            "repository policy",
+            "mandatory governance rules",
+            true,
+            policy,
+        ),
+    )?;
+    let task_state = serde_json::to_string_pretty(&json!({
+        "task_id": task.task_id, "execution_id": task.execution_id, "status": task.status,
+        "contract_version": task.contract_version, "contract_digest": task.contract_digest,
+    }))?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "task_state",
+            format!(".icarus/runtime/tasks/{task_id}/task.json"),
+            "snapshot",
+            "runtime state",
+            "current lifecycle state",
+            true,
+            task_state,
+        ),
+    )?;
+    let worktree = serde_json::to_string_pretty(&json!({
+        "git_sha": git_output(&root, &["rev-parse", "HEAD"]),
+        "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()),
+        "graph_digest": graph_digest(&root),
+    }))?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "worktree",
+            "git + runtime graph",
+            "current",
+            "observed workspace",
+            "freshness and divergence check",
+            true,
+            worktree,
+        ),
+    )?;
+    if let Some(checkpoint) = read_checkpoints(&root, task_id)?.last() {
+        let content = serde_json::to_string_pretty(checkpoint)?;
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "checkpoint",
+                format!(
+                    ".icarus/runtime/tasks/{task_id}/checkpoints.jsonl#{}",
+                    checkpoint.sequence
+                ),
+                "checkpoint",
+                "agent checkpoint",
+                "latest agent-supplied risks and next action",
+                false,
+                content,
+            ),
+        )?;
+    }
+    let event_chain = verify_event_chain(&root, &load_manifest(&root)?.repo_id)?;
+    let content = serde_json::to_string_pretty(
+        &json!({"valid": event_chain.valid, "events": event_chain.events, "issues": event_chain.issues}),
+    )?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "event_integrity",
+            ".icarus/runtime/logs/events.jsonl",
+            "current",
+            "runtime audit log",
+            "integrity status for the task history",
+            false,
+            content,
+        ),
+    )?;
+    Ok(pack)
+}
+
+impl ContextItem {
+    fn new(
+        kind: impl Into<String>,
+        source: impl Into<String>,
+        freshness: impl Into<String>,
+        authority: impl Into<String>,
+        retrieval_reason: impl Into<String>,
+        mandatory: bool,
+        content: String,
+    ) -> Self {
+        let digest = sha256(content.as_bytes());
+        Self {
+            kind: kind.into(),
+            source: source.into(),
+            digest,
+            freshness: freshness.into(),
+            authority: authority.into(),
+            retrieval_reason: retrieval_reason.into(),
+            mandatory,
+            content,
+        }
+    }
+}
+
+fn add_context_item(pack: &mut ContextPack, item: ContextItem) -> Result<()> {
+    pack.items.push(item);
+    // Header includes the bound itself, so converge once or twice before deciding whether the
+    // rendered pack fits. (A digit boundary can change the rendered byte count.)
+    let mut upper_bound = render_context_markdown(pack).len();
+    for _ in 0..2 {
+        pack.upper_bound_tokens = upper_bound;
+        upper_bound = render_context_markdown(pack).len();
+    }
+    if upper_bound > pack.budget_tokens {
+        let rejected = pack.items.pop().expect("the item was just added");
+        if rejected.mandatory {
+            return Err(HarnessError::invalid(format!("budget_unsatisfied: mandatory {} item requires at least {} conservative token units", rejected.kind, upper_bound)));
+        }
+        return Ok(());
+    }
+    pack.upper_bound_tokens = upper_bound;
+    Ok(())
+}
+
+pub fn render_context_markdown(pack: &ContextPack) -> String {
+    let mut rendered = format!("# ICARUS context pack\n\ntask: `{}` · execution: `{}` · status: `{}`\nbudget upper bound: {}/{}\n", pack.task_id, pack.execution_id, pack.status, pack.upper_bound_tokens, pack.budget_tokens);
+    for (index, item) in pack.items.iter().enumerate() {
+        rendered.push_str(&format!("\n## {}. {}{}\nsource: `{}`\ndigest: `{}`\nfreshness: {} · authority: {}\nreason: {}\n\n```text\n{}\n```\n", index + 1, item.kind, if item.mandatory { " (mandatory)" } else { "" }, item.source, item.digest, item.freshness, item.authority, item.retrieval_reason, item.content));
+    }
+    rendered
 }
 
 pub fn authorize_action(repo_root: &Path, task_id: &str, action: Action) -> Result<Authorization> {
