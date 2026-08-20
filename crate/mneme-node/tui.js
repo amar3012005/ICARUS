@@ -627,6 +627,23 @@ function openModelPicker(state, cfg, models, query = '') {
   };
   scheduleRedraw(state);
 }
+function skillPickerLines(state) {
+  const picker = state._skillPicker;
+  if (!picker) return [];
+  const selected = Math.min(picker.selected, Math.max(0, picker.skills.length - 1)); picker.selected = selected;
+  return [heading(`Choose persona skill · ${picker.org}`), ...picker.skills.map((skill, i) => ` ${i === selected ? c.success('›') : m.faint(' ')} ${i === selected ? c.command(skill.slug) : m.normal(skill.slug)}  ${m.faint(skill.description || '')}`), m.faint('↑/↓ choose · Enter activates · Esc cancels')];
+}
+function openSkillPicker(state, cfg, org, skills) {
+  state._skillPicker = { org, skills, selected: 0 };
+  state._modalResolver = (key) => {
+    const p = state._skillPicker; if (!p) return;
+    if (key === '\x1b') { state._skillPicker = null; state._modalResolver = null; out(state, c.dim('  skill selection cancelled.')); scheduleRedraw(state); return; }
+    if (key === '\r' || key === '\n') { const chosen = p.skills[p.selected]; if (!chosen) return; selectPersonaSkill(chosen.slug, org, cfg); state._skillPicker = null; state._modalResolver = null; out(state, ok(`persona skill "${chosen.slug}" is now active for org "${org}".`)); scheduleRedraw(state); return; }
+    if (key === '\x1b[A') p.selected = Math.max(0, p.selected - 1);
+    if (key === '\x1b[B') p.selected = Math.min(p.skills.length - 1, p.selected + 1);
+    scheduleRedraw(state);
+  }; scheduleRedraw(state);
+}
 
 function redraw(state) {
   const cols = process.stdout.columns || 80;
@@ -634,7 +651,7 @@ function redraw(state) {
   const matches = autocompleteMatches(state.input);
   const dropdown = matches.slice(0, 6);
   const dropdownH = dropdown.length;
-  const picker = modelPickerLines(state);
+  const picker = [...modelPickerLines(state), ...skillPickerLines(state)];
   const pickerH = picker.length;
   const cfg = loadCfg();
 
@@ -949,8 +966,8 @@ async function dispatch(line, state, cfg) {
         out(state, saved ? ok(`persona skill "${saved.slug}" created and active for org "${org}".`) : err('could not create persona skill — set an LLM API key first'));
       } else if (sub === 'select') {
         const slug = rest.join(' ').trim();
-        const skills = skillList(org).filter((s) => s.slug.startsWith('persona-'));
-        if (!slug) { out(state, heading(`persona skills · ${org}`)); skills.forEach((s) => out(state, `  ${c.command(`/skill select ${s.slug}`)}  ${s.description || ''}`)); if (!skills.length) out(state, c.dim('  none yet — create one with /skill create <persona brief>')); break; }
+        const skills = skillList(org).filter((s) => s.slug.startsWith('persona-')).map((s) => ({ ...s, slug: s.slug.replace(/\.persona$/, '') }));
+        if (!slug) { if (!skills.length) out(state, c.dim('  no persona skills yet — create one with /skill create <persona brief>')); else openSkillPicker(state, cfg, org, skills); break; }
         out(state, selectPersonaSkill(slug, org, cfg) ? ok(`persona skill "${slug}" is now active for org "${org}".`) : err(`no persona skill named "${slug}" in org "${org}"`));
       } else if (sub === 'default') { clearPersonaSkill(org, cfg); out(state, ok(`ICARUS default persona restored for org "${org}".`)); }
       else out(state, err('usage: /skill create <persona brief> | /skill select [name] | /skill default'));
