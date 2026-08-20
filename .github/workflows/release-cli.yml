@@ -1,0 +1,245 @@
+# Publish the ICARUS **CLI** for every supported platform on a vX.Y.Z tag.
+#
+# This is a DIFFERENT artifact from release.yml, which publishes the `singulance-amr` napi
+# ENGINE to npm. That one produces .node addons for Node consumers; this one produces the
+# single self-contained executable a human installs — the thing install.sh downloads and
+# `icarus update` replaces itself with.
+#
+# WHY THIS EXISTS (HARNESS_V1_PLAN.md, Phase 0: "Automate release creation, asset naming,
+# SHA-256 checksums, draft detection, cold download, and version execution")
+#   Cutting these releases by hand kept going wrong in ways a script cannot forget:
+#     * `gh release create file#label` sets a display LABEL, not the uploaded FILENAME, so an
+#       asset silently published as `icarus-v0329-build` while
+#       releases/latest/download/icarus-darwin-arm64 404'd for every installer.
+#     * A `gh release create` that timed out left an orphaned DRAFT, and because a draft is
+#       never "latest", releases/latest kept resolving to the PREVIOUS version — an install
+#       that looked successful and shipped old code.
+#     * A ~70MB asset upload once hung for 90+ minutes at zero bytes transferred while
+#       being reported as "in progress".
+#   Every one of those is now an explicit, asserted step below.
+name: release-cli
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build and publish, e.g. v0.4.0'
+        required: true
+
+permissions:
+  contents: write   # required to create the release and upload assets
+
+jobs:
+  # ── gate: the tag, VERSION, and the baked literal must all agree ─────────────────────
+  # A release whose binary reports a different version than its tag is unusable for support:
+  # nobody can tell what a user is actually running. Checked ONCE, before spending any build
+  # minutes, so a mismatch fails in seconds rather than after five platform builds.
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - id: v
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="$(cat VERSION | tr -d '[:space:]')"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match VERSION $VERSION (expected tag v$VERSION)"
+            exit 1
+          fi
+          # And the literal actually compiled into the binary must match VERSION too.
+          node scripts/version.mjs --check
+
+  build:
+    needs: verify-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `asset` is the EXACT filename install.sh requests from
+          # releases/latest/download/<asset>. It is derived from uname the same way
+          # install.sh's binary_asset_name() derives it — these two must never drift.
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            asset: icarus-darwin-arm64
+          - host: macos-13
+            target: x86_64-apple-darwin
+            asset: icarus-darwin-x64
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: icarus-linux-x64
+          # NOT YET BUILT: icarus-linux-arm64 and icarus-win32-x64.
+          #
+          # install.sh already ASKS for linux-arm64 on such a host, gets a 404, and falls back
+          # to its documented source build (`warn "prebuilt binary not available ... building
+          # from source instead"`), so the behaviour is degraded-but-correct rather than
+          # broken. Naming the gap here instead of leaving it implicit: cross-compiling the
+          # bun-compiled binary for aarch64 needs a real toolchain/runner story, and Windows
+          # needs the shard's flock path solved first (mseg/src/shard.rs deliberately fails
+          # loudly on non-unix rather than running without a lock). Both are Phase 8 work
+          # ("Complete platform binaries for macOS ARM64/x64, Linux ARM64/x64, Windows x64").
+    name: build-${{ matrix.asset }}
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Node deps
+        working-directory: crate/mneme-node
+        run: npm install
+
+      # The CLI's own tests, on the real build machine, before anything is published. A
+      # release that ships a red test suite is not a release.
+      - name: Node tests
+        working-directory: crate/mneme-node
+        run: npm test
+
+      - name: Build native addon
+        working-directory: crate/mneme-node
+        run: npx napi build --release --target ${{ matrix.target }}
+
+      # `bun build --compile` bundles the Rust addon AND a JS runtime into one file, which is
+      # what makes the install a single download with no toolchain on the target machine.
+      - name: Compile single-file CLI
+        working-directory: crate/mneme-node
+        run: bun build --compile ./mneme-cli.js --outfile "${{ matrix.asset }}"
+
+      # Prove the artifact RUNS and reports the expected version. A binary that builds but
+      # cannot execute (wrong target, missing addon) is exactly what shipped before this
+      # check existed, and `--version` is answered before config/shard/addon load precisely
+      # so this check cannot be defeated by an unrelated environment problem.
+      - name: Verify the built binary executes and reports the right version
+        working-directory: crate/mneme-node
+        run: |
+          set -euo pipefail
+          chmod +x "${{ matrix.asset }}"
+          GOT="$(./${{ matrix.asset }} --version)"
+          EXPECTED="${{ needs.verify-version.outputs.version }}"
+          echo "binary reports: $GOT (expected $EXPECTED)"
+          [ "$GOT" = "$EXPECTED" ] || { echo "::error::binary reports $GOT, expected $EXPECTED"; exit 1; }
+
+      - name: Checksum
+        working-directory: crate/mneme-node
+        run: shasum -a 256 "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            crate/mneme-node/${{ matrix.asset }}
+            crate/mneme-node/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [verify-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show what will be published
+        run: ls -lh dist/
+
+      # Upload by PATH only — never `path#label`. The label form sets a display name while the
+      # stored filename stays whatever the local file was called, which is how an asset once
+      # got published under a build-scratch name and broke every installer URL.
+      - name: Create the release (not a draft) and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify-version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists — uploading/replacing assets"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              dist/*
+          fi
+
+      # A timed-out create previously left an orphaned draft, and a draft is never "latest",
+      # so releases/latest silently kept serving the PREVIOUS version. Assert it explicitly.
+      - name: Assert the release is published, not a draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify-version.outputs.tag }}"
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          echo "isDraft=$IS_DRAFT"
+          [ "$IS_DRAFT" = "false" ] || { echo "::error::$TAG is still a draft; releases/latest would serve the previous version"; exit 1; }
+
+      # Assert the exact filenames installers depend on are present under this tag.
+      - name: Assert expected asset names exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify-version.outputs.tag }}"
+          NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          echo "$NAMES"
+          for want in icarus-darwin-arm64 icarus-darwin-x64 icarus-linux-x64; do
+            echo "$NAMES" | grep -qx "$want" || { echo "::error::missing asset $want"; exit 1; }
+          done
+
+      # COLD verification: download through the same public URL install.sh uses, confirm the
+      # bytes match the checksum built on the build machine, and confirm the downloaded
+      # binary runs. This is the step that proves what users will actually receive, rather
+      # than what CI happened to produce locally.
+      - name: Cold-download and verify the published Linux asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify-version.outputs.tag }}"
+          EXPECTED_SHA="$(awk '{print $1}' dist/icarus-linux-x64.sha256)"
+          curl -fSL --retry 3 --retry-delay 5 --max-time 600 \
+            "https://github.com/${{ github.repository }}/releases/download/$TAG/icarus-linux-x64" \
+            -o cold-icarus
+          GOT_SHA="$(shasum -a 256 cold-icarus | awk '{print $1}')"
+          echo "expected $EXPECTED_SHA"
+          echo "got      $GOT_SHA"
+          [ "$GOT_SHA" = "$EXPECTED_SHA" ] || { echo "::error::cold download does not match the built artifact"; exit 1; }
+          chmod +x cold-icarus
+          GOT_VERSION="$(./cold-icarus --version)"
+          [ "$GOT_VERSION" = "${{ needs.verify-version.outputs.version }}" ] \
+            || { echo "::error::cold binary reports $GOT_VERSION"; exit 1; }
+          echo "cold download verified: $GOT_VERSION"
+
+      # `releases/latest/download/...` is the URL install.sh actually uses for a default
+      # install, and it resolves via the "latest" pointer rather than the tag — so a release
+      # can be perfectly correct at its tag while `latest` still points elsewhere. Checked
+      # separately, because that exact split is what made a broken install look successful.
+      - name: Assert releases/latest resolves to this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LATEST="$(gh release view --json tagName --jq .tagName)"
+          echo "latest=$LATEST expected=${{ needs.verify-version.outputs.tag }}"
+          [ "$LATEST" = "${{ needs.verify-version.outputs.tag }}" ] \
+            || { echo "::error::releases/latest is $LATEST, not ${{ needs.verify-version.outputs.tag }}"; exit 1; }

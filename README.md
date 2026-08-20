@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/icarus-readme-storyboard.png" alt="ICARUS campaign storyboard: introduction, local recall, and local developer capability" width="100%" />
-</p>
-
 <h1 align="center">ICARUS</h1>
 
 <p align="center">
@@ -17,12 +13,14 @@
 </p>
 
 <p align="center">
-  <a href="#start-here">Start here</a> ·
-  <a href="#the-case-for-a-memory-file">Why ICARUS</a> ·
-  <a href="#what-happens-on-recall">Recall</a> ·
-  <a href="#use-it-from-your-agent">Agent CLI</a> ·
-  <a href="#technical-reference">Reference</a>
+  <a href="https://github.com/amar3012005/ICARUS#start-here">Start here</a> ·
+  <a href="https://github.com/amar3012005/ICARUS#the-case-for-a-memory-file">Why ICARUS</a> ·
+  <a href="https://github.com/amar3012005/ICARUS#what-happens-on-recall">Recall</a> ·
+  <a href="https://github.com/amar3012005/ICARUS#use-it-from-your-agent">Agent CLI</a> ·
+  <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a>
 </p>
+
+<img src="assets/icarus-readme-storyboard.png" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, and local developer capability" width="100%" />
 
 ---
 
