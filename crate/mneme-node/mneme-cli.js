@@ -38,6 +38,10 @@ const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-
 function parseFlags(args) {
   const out = { _: [] };
   for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--') {
+      out.agentArgs = args.slice(i + 1);
+      break;
+    }
     if (args[i].startsWith('--')) {
       const name = args[i].slice(2);
       if (BOOLEAN_FLAGS.has(name)) {
@@ -261,6 +265,8 @@ function cmdRun(flags) {
   if (!command) throw new Error(`unsupported agent adapter \`${agent}\``);
   if (!commandOnPath(command)) throw new Error(`${agent} adapter is not available on PATH (${command})`);
   const harness = require('./harness.js');
+  const userArgs = flags.agentArgs || [];
+  harness.validateAgentArguments(agent, userArgs);
   const preparation = harness.prepareRun(
     flags.repo || process.cwd(), taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
   );
@@ -272,7 +278,7 @@ function cmdRun(flags) {
   console.log(c.dim(`  agent must call icarus_context_get before planning; task ${preparation.task_id} remains the governing contract.`));
   if (flags['dry-run']) return;
   const task = harness.transitionTask(flags.repo || process.cwd(), taskId, 'executing');
-  const result = spawnSync(command, preparation.launch_arguments || [], { cwd: preparation.workspace_path, stdio: 'inherit' });
+  const result = spawnSync(command, [...(preparation.launch_arguments || []), ...userArgs], { cwd: preparation.workspace_path, stdio: 'inherit' });
   if (result.error) throw new Error(`failed to launch ${agent}: ${result.error.message}`);
   if (result.status === 0) {
     harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'verifying');

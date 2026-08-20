@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
+  validateAgentArguments,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -53,4 +54,13 @@ test('skill governance remains a thin Rust transport, including attributable ret
     ['retire', ['/repo', 'review', 'superseded', 'APR-2']],
     ['attest', ['/repo', 'TASK-1', 'owner', 'APR-3', 'owner', '2099-01-01T00:00:00Z']],
   ]);
+});
+
+test('agent launch arguments are validated by Rust before Node can spawn a CLI', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessValidateAgentArguments(...args) { calls.push(args); },
+  });
+  validateAgentArguments('codex', ['--model', 'gpt-5']);
+  assert.deepEqual(calls, [['codex', '["--model","gpt-5"]']]);
 });

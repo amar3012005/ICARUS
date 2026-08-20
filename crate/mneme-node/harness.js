@@ -45,6 +45,14 @@ function prepareRun(repoRoot, taskId, agent, workspaceMode, acknowledgeDirtyCurr
   return invoke('harnessPrepareRun', [repoRoot, taskId, agent, workspaceMode, !!acknowledgeDirtyCurrent]);
 }
 
+function validateAgentArguments(agent, agentArgs) {
+  const native = bridge();
+  if (typeof native.harnessValidateAgentArguments !== 'function') {
+    throw new Error('ICARUS native harness bridge is unavailable (harnessValidateAgentArguments); install a matching ICARUS binary');
+  }
+  native.harnessValidateAgentArguments(agent, JSON.stringify(agentArgs || []));
+}
+
 function verifyTaskCriterion(repoRoot, taskId, criterionId) {
   return invoke('harnessVerifyTaskCriterion', [repoRoot, taskId, criterionId]);
 }
@@ -95,6 +103,7 @@ module.exports = {
   transitionTask,
   resumeTask,
   prepareRun,
+  validateAgentArguments,
   verifyTaskCriterion,
   attestTaskCriterion,
   sealTask,

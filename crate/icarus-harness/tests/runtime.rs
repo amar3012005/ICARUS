@@ -2,8 +2,8 @@ use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
     checkpoint_task, doctor, graph_source_fingerprint, init, prepare_run, read_snapshot,
     record_graph_receipt, resume_task, retire_skill, seal_task, start_task, task_status,
-    transition_task, verify_event_chain, verify_task_criterion, write_snapshot, Action, EventInput,
-    HarnessSkill, InitOptions, TaskContract,
+    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
+    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -572,6 +572,24 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn agent_arguments_cannot_weaken_rust_selected_launch_controls() {
+    assert!(validate_agent_arguments("codex", &["--model".into(), "gpt-5".into()]).is_ok());
+    assert!(validate_agent_arguments("claude", &["--model".into(), "sonnet".into()]).is_ok());
+    assert!(validate_agent_arguments("codex", &["--sandbox=danger-full-access".into()]).is_err());
+    assert!(validate_agent_arguments("codex", &["-sdanger-full-access".into()]).is_err());
+    assert!(validate_agent_arguments(
+        "codex",
+        &["--dangerously-bypass-approvals-and-sandbox".into()]
+    )
+    .is_err());
+    assert!(validate_agent_arguments(
+        "claude",
+        &["--permission-mode".into(), "bypassPermissions".into()]
+    )
+    .is_err());
 }
 
 #[test]

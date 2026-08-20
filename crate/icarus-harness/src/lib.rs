@@ -266,6 +266,50 @@ fn adapter_launch_arguments(agent: &str, workspace: &Path, task_id: &str) -> Vec
     }
 }
 
+/// Permit ordinary model/UX arguments after `icarus run -- ...`, but reject options that could
+/// weaken or replace the governed launch posture. This guard is native so a JavaScript adapter
+/// cannot accidentally let a later argument override its Rust-selected sandbox or approval mode.
+pub fn validate_agent_arguments(agent: &str, arguments: &[String]) -> Result<()> {
+    let forbidden: &[&str] = match agent {
+        "codex" => &[
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--sandbox",
+            "-s",
+            "--ask-for-approval",
+            "-a",
+            "--cd",
+            "-C",
+            "--add-dir",
+        ],
+        "claude" => &[
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+            "--permission-mode",
+            "--append-system-prompt",
+            "--system-prompt",
+            "--add-dir",
+        ],
+        _ => &[],
+    };
+    if let Some(argument) = arguments.iter().find(|argument| {
+        forbidden.iter().any(|blocked| {
+            argument == blocked
+                || argument
+                    .strip_prefix(blocked)
+                    .is_some_and(|suffix| suffix.starts_with('='))
+        }) || matches!(agent, "codex")
+            && ["-s", "-a", "-C"]
+                .iter()
+                .any(|short| argument.starts_with(short))
+    }) {
+        return Err(HarnessError::invalid(format!(
+            "agent argument `{argument}` would override ICARUS-managed launch policy"
+        )));
+    }
+    Ok(())
+}
+
 /// Evidence produced by ICARUS itself for one contract criterion. Agent prose is deliberately
 /// absent: only an executed command, inspected artifact, or explicit pending human gate can
 /// create one of these records.
