@@ -1,7 +1,10 @@
 'use strict';
 // The ingest UI must render observed async-job states, not an invented percentage.
 const assert = require('assert');
-const { hivemindPollJob, hivemindUploadFile, formatHivemindProgress } = require('./cli-lib.js');
+const { hivemindPollJob, hivemindUploadFile, formatHivemindProgress, isInaccessibleHivemindDuplicate } = require('./cli-lib.js');
+
+assert.strictEqual(isInaccessibleHivemindDuplicate(new Error('HIVEMIND documents 404: {"error":"Document not found or access denied"}')), true);
+assert.strictEqual(isInaccessibleHivemindDuplicate(new Error('HIVEMIND documents 500: upstream unavailable')), false);
 
 const originalFetch = global.fetch;
 const responses = [

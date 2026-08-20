@@ -86,6 +86,7 @@ async function cmdIngest(flags, cfg) {
     const result = await hivemindIngestDir(dir, org, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
+    if (result.unavailableDuplicates) notes.push(`${result.unavailableDuplicates} duplicate document(s) unavailable to mirror — server repair required`);
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
     if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
     if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
@@ -93,7 +94,7 @@ async function cmdIngest(flags, cfg) {
     if (result.purged) notes.push(`${result.purged} cloud document(s) deleted after mirroring — HIVEMIND used as extraction pipeline only`);
     if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — HIVEMIND doesn't create a fetchable document for images`);
     const outcome = ingestMode === 'evidence' ? `${result.chunks} local evidence segments` : `${result.live} memories, ${result.chunks} segments`;
-    const action = result.duplicates === result.files ? `checked ${result.files} existing files` : `HIVEMIND ingested ${result.files} files`;
+    const action = result.unavailableDuplicates ? `HIVEMIND ingest incomplete: ${result.files} files checked` : result.duplicates === result.files ? `checked ${result.files} existing files` : `HIVEMIND ingested ${result.files} files`;
     console.log(`\n${ok(`${action} → ${outcome} (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }

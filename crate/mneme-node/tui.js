@@ -319,8 +319,8 @@ function tuiProgressLine(event, spinner, cols = process.stdout.columns || 80) {
   return formatHivemindProgress({ ...event, file: shortenProgressFile(event.file, cols) }, spinner);
 }
 
-const INGEST_PHASE = { uploading: 1, queued: 2, processing: 3, mirroring: 4, purging: 5, complete: 6, duplicate: 3, pending: 6, failed: 6 };
-const INGEST_PHASE_LABEL = { uploading: 'uploading', queued: 'queued', processing: 'extracting', mirroring: 'mirroring locally', purging: 'verifying', complete: 'complete', duplicate: 'already exists', pending: 'processing later', failed: 'failed' };
+const INGEST_PHASE = { uploading: 1, queued: 2, processing: 3, mirroring: 4, purging: 5, complete: 6, duplicate: 3, unavailable: 6, pending: 6, failed: 6 };
+const INGEST_PHASE_LABEL = { uploading: 'uploading', queued: 'queued', processing: 'extracting', mirroring: 'mirroring locally', purging: 'verifying', complete: 'complete', duplicate: 'already exists', unavailable: 'duplicate unavailable to mirror', pending: 'processing later', failed: 'failed' };
 
 // A folder ingest is sequential, so make that truth visible: one durable row per file. The bar
 // represents observed lifecycle stages rather than pretending to know an extractor percentage.
@@ -971,6 +971,7 @@ async function dispatch(line, state, cfg) {
         state._ingestQueue = null;
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
+        if (result.unavailableDuplicates) notes.push(`${result.unavailableDuplicates} duplicate document(s) unavailable to mirror — server repair required`);
         if (result.pending) notes.push(`${result.pending} still processing`);
         if (result.failed) notes.push(`${result.failed} failed — see errors above`);
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
@@ -980,7 +981,7 @@ async function dispatch(line, state, cfg) {
         const outcome = ingestMode === 'evidence'
           ? `${result.chunks} local evidence segments`
           : `${result.live} memories, ${result.chunks} segments`;
-        const action = result.duplicates === result.files ? `checked ${result.files} existing files` : `ingested ${result.files} files`;
+        const action = result.unavailableDuplicates ? `incomplete: ${result.files} files checked` : result.duplicates === result.files ? `checked ${result.files} existing files` : `ingested ${result.files} files`;
         out(state, `\n${ok(`${action} → ${outcome} (${ingestMode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;

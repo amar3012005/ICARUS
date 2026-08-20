@@ -1930,6 +1930,13 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
   return stored;
 }
 
+// A duplicate response can name a document which no longer exists (or is no longer readable) in
+// the document API. It cannot be mirrored into the local shard, so it must be reported as an
+// incomplete ingest rather than as a successful per-org duplicate.
+function isInaccessibleHivemindDuplicate(error) {
+  return /^HIVEMIND documents 404:/.test(error?.message || String(error));
+}
+
 /** Upload every file under `dir` to HIVEMIND (real REST API, async job per file) instead of the
  * local engine. Returns the same shape ingestDir() does, so callers (CLI/MCP) don't need to know
  * which path ran. `files`/`chunks`/`live` come from HIVEMIND's own per-job counts, not invented
@@ -1950,6 +1957,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   let totalMemories = 0;
   let totalSegments = 0;
   let duplicates = 0;
+  let unavailableDuplicates = 0; // duplicate IDs which the server cannot supply for local mirroring
   let pending = 0; // uploaded, still processing past the poll window — not a failure
   let failed = 0; // genuinely errored (network blip, 5xx, etc.) — logged, batch keeps going
   let mirrored = 0; // segments actually written into the local .amr shard this run
@@ -1971,7 +1979,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     };
     try {
       emit({ phase: 'uploading' });
-      const job = await hivemindUploadFile(f, org, cfg, { ...opts, ingestMode });
+      let job = await hivemindUploadFile(f, org, cfg, { ...opts, ingestMode });
       if (job.duplicate) {
         duplicates++; // already ingested server-side — a skip, not a failure
         emit({ phase: 'duplicate' });
@@ -1980,9 +1988,20 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
         // from an earlier session/machine, but this shard has never seen it).
         if (mirrorLocal && job.existingDocumentId) {
           try { emit({ phase: 'mirroring' }); mirrored += await mirrorHivemindDocumentLocally(job.existingDocumentId, path.basename(f), org, cfg); }
-          catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
+          catch (e) {
+            if (!isInaccessibleHivemindDuplicate(e)) {
+              console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`);
+            } else {
+              // Do NOT falsely report a cross-org checksum record as this shard's evidence.
+              // The server's force/reprocess route is a separate lifecycle operation and must
+              // repair its unavailable remote-agent cleanup before it can be safely retried.
+              unavailableDuplicates++;
+              emit({ phase: 'unavailable' });
+            }
+          }
         }
-      } else {
+      }
+      if (!job.duplicate) {
         let result;
         try {
           emit({ phase: job.status || 'queued', jobId: job.job_id, counts: job.counts });
@@ -2036,7 +2055,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     // duplicate-document recovery branch. Keep them separate: reporting zero remote segments
     // as zero local evidence was a misleading accounting bug.
     files: files.length, chunks: mirrored, remoteSegments: totalSegments, live: totalMemories,
-    mode: ingestMode, distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages, purged,
+    mode: ingestMode, distilled: totalMemories > 0, signed: 0, duplicates, unavailableDuplicates, pending, failed, mirrored, skippedImages, purged,
   };
 }
 
@@ -2160,7 +2179,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.41';
+const ICARUS_VERSION = '0.3.42';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2240,7 +2259,7 @@ module.exports = {
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
-  hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
+  hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally, isInaccessibleHivemindDuplicate,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
   purgeHivemindDocument,
