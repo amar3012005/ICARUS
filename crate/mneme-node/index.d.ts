@@ -9,6 +9,11 @@
  */
 export declare function harnessInit(repoRoot: string, agents: Array<string>): string
 export declare function harnessDoctor(repoRoot: string): string
+/**
+ * Read and validate the repository policy in the Rust authority. The Node CLI/MCP layer may
+ * display the result, but cannot parse YAML or decide whether an invalid policy is acceptable.
+ */
+export declare function harnessPolicyCheck(repoRoot: string): string
 export declare function harnessStartTask(repoRoot: string, objective: string, contractJson: string): string
 export declare function harnessTaskStatus(repoRoot: string, taskId: string): string
 export declare function harnessTransitionTask(repoRoot: string, taskId: string, target: string): string
