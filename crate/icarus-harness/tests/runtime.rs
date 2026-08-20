@@ -452,12 +452,17 @@ fn context_includes_only_task_linked_decisions_and_verified_matching_skills() {
     fs::create_dir_all(repo.path().join(".icarus/skills")).unwrap();
     fs::write(
         repo.path().join(".icarus/skills/parser-review.json"),
-        r#"{"state":"active","task_types":["code_change"],"file_patterns":["src/**"],"verification":{"status":"verified"},"instructions":"Run parser regression tests."}"#,
+        r#"{"state":"active","task_types":["code_change"],"file_patterns":["src/**"],"proof_expires_at":"2099-01-01T00:00:00Z","verification":{"status":"verified"},"instructions":"Run parser regression tests."}"#,
     )
     .unwrap();
     fs::write(
         repo.path().join(".icarus/skills/unverified.json"),
         r#"{"state":"proposed","task_types":["code_change"],"file_patterns":["src/**"],"verification":{"status":"unverified"},"instructions":"Must not enter context."}"#,
+    )
+    .unwrap();
+    fs::write(
+        repo.path().join(".icarus/skills/unscoped.json"),
+        r#"{"state":"active","verification":{"status":"verified"},"instructions":"Must not enter context without an explicit scope."}"#,
     )
     .unwrap();
     let mut scoped_contract = contract();
@@ -1055,6 +1060,9 @@ fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
         verification_steps: vec!["test".into()],
         source_tasks: vec![task.task_id],
         decision_references: vec![],
+        task_types: vec!["implementation".into()],
+        file_patterns: vec!["src/**".into()],
+        proof_expires_at: Some("2099-01-01T00:00:00Z".into()),
         risk: "low".into(),
         owner: "owner".into(),
         version: 0,
@@ -1137,6 +1145,9 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
         verification_steps: vec!["test".into()],
         source_tasks: sources,
         decision_references: vec![],
+        task_types: vec!["implementation".into()],
+        file_patterns: vec!["src/**".into()],
+        proof_expires_at: Some("2099-01-01T00:00:00Z".into()),
         risk: "low".into(),
         owner: "owner".into(),
         version: 0,
@@ -1186,6 +1197,9 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
         verification_steps: vec!["receipt review".into()],
         source_tasks: vec![source],
         decision_references: vec![],
+        task_types: vec!["implementation".into()],
+        file_patterns: vec!["src/**".into()],
+        proof_expires_at: Some("2099-01-01T00:00:00Z".into()),
         risk: "deploy".into(),
         owner: "owner".into(),
         version: 0,

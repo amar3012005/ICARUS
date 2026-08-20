@@ -429,6 +429,18 @@ pub struct HarnessSkill {
     pub source_tasks: Vec<String>,
     #[serde(default)]
     pub decision_references: Vec<String>,
+    /// Explicit task classifiers this procedure may influence. Empty means it is not eligible
+    /// for managed context; broad skills must still state their intended task classes.
+    #[serde(default)]
+    pub task_types: Vec<String>,
+    /// Repository-relative path globs that bound where this procedure applies. Empty means it
+    /// is not eligible for managed context.
+    #[serde(default)]
+    pub file_patterns: Vec<String>,
+    /// RFC3339 proof expiry. Missing or expired proof leaves a record auditable but ineligible
+    /// for a new managed context until it has been re-evaluated and promoted again.
+    #[serde(default)]
+    pub proof_expires_at: Option<String>,
     pub risk: String,
     pub owner: String,
     pub version: u32,
@@ -2166,6 +2178,17 @@ fn skill_contains_secret(skill: &HarnessSkill) -> bool {
     .any(|needle| material.contains(needle))
 }
 
+fn skill_proof_is_current(skill: &Value) -> bool {
+    skill
+        .get("proof_expires_at")
+        .and_then(Value::as_str)
+        .and_then(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(|expiry| expiry > time::OffsetDateTime::now_utc())
+        .unwrap_or(false)
+}
+
 fn proposed_skill_path(root: &Path, skill_id: &str) -> PathBuf {
     runtime_root(root)
         .join("skills/proposed")
@@ -2283,11 +2306,18 @@ pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<Harnes
     if !skill_id_valid(&skill.id)
         || skill.instructions.trim().is_empty()
         || skill.source_tasks.is_empty()
+        || skill.task_types.is_empty()
+        || skill.file_patterns.is_empty()
     {
         return Err(HarnessError::invalid(
-            "skill requires a safe id, instructions, and sealed source task",
+            "skill requires a safe id, instructions, sealed source tasks, task_types, and file_patterns",
         ));
     }
+    let proof_expiry = skill
+        .proof_expires_at
+        .as_deref()
+        .ok_or_else(|| HarnessError::invalid("skill requires an RFC3339 proof expiry"))?;
+    parse_future_expiry(proof_expiry)?;
     if skill_contains_secret(&skill) {
         return Err(HarnessError::invalid(
             "skill candidate appears to contain a secret",
@@ -2371,6 +2401,7 @@ pub fn promote_skill(
             "approval_id": owner_approval,
             "source_task_count": skill.source_tasks.len(),
             "successful_native_replay_count": successful_replays.len(),
+            "proof_expires_at": skill.proof_expires_at,
             "evaluation_receipts": evaluations.iter().filter(|evaluation| evaluation.status == "pass").map(|evaluation| format!(".icarus/runtime/skills/evaluations/{}/{}.json", skill.id, evaluation.replay_task_id)).collect::<Vec<_>>(),
         }
     });
@@ -2944,17 +2975,15 @@ fn normalized_pattern_prefix(pattern: &str) -> &str {
 
 fn skills_match_contract(skill: &Value, contract: &TaskContract) -> bool {
     let types = string_list(skill.get("task_types"));
-    if !types.is_empty() {
-        let Some(task_type) = contract.task_type.as_deref() else {
-            return false;
-        };
-        if !types.iter().any(|kind| kind == task_type) {
-            return false;
-        }
+    let Some(task_type) = contract.task_type.as_deref() else {
+        return false;
+    };
+    if types.is_empty() || !types.iter().any(|kind| kind == task_type) {
+        return false;
     }
     let patterns = string_list(skill.get("file_patterns"));
-    patterns.is_empty()
-        || patterns.iter().any(|skill_pattern| {
+    !patterns.is_empty()
+        && patterns.iter().any(|skill_pattern| {
             let skill_prefix = normalized_pattern_prefix(skill_pattern);
             contract.allowed_paths.iter().any(|allowed| {
                 let allowed_prefix = normalized_pattern_prefix(allowed);
@@ -2991,7 +3020,11 @@ fn active_verified_skills(root: &Path, contract: &TaskContract) -> Vec<(String, 
                 .and_then(|verification| verification.get("status"))
                 .and_then(Value::as_str)
                 == Some("verified");
-            if active && verified && skills_match_contract(&skill, contract) {
+            if active
+                && verified
+                && skill_proof_is_current(&skill)
+                && skills_match_contract(&skill, contract)
+            {
                 Some((
                     path.strip_prefix(root)
                         .unwrap_or(&path)
