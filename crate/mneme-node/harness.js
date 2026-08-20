@@ -41,6 +41,14 @@ function resumeTask(repoRoot, taskId) {
   return invoke('harnessResumeTask', [repoRoot, taskId]);
 }
 
+function amendTaskContract(repoRoot, taskId, contract, reason, approvalId) {
+  return invoke('harnessAmendTaskContract', [repoRoot, taskId, JSON.stringify(contract), reason, approvalId]);
+}
+
+function checkpointTask(repoRoot, taskId, phase, input) {
+  return invoke('harnessCheckpointTask', [repoRoot, taskId, phase, JSON.stringify(input)]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -56,6 +64,8 @@ module.exports = {
   taskStatus,
   transitionTask,
   resumeTask,
+  amendTaskContract,
+  checkpointTask,
   authorizeAction,
   __setNativeHarnessBridgeForTest,
 };

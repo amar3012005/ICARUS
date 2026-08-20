@@ -141,8 +141,8 @@ function cmdTask(flags) {
   const repo = flags.repo || process.cwd();
   const harness = require('./harness.js');
   if (subcommand === 'start') {
-    const objective = taskId;
-    if (!objective || !flags.contract) throw new Error('usage: icarus task start <objective> --contract <contract.json> [--repo <dir>]');
+    const objective = flags.objective || taskId;
+    if (!objective || !flags.contract) throw new Error('usage: icarus task start --objective <text> --contract <contract.json> [--repo <dir>]');
     let contract;
     try { contract = JSON.parse(fs.readFileSync(flags.contract, 'utf8')); } catch (error) { throw new Error(`cannot read task contract ${flags.contract}: ${error.message}`); }
     const task = harness.startTask(repo, { objective, contract });
@@ -168,6 +168,24 @@ function cmdTask(flags) {
     console.log(ok(`${c.path(task.task_id)} → ${task.status}`));
     return;
   }
+  if (subcommand === 'amend') {
+    if (!flags.contract || !flags.reason) throw new Error('usage: icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>] [--repo <dir>]');
+    let contract;
+    try { contract = JSON.parse(fs.readFileSync(flags.contract, 'utf8')); } catch (error) { throw new Error(`cannot read task contract ${flags.contract}: ${error.message}`); }
+    const task = harness.amendTaskContract(repo, taskId, contract, flags.reason, flags.approval);
+    console.log(ok(`${c.path(task.task_id)} contract amended to v${task.contract_version}`));
+    return;
+  }
+  if (subcommand === 'checkpoint') {
+    if (!flags.phase) throw new Error('usage: icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>] [--repo <dir>]');
+    let input = {};
+    if (flags.input) {
+      try { input = JSON.parse(fs.readFileSync(flags.input, 'utf8')); } catch (error) { throw new Error(`cannot read checkpoint input ${flags.input}: ${error.message}`); }
+    }
+    const checkpoint = harness.checkpointTask(repo, taskId, flags.phase, input);
+    console.log(ok(`checkpoint ${checkpoint.sequence} · ${checkpoint.phase} · ${checkpoint.git_sha || 'no git HEAD'}`));
+    return;
+  }
   if (subcommand === 'authorize') {
     if (!flags.kind) throw new Error('usage: icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]');
     const decision = harness.authorizeAction(repo, taskId, { kind: flags.kind, path: flags.path });
@@ -175,7 +193,7 @@ function cmdTask(flags) {
     if (!decision.allowed) process.exitCode = 3;
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|authorize>');
+  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|authorize>');
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -931,10 +949,12 @@ async function main() {
                                         calls are made; existing graph data is copied safely.
   icarus doctor [--repo <dir>]          verify the harness manifest, runtime, event integrity,
                                         graph migration state, and available agent adapters.
-  icarus task start <objective> --contract <contract.json> [--repo <dir>]
+  icarus task start --objective <text> --contract <contract.json> [--repo <dir>]
                                         create a Rust-governed task with an immutable v1 contract.
   icarus task <status|resume> <TASK-ID> [--repo <dir>]
   icarus task transition <TASK-ID> <state> [--repo <dir>]
+  icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
+  icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
                                         inspect, resume, transition, or ask the Rust authority
                                         whether a scoped action is allowed. No LLM is invoked.

@@ -100,6 +100,44 @@ pub fn harness_resume_task(repo_root: String, task_id: String) -> Result<String>
 }
 
 #[napi]
+pub fn harness_amend_task_contract(
+    repo_root: String,
+    task_id: String,
+    contract_json: String,
+    reason: String,
+    approval_id: Option<String>,
+) -> Result<String> {
+    let contract = serde_json::from_str(&contract_json)
+        .map_err(|error| Error::from_reason(format!("invalid task contract JSON: {error}")))?;
+    let task = harness::amend_task_contract(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        contract,
+        reason,
+        approval_id,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_checkpoint_task(
+    repo_root: String,
+    task_id: String,
+    phase: String,
+    input_json: String,
+) -> Result<String> {
+    let input = serde_json::from_str(&input_json)
+        .map_err(|error| Error::from_reason(format!("invalid checkpoint input JSON: {error}")))?;
+    let checkpoint =
+        harness::checkpoint_task(std::path::Path::new(&repo_root), &task_id, phase, input)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(checkpoint).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_authorize_action(
     repo_root: String,
     task_id: String,

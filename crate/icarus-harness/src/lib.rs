@@ -171,6 +171,7 @@ pub struct TaskRecord {
     pub objective: String,
     pub status: String,
     pub contract_version: u32,
+    pub contract_digest: String,
     pub contract: TaskContract,
     pub execution_id: String,
     pub previous_execution_id: Option<String>,
@@ -195,6 +196,25 @@ impl Action {
 pub struct Authorization {
     pub allowed: bool,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub sequence: u64,
+    pub phase: String,
+    pub git_sha: Option<String>,
+    pub dirty_state_fingerprint: String,
+    pub files_touched: Vec<String>,
+    pub graph_version: Option<String>,
+    pub context_pack_hash: Option<String>,
+    pub budget_consumption: Value,
+    pub open_risks: Value,
+    pub next_valid_action: Option<String>,
+    pub input: Value,
 }
 
 fn sha256(value: &[u8]) -> String {
@@ -456,6 +476,23 @@ fn task_path(root: &Path, task_id: &str) -> Result<PathBuf> {
     checked_runtime_path(root, &format!("tasks/{task_id}/task.json"))
 }
 
+fn contract_path(root: &Path, task_id: &str, version: u32) -> Result<PathBuf> {
+    if version == 0 {
+        return Err(HarnessError::invalid("contract version must be positive"));
+    }
+    checked_runtime_path(root, &format!("tasks/{task_id}/contract.v{version}.json"))
+}
+
+fn checkpoints_path(root: &Path, task_id: &str) -> Result<PathBuf> {
+    checked_runtime_path(root, &format!("tasks/{task_id}/checkpoints.jsonl"))
+}
+
+fn contract_digest(contract: &TaskContract) -> Result<String> {
+    Ok(sha256(
+        stable_json(&serde_json::to_value(contract)?)?.as_bytes(),
+    ))
+}
+
 fn task_execution_id(task_id: &str) -> String {
     let material = format!(
         "{task_id}:{}:{}",
@@ -529,12 +566,18 @@ pub fn start_task(
         objective,
         status: "created".into(),
         contract_version: 1,
+        contract_digest: String::new(),
         contract,
         execution_id: String::new(),
         previous_execution_id: None,
     };
     let mut task = task;
     task.execution_id = task_execution_id(&task.task_id);
+    task.contract_digest = contract_digest(&task.contract)?;
+    atomic_write(
+        &contract_path(&root, &task.task_id, task.contract_version)?,
+        format!("{}\n", serde_json::to_string_pretty(&task.contract)?).as_bytes(),
+    )?;
     save_task(&root, &task)?;
     append_event(
         &root,
@@ -559,7 +602,26 @@ pub fn task_status(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
         )));
     }
     let task: TaskRecord = serde_json::from_reader(File::open(path)?)?;
-    validate_contract(&task.contract)?;
+    let path = contract_path(&root, task_id, task.contract_version)?;
+    if !path.exists() {
+        return Err(HarnessError::invalid(format!(
+            "task `{task_id}` is missing immutable contract v{}",
+            task.contract_version
+        )));
+    }
+    let contract: TaskContract = serde_json::from_reader(File::open(path)?)?;
+    validate_contract(&contract)?;
+    let actual_digest = contract_digest(&contract)?;
+    if actual_digest != task.contract_digest {
+        return Err(HarnessError::invalid(format!(
+            "task `{task_id}` contract digest mismatch; runtime history was modified"
+        )));
+    }
+    if contract != task.contract {
+        return Err(HarnessError::invalid(format!(
+            "task `{task_id}` current snapshot disagrees with its immutable contract"
+        )));
+    }
     Ok(task)
 }
 
@@ -633,6 +695,19 @@ pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
             task.status
         )));
     }
+    if let Some(checkpoint) = read_checkpoints(&root, task_id)?.last() {
+        let current_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+        let current_fingerprint = sha256(current_status.as_bytes());
+        let current_sha = git_output(&root, &["rev-parse", "HEAD"]);
+        if checkpoint.dirty_state_fingerprint != current_fingerprint
+            || checkpoint.git_sha != current_sha
+        {
+            return Err(HarnessError::invalid(format!(
+                "worktree divergence detected since checkpoint {}; inspect the repository and create a new checkpoint before resuming",
+                checkpoint.sequence
+            )));
+        }
+    }
     let previous_execution_id = task.execution_id.clone();
     task.previous_execution_id = Some(previous_execution_id.clone());
     task.execution_id = task_execution_id(&task.task_id);
@@ -649,6 +724,191 @@ pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
         },
     )?;
     Ok(task)
+}
+
+/// Creates a new immutable contract version. Once a task has begun executing, a configured
+/// approval reference is mandatory; callers cannot silently replace its governing scope.
+pub fn amend_task_contract(
+    repo_root: &Path,
+    task_id: &str,
+    contract: TaskContract,
+    reason: impl Into<String>,
+    approval_id: Option<String>,
+) -> Result<TaskRecord> {
+    let root = canonical_root(repo_root)?;
+    validate_contract(&contract)?;
+    let reason = reason.into();
+    if reason.trim().is_empty() {
+        return Err(HarnessError::invalid(
+            "contract amendment requires an attributable reason",
+        ));
+    }
+    let mut task = task_status(&root, task_id)?;
+    if matches!(task.status.as_str(), "sealed" | "failed") {
+        return Err(HarnessError::invalid("cannot amend a terminal task"));
+    }
+    let approval_missing = match approval_id.as_deref() {
+        Some(reference) => reference.is_empty(),
+        None => true,
+    };
+    if matches!(
+        task.status.as_str(),
+        "executing" | "verifying" | "waiting_for_approval"
+    ) && approval_missing
+    {
+        return Err(HarnessError::invalid(
+            "amending an executing contract requires an approval reference",
+        ));
+    }
+    let previous_version = task.contract_version;
+    task.contract_version += 1;
+    task.contract = contract;
+    task.contract_digest = contract_digest(&task.contract)?;
+    atomic_write(
+        &contract_path(&root, task_id, task.contract_version)?,
+        format!("{}\n", serde_json::to_string_pretty(&task.contract)?).as_bytes(),
+    )?;
+    save_task(&root, &task)?;
+    write_snapshot(
+        &root,
+        &format!("state/evidence-invalidated-{task_id}.json"),
+        json!({
+            "task_id": task_id, "previous_contract_version": previous_version, "current_contract_version": task.contract_version,
+            "reason": reason, "approval_id": approval_id,
+        }),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "contract_amended".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: json!({"previous_contract_version": previous_version, "contract_version": task.contract_version, "contract_digest": task.contract_digest, "reason": reason, "approval_id": approval_id}),
+        },
+    )?;
+    Ok(task)
+}
+
+/// Captures machine-derived workspace evidence plus agent-supplied structured progress. The
+/// harness never writes a plan or summary; it only persists what the agent submitted and labels
+/// the repository state in which that claim was made.
+pub fn checkpoint_task(
+    repo_root: &Path,
+    task_id: &str,
+    phase: impl Into<String>,
+    input: Value,
+) -> Result<Checkpoint> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if matches!(task.status.as_str(), "sealed" | "failed") {
+        return Err(HarnessError::invalid("cannot checkpoint a terminal task"));
+    }
+    let phase = phase.into();
+    if phase.trim().is_empty() {
+        return Err(HarnessError::invalid("checkpoint phase cannot be empty"));
+    }
+    if !input.is_object() {
+        return Err(HarnessError::invalid(
+            "checkpoint input must be a JSON object",
+        ));
+    }
+    let existing = read_checkpoints(&root, task_id)?;
+    let status = git_output(&root, &["status", "--porcelain=v1"]);
+    let files_touched = status
+        .as_deref()
+        .map(parse_status_paths)
+        .unwrap_or_default();
+    let dirty_state_fingerprint = sha256(status.unwrap_or_default().as_bytes());
+    let checkpoint = Checkpoint {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        sequence: existing.len() as u64 + 1,
+        phase,
+        git_sha: git_output(&root, &["rev-parse", "HEAD"]),
+        dirty_state_fingerprint,
+        files_touched,
+        graph_version: graph_digest(&root),
+        context_pack_hash: input
+            .get("context_pack_hash")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        budget_consumption: input
+            .get("budget_consumption")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        open_risks: input
+            .get("open_risks")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        next_valid_action: input
+            .get("next_valid_action")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        input,
+    };
+    let path = checkpoints_path(&root, task_id)?;
+    fs::create_dir_all(path.parent().unwrap())?;
+    let mut log = OpenOptions::new().append(true).create(true).open(path)?;
+    writeln!(log, "{}", serde_json::to_string(&checkpoint)?)?;
+    log.sync_all()?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "checkpoint".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: json!({"checkpoint_sequence": checkpoint.sequence, "phase": checkpoint.phase, "dirty_state_fingerprint": checkpoint.dirty_state_fingerprint, "git_sha": checkpoint.git_sha}),
+        },
+    )?;
+    Ok(checkpoint)
+}
+
+fn read_checkpoints(root: &Path, task_id: &str) -> Result<Vec<Checkpoint>> {
+    let path = checkpoints_path(root, task_id)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    fs::read_to_string(path)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(HarnessError::from))
+        .collect()
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.trim().to_owned())
+}
+
+fn parse_status_paths(status: &str) -> Vec<String> {
+    status
+        .lines()
+        .filter_map(|line| line.get(3..))
+        .map(|path| {
+            path.rsplit_once(" -> ")
+                .map(|(_, new)| new)
+                .unwrap_or(path)
+                .to_owned()
+        })
+        .collect()
+}
+
+fn graph_digest(root: &Path) -> Option<String> {
+    fs::read(runtime_root(root).join("graph/graph.db"))
+        .ok()
+        .map(|bytes| sha256(&bytes))
 }
 
 pub fn authorize_action(repo_root: &Path, task_id: &str, action: Action) -> Result<Authorization> {

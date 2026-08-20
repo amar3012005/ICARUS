@@ -1,7 +1,7 @@
 use icarus_harness::{
-    append_event, authorize_action, doctor, init, read_snapshot, resume_task, start_task,
-    task_status, transition_task, verify_event_chain, write_snapshot, Action, EventInput,
-    InitOptions, TaskContract,
+    amend_task_contract, append_event, authorize_action, checkpoint_task, doctor, init,
+    read_snapshot, resume_task, start_task, task_status, transition_task, verify_event_chain,
+    write_snapshot, Action, EventInput, InitOptions, TaskContract,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -197,4 +197,67 @@ fn doctor_detects_dead_stale_locks_without_flagging_a_live_writer() {
         .checks
         .iter()
         .any(|check| check.id == "stale_locks" && check.status == "fail"));
+}
+
+#[test]
+fn amendments_preserve_contract_history_and_require_approval_after_execution() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "amend scope", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let mut amended = contract();
+    amended.allowed_paths.push("tests/**".into());
+    assert!(amend_task_contract(
+        repo.path(),
+        &task.task_id,
+        amended.clone(),
+        "need coverage",
+        None
+    )
+    .is_err());
+    let changed = amend_task_contract(
+        repo.path(),
+        &task.task_id,
+        amended,
+        "need coverage",
+        Some("APPROVAL-1".into()),
+    )
+    .unwrap();
+    assert_eq!(changed.contract_version, 2);
+    assert!(repo
+        .path()
+        .join(format!(
+            ".icarus/runtime/tasks/{}/contract.v1.json",
+            task.task_id
+        ))
+        .exists());
+    assert!(repo
+        .path()
+        .join(format!(
+            ".icarus/runtime/tasks/{}/contract.v2.json",
+            task.task_id
+        ))
+        .exists());
+}
+
+#[test]
+fn checkpoints_capture_worktree_fingerprint_and_agent_supplied_progress() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "capture progress", contract()).unwrap();
+    let checkpoint = checkpoint_task(repo.path(), &task.task_id, "planning", serde_json::json!({
+        "open_risks": ["needs review"], "next_valid_action": "implement", "budget_consumption": {"tokens": 50}
+    })).unwrap();
+    assert_eq!(checkpoint.sequence, 1);
+    assert_eq!(checkpoint.phase, "planning");
+    assert_eq!(checkpoint.next_valid_action.as_deref(), Some("implement"));
+    assert!(repo
+        .path()
+        .join(format!(
+            ".icarus/runtime/tasks/{}/checkpoints.jsonl",
+            task.task_id
+        ))
+        .exists());
 }
