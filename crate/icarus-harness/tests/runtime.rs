@@ -85,6 +85,24 @@ fn init_is_idempotent_and_creates_a_tracked_contract() {
 }
 
 #[test]
+fn init_safely_retries_a_legacy_graph_copy_after_manifest_creation() {
+    let repo = repo();
+    let legacy = repo.path().join(".icarus-graph/graph.db");
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(&legacy, b"legacy graph fixture").unwrap();
+    let first = init(repo.path(), InitOptions::default()).unwrap();
+    assert!(first.graph_migrated);
+    let runtime = repo.path().join(".icarus/runtime/graph/graph.db");
+    assert_eq!(fs::read(&runtime).unwrap(), b"legacy graph fixture");
+    fs::remove_file(&runtime).unwrap();
+    let retried = init(repo.path(), InitOptions::default()).unwrap();
+    assert!(!retried.created);
+    assert!(retried.graph_migrated);
+    assert!(legacy.exists());
+    assert_eq!(fs::read(&runtime).unwrap(), b"legacy graph fixture");
+}
+
+#[test]
 fn malformed_repository_policy_fails_closed_and_doctor_reports_it() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();

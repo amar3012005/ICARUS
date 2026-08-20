@@ -1041,15 +1041,33 @@ pub fn load_manifest(repo_root: &Path) -> Result<Manifest> {
     validate_manifest(serde_yaml::from_reader(File::open(path)?)?)
 }
 
+/// Copy, never move, the v0.3 graph into the harness runtime. This is deliberately safe to run
+/// on every init/migration attempt: a complete runtime graph wins, while the legacy source is
+/// retained so an interrupted upgrade cannot erase the user's only index.
+fn migrate_legacy_graph(root: &Path) -> Result<bool> {
+    let legacy_graph = root.join(".icarus-graph/graph.db");
+    let runtime_graph = runtime_root(root).join("graph/graph.db");
+    if !legacy_graph.exists() || runtime_graph.exists() {
+        return Ok(false);
+    }
+    let target_parent = runtime_graph
+        .parent()
+        .ok_or_else(|| HarnessError::invalid("runtime graph has no parent directory"))?;
+    fs::create_dir_all(target_parent)?;
+    fs::copy(&legacy_graph, &runtime_graph)?;
+    Ok(true)
+}
+
 pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
     let root = canonical_root(repo_root)?;
     let manifest_file = manifest_path(&root);
     if manifest_file.exists() {
         ensure_schema_documents(&root)?;
+        let graph_migrated = migrate_legacy_graph(&root)?;
         return Ok(InitResult {
             created: false,
             manifest: load_manifest(&root)?,
-            graph_migrated: false,
+            graph_migrated,
         });
     }
     let remote = remote_url(&root);
@@ -1082,14 +1100,7 @@ pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
     atomic_write(&runtime_root(&root).join(".gitignore"), b"*\n!.gitignore\n")?;
     ensure_root_gitignore(&root)?;
 
-    let legacy_graph = root.join(".icarus-graph/graph.db");
-    let runtime_graph = runtime_root(&root).join("graph/graph.db");
-    let graph_migrated = legacy_graph.exists() && !runtime_graph.exists();
-    if graph_migrated {
-        let target_parent = runtime_graph.parent().unwrap();
-        fs::create_dir_all(target_parent)?;
-        fs::copy(&legacy_graph, &runtime_graph)?;
-    }
+    let graph_migrated = migrate_legacy_graph(&root)?;
     Ok(InitResult {
         created: true,
         manifest,
