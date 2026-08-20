@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain } = require('../../harness.js');
+const { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor } = require('../../harness.js');
 
 function tmpRepo() {
   const repo = mkdtempSync(join(tmpdir(), 'icarus-harness-'));
@@ -71,5 +71,23 @@ test('runtime events form a tamper-evident hash chain', () => {
     const result = verifyEventChain(repo, manifest.repo_id);
     assert.equal(result.valid, false);
     assert.match(result.issues[0], /hash mismatch/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('doctor reports an actionable healthy baseline, then exposes tampered runtime history', () => {
+  const repo = tmpRepo();
+  try {
+    const { manifest } = initHarness(repo);
+    const clean = doctor(repo);
+    assert.equal(clean.healthy, true);
+    assert.equal(clean.repo_id, manifest.repo_id);
+    assert.ok(clean.checks.some((check) => check.id === 'runtime_writable' && check.status === 'pass'));
+
+    appendRuntimeEvent(repo, { execution_id: 'exec-1', task_id: 'TASK-1', event_type: 'created' });
+    const eventFile = join(repo, '.icarus', 'runtime', 'logs', 'events.jsonl');
+    writeFileSync(eventFile, readFileSync(eventFile, 'utf8').replace('exec-1', 'exec-2'));
+    const tampered = doctor(repo);
+    assert.equal(tampered.healthy, false);
+    assert.ok(tampered.checks.some((check) => check.id === 'event_chain' && check.status === 'fail'));
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

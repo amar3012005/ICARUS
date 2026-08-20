@@ -124,6 +124,16 @@ async function cmdHarness(flags) {
   }
 }
 
+function cmdDoctor(flags) {
+  const report = require('./harness.js').doctor(flags.repo || process.cwd());
+  console.log(`\n${heading('ICARUS Harness doctor')}\n`);
+  for (const check of report.checks) {
+    const marker = check.status === 'pass' ? c.success('✓') : check.status === 'warn' ? c.command('!') : c.error('✗');
+    console.log(`  ${marker} ${c.bold(check.id.padEnd(18))} ${check.detail}`);
+  }
+  if (!report.healthy) throw new Error(`harness doctor found ${report.issues.length} blocking issue(s)`);
+}
+
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
 // connection state. Real reason, not a style choice: an actual test session against a real
 // HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
@@ -783,6 +793,7 @@ async function main() {
         break;
       }
       case 'harness': await cmdHarness(flags); break;
+      case 'doctor': cmdDoctor(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -873,6 +884,8 @@ async function main() {
                                         initialize the deterministic repository harness: tracked
                                         manifest/policy/schemas plus ignored runtime state. No LLM
                                         calls are made; existing graph data is copied safely.
+  icarus doctor [--repo <dir>]          verify the harness manifest, runtime, event integrity,
+                                        graph migration state, and available agent adapters.
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too

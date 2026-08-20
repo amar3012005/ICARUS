@@ -197,4 +197,47 @@ function verifyEventChain(repoRoot, expectedRepoId) {
   return { valid: issues.length === 0, events: lines.length, issues };
 }
 
-module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, parseManifest, MANIFEST_VERSION };
+function doctor(repoRoot) {
+  const checks = [];
+  let manifest;
+  try {
+    manifest = loadManifest(repoRoot);
+    checks.push({ id: 'manifest', status: 'pass', detail: `schema v${manifest.schema_version}; ${manifest.repo_id}` });
+  } catch (error) {
+    checks.push({ id: 'manifest', status: 'fail', detail: error.message });
+    return { healthy: false, repo_id: null, checks, issues: [error.message] };
+  }
+
+  const runtime = path.join(repoRoot, RUNTIME_DIR);
+  try {
+    fs.mkdirSync(runtime, { recursive: true });
+    const probe = path.join(runtime, `.write-probe-${process.pid}-${crypto.randomUUID()}`);
+    fs.writeFileSync(probe, 'ok', { mode: 0o600 });
+    fs.unlinkSync(probe);
+    checks.push({ id: 'runtime_writable', status: 'pass', detail: runtime });
+  } catch (error) {
+    checks.push({ id: 'runtime_writable', status: 'fail', detail: error.message });
+  }
+
+  const chain = verifyEventChain(repoRoot, manifest.repo_id);
+  checks.push({ id: 'event_chain', status: chain.valid ? 'pass' : 'fail', detail: chain.valid ? `${chain.events} event(s) verified` : chain.issues.join('; ') });
+
+  const runtimeGraph = path.join(repoRoot, RUNTIME_DIR, 'graph', 'graph.db');
+  const legacyGraph = path.join(repoRoot, '.icarus-graph', 'graph.db');
+  checks.push({
+    id: 'graph',
+    status: fs.existsSync(runtimeGraph) ? 'pass' : 'warn',
+    detail: fs.existsSync(runtimeGraph) ? 'runtime graph present' : (fs.existsSync(legacyGraph) ? 'legacy graph present; re-run harness init to migrate' : 'no graph built yet'),
+  });
+
+  const adapters = ['claude', 'codex', 'cursor', 'grok'];
+  const available = adapters.filter((adapter) => {
+    try { execFileSync('which', [adapter], { stdio: 'ignore' }); return true; } catch { return false; }
+  });
+  checks.push({ id: 'adapters', status: available.length ? 'pass' : 'warn', detail: available.length ? available.join(', ') : 'no supported coding-agent executable found on PATH' });
+
+  const issues = checks.filter((check) => check.status === 'fail').map((check) => `${check.id}: ${check.detail}`);
+  return { healthy: issues.length === 0, repo_id: manifest.repo_id, checks, issues };
+}
+
+module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, parseManifest, MANIFEST_VERSION };
