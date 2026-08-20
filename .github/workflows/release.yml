@@ -1,11 +1,13 @@
 # Build prebuilt native binaries for every platform and publish singulance-amr (+ per-platform
-# sub-packages) to npm on a vX.Y.Z tag. So `npm install singulance-amr` works on mac/linux/win
+# sub-packages) to npm on an engine-vX.Y.Z tag. CLI releases use the separate vX.Y.Z namespace,
+# so a CLI maintenance release can never accidentally republish the independent npm package.
+# `npm install singulance-amr` works on mac/linux/win
 # with zero toolchain. Standard napi-rs multi-platform flow.
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['engine-v*']
   workflow_dispatch:
 
 permissions:
@@ -59,7 +61,7 @@ jobs:
   publish:
     name: publish
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/engine-v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
