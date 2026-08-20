@@ -1124,7 +1124,13 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   }
 
   const viaHivemind = hivemindConfigured(cfg);
-  const wideK = Math.max(topK * 4, 20);
+  // The candidate budget must be meaningfully wider than the display budget. At five results,
+  // the old 20-wide floor (or 32 from topK * 4) was too shallow for a mixed evidence shard:
+  // ordinary question glue could occupy the lexical shortlist before the cross-encoder ever had
+  // the chance to score the exact subject. Keep retrieval deliberately broad for BOTH lanes, then
+  // let RRF and the narrow cross-encoder decide relevance. This is a candidate-pool budget, not
+  // a query rewrite or a forced lexical result.
+  const wideK = Math.max(topK * 16, 128);
 
   // Real vector-space parity, same reasoning as mirrorHivemindDocumentLocally(): HIVEMIND's own
   // free embeddings.singulancelabs.com service (confirmed live, unauthenticated, real bge-m3
@@ -2123,7 +2129,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.38';
+const ICARUS_VERSION = '0.3.39';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

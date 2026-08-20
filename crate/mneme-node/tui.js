@@ -289,6 +289,36 @@ function parseArgs(argStr) {
 // ── Output capture: routes dispatch()'s console.log/stdout.write into the transcript pane ──
 function out(state, text) { writeToTranscript(state, String(text) + '\n'); }
 
+// A progress tick is a terminal control update, not an incomplete chat token. In particular, it
+// arrives as one `\r...` write with no newline. Preserve that replacement meaning before the
+// generic partial-token buffering below; otherwise each tick is held until the next one and the
+// old status becomes a literal prefix of the new status (the repeated `.docxdocx...` corruption
+// seen during multi-file ingest).
+function recordProgressTick(state, chunk) {
+  const content = String(chunk).slice(1);
+  state._pendingPartial = '';
+  if (state._spinnerActive && state.transcript.length) state.transcript[state.transcript.length - 1] = content;
+  else state.transcript.push(content);
+  state._spinnerActive = true;
+}
+
+function writeProgressTick(state, chunk) {
+  recordProgressTick(state, chunk);
+  scheduleRedraw(state);
+}
+
+function shortenProgressFile(file, cols) {
+  if (!file) return file;
+  const max = Math.max(24, Math.floor((cols || 80) * 0.34));
+  if (file.length <= max) return file;
+  const left = Math.ceil((max - 1) * 0.62);
+  return `${file.slice(0, left)}…${file.slice(-(max - left - 1))}`;
+}
+
+function tuiProgressLine(event, spinner, cols = process.stdout.columns || 80) {
+  return formatHivemindProgress({ ...event, file: shortenProgressFile(event.file, cols) }, spinner);
+}
+
 /** A real y/n prompt from INSIDE a command handler (e.g. /setup asking "build the graph too?")
  * — the main stdin 'data' listener checks state._modalResolver first and routes the next
  * keypress here instead of the normal input-editing path, so no listener detach/reattach is
@@ -376,6 +406,10 @@ function markerRow(state, elapsedMs) {
 }
 
 function writeToTranscript(state, chunk) {
+  if (chunk.startsWith('\r') && !chunk.includes('\n')) {
+    writeProgressTick(state, chunk);
+    return;
+  }
   const text = (state._pendingPartial || '') + chunk;
   state._pendingPartial = '';
   const endsWithNewline = text.endsWith('\n');
@@ -829,7 +863,7 @@ async function dispatch(line, state, cfg) {
       if (viaHivemind) {
         out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(tuiProgressLine(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
@@ -1083,4 +1117,4 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run, transcriptViewport };
+module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick };
