@@ -34,7 +34,7 @@ const path = require('path');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
-  openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, chatWithOpenRouter,
+  openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, classifyChatFailure, chatWithOpenRouter,
   hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
@@ -334,6 +334,26 @@ function tuiIngestQueueLine(event, spinner, cols = process.stdout.columns || 80)
   const mark = phase === 'failed' ? c.error('✕') : terminal ? c.success('✓') : spinner;
   const file = shortenProgressFile(event.file, cols);
   return `  ${mark} [${bar}] ${event.current || event.completed || 0}/${event.total || 0}  ${INGEST_PHASE_LABEL[phase] || phase}  ${file || ''}`;
+}
+
+function chatRecallLines(hits, cols = process.stdout.columns || 80) {
+  const modeLabel = hits[0]?.rerankFailed
+    ? 'parallel hybrid · rerank fallback'
+    : hits[0]?.mode === 'hybrid-reranked' ? 'parallel hybrid · reranked'
+    : hits[0]?.mode === 'hybrid' ? 'parallel hybrid · RRF merged'
+    : hits[0]?.mode === 'lexical' ? 'lexical / BM25'
+    : 'local recall';
+  const snippetWidth = Math.max(60, Math.min(220, cols - 18));
+  return [
+    '',
+    heading(`recalled evidence · ${hits.length}`) + c.dim(`  ${modeLabel}`),
+    ...hits.map((hit, index) => {
+      const text = String(hit.text || '').replace(/\s+/g, ' ').trim();
+      const snippet = text.length > snippetWidth ? `${text.slice(0, snippetWidth - 1)}…` : text;
+      return `  ${c.dim(`[${index + 1}]`)} ${c.model(`[${Number(hit.score || 0).toFixed(4)}]`)} ${snippet}`;
+    }),
+    '',
+  ];
 }
 
 function recordIngestQueue(state, event, spinner, cols = process.stdout.columns || 80) {
@@ -900,8 +920,19 @@ async function dispatch(line, state, cfg) {
       const query = argStr.replace(/\s--org\s+[^\s]+/, '').trim();
       if (!query) { out(state, err('usage: /chat <query> [--org name]')); break; }
       out(state, c.running('  recalling local evidence and synthesizing...'));
+      const hits = await recallQuery(query, org, cfg, 8);
+      chatRecallLines(hits).forEach((line) => out(state, line));
       out(state, `\n${heading(`chat · ${resolveSynthesisModel(cfg)}`)}\n`);
-      const result = await chatWithOpenRouter(query, org, cfg, { onToken: (token) => writeToTranscript(state, token) });
+      let result;
+      try {
+        result = await chatWithOpenRouter(query, org, cfg, { hits, onToken: (token) => writeToTranscript(state, token) });
+      } catch (e) {
+        const failure = classifyChatFailure(e);
+        out(state, '');
+        out(state, err(failure.message));
+        out(state, c.dim(`  synthesis outcome: ${failure.kind}`));
+        break;
+      }
       // Flush the final partial token buffer before printing the grounding footer.
       out(state, '');
       out(state, c.dim(`\n  grounded in ${result.hits.length} local recall result(s); source markers [n] refer to that recalled evidence.`));
@@ -1190,4 +1221,4 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, stripAnsi };
+module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, chatRecallLines, stripAnsi };

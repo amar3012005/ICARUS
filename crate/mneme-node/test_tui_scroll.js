@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { transcriptViewport, tuiProgressLine, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, stripAnsi } = require('./tui.js');
+const { transcriptViewport, tuiProgressLine, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, chatRecallLines, stripAnsi } = require('./tui.js');
 
 const transcript = Array.from({ length: 1200 }, (_, index) => `turn-${index}`);
 const tail = transcriptViewport(transcript, { contentH: 8, cols: 80, scrollOffset: 0 });
@@ -37,4 +37,12 @@ assert.strictEqual(queueState.transcript.length, 2);
 assert.match(stripAnsi(queueState.transcript[0]), /✓.*1\/2.*complete.*first\.pdf/);
 assert.match(stripAnsi(queueState.transcript[1]), /2\/2.*extracting.*second\.pdf/);
 assert.match(stripAnsi(tuiIngestQueueLine({ total: 1, current: 1, phase: 'complete', file: 'done.pdf' }, '', 100)), /████/);
+
+const recalled = chatRecallLines([
+  { score: 0.9, text: 'Kruti is a researcher.' },
+  { score: 0.7, text: 'Kruti works on memory systems.' },
+], 80).map(stripAnsi).join('\n');
+assert.match(recalled, /recalled evidence · 2/);
+assert.match(recalled, /\[1\].*0\.9000.*Kruti is a researcher/);
+assert.match(recalled, /\[2\].*0\.7000.*Kruti works on memory systems/);
 console.log('TUI_SCROLL_OK');

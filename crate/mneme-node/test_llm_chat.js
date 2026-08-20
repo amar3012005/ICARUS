@@ -1,7 +1,7 @@
 'use strict';
 // Regression coverage for the user-facing OpenRouter model/chat layer.
 const assert = require('assert');
-const { DEFAULT_OPENROUTER_SYNTHESIS_MODEL, resolveSynthesisModel, selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel, consumeOpenRouterSse } = require('./cli-lib.js');
+const { DEFAULT_OPENROUTER_SYNTHESIS_MODEL, resolveSynthesisModel, selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel, consumeOpenRouterSse, classifyChatFailure } = require('./cli-lib.js');
 
 const models = [
   { id: 'acme/vision', name: 'Vision', architecture: { output_modalities: ['image'] }, supported_parameters: [] },
@@ -27,6 +27,7 @@ assert.strictEqual(request.stream, true);
 assert.strictEqual(request.temperature, 0.2);
 assert.deepStrictEqual(request.reasoning, { effort: 'high', exclude: true });
 assert.match(request.messages[0].content, /insufficient evidence/i);
+assert.match(request.messages[0].content, /only mention a person or allegation/i);
 assert.match(request.messages[1].content, /\[1\] Kruti is a researcher\./);
 assert.match(request.messages[1].content, /Who is Kruti\?/);
 
@@ -45,4 +46,13 @@ assert.deepStrictEqual(geminiStyle, ['Grounded', ' answer']);
 let streamError = null;
 consumeOpenRouterSse('data: {"error":{"code":429,"message":"provider capacity exhausted"},"choices":[{"delta":{"content":""},"finish_reason":"error"}]}\n\n', () => {}, (message) => { streamError = message; });
 assert.strictEqual(streamError, 'provider capacity exhausted');
+
+assert.deepStrictEqual(classifyChatFailure(new Error('OpenRouter chat stream error: Gemini blocked the request: PROHIBITED_CONTENT')), {
+  kind: 'provider-policy',
+  message: 'provider safety policy blocked synthesis — local recall completed; inspect the recalled evidence above',
+});
+assert.deepStrictEqual(classifyChatFailure(new Error('OpenRouter returned no chat content from google/gemini')), {
+  kind: 'provider-empty-response',
+  message: 'provider completed without usable text — local recall completed; try again or choose another model with /model',
+});
 console.log('LLM_CHAT_OK');
