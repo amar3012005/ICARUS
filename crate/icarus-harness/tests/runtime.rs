@@ -576,7 +576,7 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     init(
         repo.path(),
         InitOptions {
-            agents: vec!["codex".into()],
+            agents: vec!["claude".into(), "codex".into()],
         },
     )
     .unwrap();
@@ -638,6 +638,31 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     assert!(rendered_context.contains("# ICARUS context pack"));
     assert!(rendered_context.contains(&task.task_id));
     assert_eq!(prepared.context_pack_hash.len(), 64);
+    let claude_prepared = prepare_run(
+        repo.path(),
+        &task.task_id,
+        "claude".into(),
+        "isolated".into(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(claude_prepared.certification, "compatibility");
+    assert_eq!(claude_prepared.adapter_config_paths.len(), 1);
+    let mcp_config = std::path::Path::new(&claude_prepared.adapter_config_paths[0]);
+    let mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(mcp_config).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["icarus"]["command"], "icarus");
+    assert_eq!(
+        mcp["mcpServers"]["icarus"]["args"],
+        serde_json::json!(["mcp", "serve"])
+    );
+    assert!(claude_prepared.launch_arguments.windows(2).any(|pair| {
+        pair[0] == "--mcp-config" && pair[1] == claude_prepared.adapter_config_paths[0]
+    }));
+    assert!(claude_prepared
+        .launch_arguments
+        .iter()
+        .any(|argument| argument == "--strict-mcp-config"));
     assert!(repo
         .path()
         .join(".icarus/runtime/context")
