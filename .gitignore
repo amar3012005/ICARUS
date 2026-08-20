@@ -42,3 +42,6 @@ __pycache__/
 
 # icarus graph build output (native code-review-graph, per-repo local index — never committed)
 .icarus-graph/
+
+# Dev handoff notes — internal, not part of the shipped product, never committed
+DEV_NOTES/
