@@ -100,6 +100,27 @@ pub fn harness_resume_task(repo_root: String, task_id: String) -> Result<String>
 }
 
 #[napi]
+pub fn harness_prepare_run(
+    repo_root: String,
+    task_id: String,
+    agent: String,
+    workspace_mode: String,
+    acknowledge_dirty_current: bool,
+) -> Result<String> {
+    let preparation = harness::prepare_run(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        agent,
+        workspace_mode,
+        acknowledge_dirty_current,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(preparation).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_amend_task_contract(
     repo_root: String,
     task_id: String,

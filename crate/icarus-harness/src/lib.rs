@@ -185,6 +185,20 @@ pub struct TaskRecord {
     pub previous_execution_id: Option<String>,
 }
 
+/// A Rust-authorized launch workspace. Adapters receive this value but do not choose the task
+/// scope, workspace, or compatibility claim themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RunPreparation {
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub workspace_mode: String,
+    pub worktree_id: String,
+    pub workspace_path: String,
+    pub compatibility_mode: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -786,6 +800,124 @@ pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
         },
     )?;
     Ok(task)
+}
+
+fn git_repository(root: &Path) -> bool {
+    Command::new("git")
+        .args([
+            "-C",
+            &root.display().to_string(),
+            "rev-parse",
+            "--is-inside-work-tree",
+        ])
+        .output()
+        .ok()
+        .is_some_and(|output| output.status.success())
+}
+
+fn managed_worktree_path(root: &Path, repo_id: &str, task_id: &str) -> PathBuf {
+    let parent = root.parent().unwrap_or(root);
+    parent.join(".icarus-worktrees").join(repo_id).join(task_id)
+}
+
+/// Prepare the workspace before an adapter is launched. Rust owns the choice of isolated versus
+/// current workspace and records it before a child process is allowed to touch source files.
+pub fn prepare_run(
+    repo_root: &Path,
+    task_id: &str,
+    agent: String,
+    workspace_mode: String,
+    acknowledge_dirty_current: bool,
+) -> Result<RunPreparation> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    if !["claude", "codex", "cursor", "grok"].contains(&agent.as_str()) {
+        return Err(HarnessError::invalid("unsupported coding-agent adapter"));
+    }
+    if !manifest.agents.is_empty() && !manifest.agents.contains(&agent) {
+        return Err(HarnessError::invalid(format!(
+            "agent `{agent}` is not enabled by this harness manifest"
+        )));
+    }
+    if !matches!(workspace_mode.as_str(), "isolated" | "current") {
+        return Err(HarnessError::invalid(
+            "workspace mode must be `isolated` or `current`",
+        ));
+    }
+    let task = task_status(&root, task_id)?;
+    if task.status != "planned" {
+        return Err(HarnessError::invalid(format!(
+            "managed run requires a planned task; current state is {}",
+            task.status
+        )));
+    }
+    let dirty = !git_output(&root, &["status", "--porcelain=v1"])
+        .unwrap_or_default()
+        .is_empty();
+    let (workspace_path, worktree_id) = if workspace_mode == "current" {
+        if dirty && !acknowledge_dirty_current {
+            return Err(HarnessError::invalid(
+                "current workspace has uncommitted changes; pass explicit acknowledgment before adopting it",
+            ));
+        }
+        (root.clone(), "current".into())
+    } else {
+        if !git_repository(&root) {
+            return Err(HarnessError::invalid(
+                "isolated managed runs require a Git repository",
+            ));
+        }
+        let path = managed_worktree_path(&root, &manifest.repo_id, task_id);
+        if !path.exists() {
+            let parent = path.parent().expect("managed worktree has a parent");
+            fs::create_dir_all(parent)?;
+            let output = Command::new("git")
+                .args([
+                    "-C",
+                    &root.display().to_string(),
+                    "worktree",
+                    "add",
+                    "--detach",
+                    &path.display().to_string(),
+                    "HEAD",
+                ])
+                .output()
+                .map_err(HarnessError::from)?;
+            if !output.status.success() {
+                return Err(HarnessError::invalid(format!(
+                    "failed to create isolated worktree: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+        }
+        (path, format!("isolated-{task_id}"))
+    };
+    let preparation = RunPreparation {
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        agent: agent.clone(),
+        workspace_mode,
+        worktree_id: worktree_id.clone(),
+        workspace_path: workspace_path.display().to_string(),
+        compatibility_mode: matches!(agent.as_str(), "cursor" | "grok"),
+    };
+    write_snapshot(
+        &root,
+        &format!("state/run-{}.json", task.task_id),
+        serde_json::to_value(&preparation)?,
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "run_prepared".into(),
+            worktree_id,
+            timestamp: None,
+            payload: serde_json::to_value(&preparation)?,
+        },
+    )?;
+    Ok(preparation)
 }
 
 /// Creates a new immutable contract version. Once a task has begun executing, a configured

@@ -41,6 +41,10 @@ function resumeTask(repoRoot, taskId) {
   return invoke('harnessResumeTask', [repoRoot, taskId]);
 }
 
+function prepareRun(repoRoot, taskId, agent, workspaceMode, acknowledgeDirtyCurrent) {
+  return invoke('harnessPrepareRun', [repoRoot, taskId, agent, workspaceMode, !!acknowledgeDirtyCurrent]);
+}
+
 function amendTaskContract(repoRoot, taskId, contract, reason, approvalId) {
   return invoke('harnessAmendTaskContract', [repoRoot, taskId, JSON.stringify(contract), reason, approvalId]);
 }
@@ -74,6 +78,7 @@ module.exports = {
   taskStatus,
   transitionTask,
   resumeTask,
+  prepareRun,
   amendTaskContract,
   checkpointTask,
   buildContext,

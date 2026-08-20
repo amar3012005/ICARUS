@@ -13,6 +13,7 @@ export declare function harnessStartTask(repoRoot: string, objective: string, co
 export declare function harnessTaskStatus(repoRoot: string, taskId: string): string
 export declare function harnessTransitionTask(repoRoot: string, taskId: string, target: string): string
 export declare function harnessResumeTask(repoRoot: string, taskId: string): string
+export declare function harnessPrepareRun(repoRoot: string, taskId: string, agent: string, workspaceMode: string, acknowledgeDirtyCurrent: boolean): string
 export declare function harnessAmendTaskContract(repoRoot: string, taskId: string, contractJson: string, reason: string, approvalId?: string | undefined | null): string
 export declare function harnessCheckpointTask(repoRoot: string, taskId: string, phase: string, inputJson: string): string
 export declare function harnessBuildContext(repoRoot: string, taskId: string, budgetTokens: number): string

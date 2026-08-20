@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const { spawnSync } = require('child_process');
 // Lazy: `mcp install`/`status`/`connect` never touch a shard, so they must not be forced to
 // load the native addon just because this file was required.
 function getMnemeStore() { return require('./index.js').MnemeStore; }
@@ -32,7 +33,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -215,6 +216,44 @@ function cmdContext(flags) {
   if (flags.format && !['json', 'markdown'].includes(flags.format)) throw new Error('--format must be json or markdown');
   if (flags.format === 'json') console.log(JSON.stringify(result.pack, null, 2));
   else console.log(result.markdown);
+}
+
+function commandOnPath(command) {
+  const locator = process.platform === 'win32' ? 'where' : 'command';
+  const args = process.platform === 'win32' ? [command] : ['-v', command];
+  return spawnSync(locator, args, { stdio: 'ignore', shell: process.platform !== 'win32' }).status === 0;
+}
+
+// The launcher does not configure, proxy, or pay for a model. It prepares a Rust-governed
+// workspace, then starts the user's already-installed coding CLI in that directory.
+function cmdRun(flags) {
+  const taskId = flags.task || flags._[0];
+  const agent = flags.agent;
+  if (!taskId || !agent) throw new Error('usage: icarus run --task <TASK-ID> --agent <claude|codex|cursor|grok> [--workspace isolated|current] [--acknowledge-dirty-current] [--dry-run] [--repo <dir>]');
+  const commands = { claude: 'claude', codex: 'codex', cursor: 'cursor', grok: 'grok' };
+  const command = commands[agent];
+  if (!command) throw new Error(`unsupported agent adapter \`${agent}\``);
+  if (!commandOnPath(command)) throw new Error(`${agent} adapter is not available on PATH (${command})`);
+  const harness = require('./harness.js');
+  const preparation = harness.prepareRun(
+    flags.repo || process.cwd(), taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
+  );
+  const label = preparation.compatibility_mode ? 'compatibility mode: policy guidance, no hard interception' : 'managed mode: task context and lifecycle gates active';
+  console.log(ok(`prepared ${c.path(preparation.task_id)} in ${c.path(preparation.workspace_path)}`));
+  console.log(c.dim(`  ${agent} · ${label}`));
+  console.log(c.dim(`  agent must call icarus_context_get before planning; task ${preparation.task_id} remains the governing contract.`));
+  if (flags['dry-run']) return;
+  const task = harness.transitionTask(flags.repo || process.cwd(), taskId, 'executing');
+  const result = spawnSync(command, [], { cwd: preparation.workspace_path, stdio: 'inherit' });
+  if (result.error) throw new Error(`failed to launch ${agent}: ${result.error.message}`);
+  if (result.status === 0) {
+    harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'verifying');
+    console.log(ok(`${c.path(task.task_id)} → verifying; run icarus task verify before sealing.`));
+  } else {
+    harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'blocked');
+    console.log(err(`${c.path(task.task_id)} blocked after ${agent} exited ${result.status ?? 'by signal'}`));
+    process.exitCode = result.status || 1;
+  }
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -879,6 +918,7 @@ async function main() {
       case 'doctor': cmdDoctor(flags); break;
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
+      case 'run': cmdRun(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
