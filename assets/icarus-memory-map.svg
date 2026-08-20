@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title description">
+  <title id="title">ICARUS memory map</title>
+  <desc id="description">A diagram showing semantic, lexical, temporal, and graph retrieval compacted into one tenant-owned AMR memory file.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#07090e"/><stop offset="1" stop-color="#10192b"/></linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2d7dff"/><stop offset="1" stop-color="#83b5ff"/></linearGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="16" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.25" fill="#79a9ff" opacity=".16"/></pattern>
+  </defs>
+  <rect width="1400" height="760" fill="url(#bg)"/><rect width="1400" height="760" fill="url(#dots)"/>
+  <path d="M0 610C280 465 448 720 690 565S1118 398 1400 574" fill="none" stroke="#2d7dff" stroke-opacity=".18" stroke-width="2"/><path d="M0 640C300 495 512 758 738 600S1094 457 1400 620" fill="none" stroke="#2d7dff" stroke-opacity=".09" stroke-width="2"/>
+  <text x="80" y="84" fill="#f5f7fb" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" letter-spacing="6">ICARUS / MEMORY MAP</text><text x="80" y="124" fill="#8f99ad" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" letter-spacing="2">ONE TENANT · ONE DURABLE FILE · NO SERVER</text>
+  <g fill="none" stroke="#5d91eb" stroke-opacity=".65" stroke-width="2"><path d="M350 252C472 252 476 304 584 340"/><path d="M350 434C472 434 476 420 584 405"/><path d="M1050 252C928 252 924 304 816 340"/><path d="M1050 434C928 434 924 420 816 405"/></g><g fill="#7caeff"><circle cx="584" cy="340" r="5"/><circle cx="584" cy="405" r="5"/><circle cx="816" cy="340" r="5"/><circle cx="816" cy="405" r="5"/></g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <g transform="translate(90 190)"><rect width="260" height="124" rx="16" fill="#111827" stroke="#355b9a"/><text x="26" y="48" fill="#f5f7fb" font-size="22" letter-spacing="2">SEMANTIC</text><text x="26" y="84" fill="#94a0b5" font-size="16">meaning / similarity</text></g>
+    <g transform="translate(90 372)"><rect width="260" height="124" rx="16" fill="#111827" stroke="#355b9a"/><text x="26" y="48" fill="#f5f7fb" font-size="22" letter-spacing="2">LEXICAL</text><text x="26" y="84" fill="#94a0b5" font-size="16">terms / BM25</text></g>
+    <g transform="translate(1050 190)"><rect width="260" height="124" rx="16" fill="#111827" stroke="#355b9a"/><text x="26" y="48" fill="#f5f7fb" font-size="22" letter-spacing="2">TEMPORAL</text><text x="26" y="84" fill="#94a0b5" font-size="16">validity / history</text></g>
+    <g transform="translate(1050 372)"><rect width="260" height="124" rx="16" fill="#111827" stroke="#355b9a"/><text x="26" y="48" fill="#f5f7fb" font-size="22" letter-spacing="2">GRAPH</text><text x="26" y="84" fill="#94a0b5" font-size="16">relationships / hops</text></g>
+  </g>
+  <g transform="translate(560 220)"><rect x="-15" y="-15" width="310" height="310" rx="42" fill="#2d7dff" opacity=".17" filter="url(#glow)"/><rect width="280" height="280" rx="34" fill="#0d1526" stroke="url(#core)" stroke-width="3"/><path d="M58 70H168L218 120V214C218 229 206 240 192 240H58C43 240 32 229 32 214V96C32 81 43 70 58 70Z" fill="#142849" stroke="#83b5ff" stroke-width="3"/><path d="M168 70V120H218" fill="none" stroke="#83b5ff" stroke-width="3"/><path d="M70 153H181M70 181H181M70 209H143" stroke="#83b5ff" stroke-width="5" stroke-linecap="round"/><text x="140" y="40" text-anchor="middle" fill="#9fc4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" letter-spacing="4">TENANT MEMORY</text><text x="140" y="272" text-anchor="middle" fill="#f5f7fb" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" letter-spacing="4">.AMR</text></g>
+  <text x="700" y="690" text-anchor="middle" fill="#d9e6ff" font-family="ui-sans-serif, system-ui, sans-serif" font-size="28">Retrieve the context an agent needs—without turning memory into another service.</text>
+</svg>

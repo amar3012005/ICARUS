@@ -385,6 +385,24 @@ function initRepoShard(repo, orgName, dim = 1024) {
   return { dataRoot, org: orgName };
 }
 
+/** Permanently delete an org's entire shard directory (/delete). Refuses if a genuinely
+ * different, live icarus process holds the shard open — reuses openStore()'s own retry-then-
+ * throw lock detection so this gets the exact same "find it / kill it / wait" guidance /ingest
+ * already gives on a real lock conflict, instead of a second, differently-worded message for the
+ * same underlying situation. Evicts this process's own cached handle for the org afterward (see
+ * _storeCache's own doc comment on why a handle is cached per org per process) so a later command
+ * in the SAME session doesn't reuse a handle pointing at files that no longer exist. */
+function deleteOrgShard(cfg, org) {
+  const dir = path.join(cfg.dataRoot, org);
+  if (!fs.existsSync(dir)) throw new Error(`org "${org}" has no shard at ${dir} — nothing to delete`);
+  // Throws with the standard "shard is still locked" guidance if a DIFFERENT live process holds
+  // it; if it's this same process (already cached) or nothing else has it open, this returns
+  // normally and we're clear to delete.
+  openStore(cfg, org);
+  _storeCache.delete(`${cfg.dataRoot}::${org}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 function loadCfg() {
   const repoDataRoot = findRepoIcarusDataRoot();
   try {
@@ -1761,6 +1779,20 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
 // happens ONLY against this machine's own local .amr shard, which by construction can never
 // return another tenant's data.
 
+/** Real reported bug: every org, even a brand-new one with zero memories, showed ~4.2 MB of
+ * "storage" in /status and the ingest org-picker. Root cause, confirmed by comparing `stat`'s
+ * logical size against its actual allocated blocks: shard.vec (and shard.amr) are pre-allocated
+ * via `set_len()` to a fixed 1024-slot capacity at CREATE time (see mseg/src/segment.rs's
+ * INITIAL_SLOTS), which on APFS/most filesystems creates a genuinely SPARSE file — st_size
+ * reports the full logical 4,194,304-byte capacity, but st_blocks (real allocated disk blocks)
+ * was 0 for a freshly-created, still-empty org. fs.Stats.size is the logical size; .blocks * 512
+ * is the real on-disk footprint and is what a "storage used" figure should mean. Falls back to
+ * .size on a platform/FS that doesn't populate .blocks (never worse than the old behavior, only
+ * more accurate where the field exists). */
+function realDiskBytes(stat) {
+  return (typeof stat.blocks === 'number' && stat.blocks >= 0) ? stat.blocks * 512 : stat.size;
+}
+
 function statusReport(cfg) {
   let orgs = [];
   try {
@@ -1774,7 +1806,7 @@ function statusReport(cfg) {
       const dir = path.join(cfg.dataRoot, o.name);
       let bytes = 0;
       for (const f of fs.readdirSync(dir)) {
-        try { bytes += fs.statSync(path.join(dir, f)).size; } catch (_) { /* race with a concurrent writer */ }
+        try { bytes += realDiskBytes(fs.statSync(path.join(dir, f))); } catch (_) { /* race with a concurrent writer */ }
       }
       return { org: o.name, bytesOnDisk: bytes };
     }),
@@ -1799,7 +1831,7 @@ function listOrgsWithMeta(cfg) {
       for (const f of fs.readdirSync(dir)) {
         try {
           const st = fs.statSync(path.join(dir, f));
-          bytes += st.size;
+          bytes += realDiskBytes(st); // real allocated blocks, not the sparse pre-allocated logical size
           const bt = (st.birthtimeMs && st.birthtimeMs > 0) ? st.birthtime : st.mtime;
           if (!createdAt || bt < createdAt) createdAt = bt;
         } catch (_) { /* race with a concurrent writer */ }
@@ -1840,7 +1872,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.31';
+const ICARUS_VERSION = '0.3.32';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1924,5 +1956,5 @@ module.exports = {
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
-  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard, listOrgsWithMeta,
+  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard, listOrgsWithMeta, deleteOrgShard,
 };

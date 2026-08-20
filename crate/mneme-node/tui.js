@@ -29,13 +29,15 @@
 // pushing straight into the transcript array, the same mechanism userRow/markerRow already used
 // successfully. A bare `\r`-prefixed write into that path still replaces the transcript's last
 // line instead of appending, so progress ticks still read as one evolving status line.
+const fs = require('fs');
+const path = require('path');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory, initRepoShard, listOrgsWithMeta,
+  hivemindSaveMemory, saveLocalMemory, initRepoShard, listOrgsWithMeta, deleteOrgShard,
 } = require('./cli-lib.js');
 
 // ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
@@ -169,6 +171,8 @@ const SLASH_COMMANDS = [
   { cmd: '/save', hint: '<text> [--org name] [--cloud]' },
   { cmd: '/status', hint: 'memories, evidence, relationships, shards' },
   { cmd: '/org', hint: '<name> — switch the default org for this session' },
+  { cmd: '/create', hint: '<org> <path> — new org shard rooted at that repo path' },
+  { cmd: '/delete', hint: 'pick an org and permanently delete its shard (double confirm)' },
   { cmd: '/setup', hint: '<claude|codex|cursor|--all> — register MCP + project instructions + repo shard' },
   { cmd: '/graph', hint: 'build|status|query — native symbol/call graph for this repo' },
   { cmd: '/connect', hint: 'browser sign-in to HIVEMIND' },
@@ -186,6 +190,8 @@ function printHelp(state) {
   out(state, `  ${c.command('/status')}                                          org shards + real memory/evidence/relationship counts + signing/audit`);
   out(state, `  ${c.command('/connect')}                                         browser sign-in to HIVEMIND`);
   out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
+  out(state, `  ${c.command('/create')} <org> <path>                             create a NEW org shard rooted at <path> (its own repo-local .icarus/data/<org> — this becomes that repo's org automatically, same auto-detection /setup uses).`);
+  out(state, `  ${c.command('/delete')}                                           lists every org, pick one, then a real double confirmation before permanently deleting its whole shard — refuses if another live icarus process still has it open.`);
   out(state, `  ${c.command('/setup')} <claude|codex|cursor|--all>                run from this project's own folder: registers that agent's MCP server, writes its project instruction file (CLAUDE.md/AGENTS.md/.cursor rule) with this repo's own org name, creates a real .icarus/data/<org> shard here, then offers to build the code graph too.`);
   out(state, `  ${c.command('/graph')} build|status|query [--repo <dir>]         native symbol/call graph (Tree-sitter, no Python dep) for this repo — query needs --kind <callers_of|callees_of|imports_of|find> --name <symbol>.`);
   out(state, `  ${c.command('/update')}                                          download + verify the latest release, replace this binary`);
@@ -402,19 +408,18 @@ function redraw(state) {
 
   const inputH = 3;
   const tipH = 1;
-  // Real bug caught live: the hero box (14 rows — the big ASCII logo + version/status lines) is
-  // a SPLASH, not permanent chrome — but it used to render on EVERY frame for the whole session.
-  // On a common 24-row terminal that leaves contentH = 24-14-3-1 = 6 visible transcript rows, so
-  // the scrollback window (wrapped.slice(wrapped.length - contentH)) correctly, silently discards
-  // anything older than the last ~6 lines — including a command's OWN response line, moments
-  // after it was written, with nothing wrong in the data itself (confirmed via direct instrumentation:
-  // state.transcript held the missing line the whole time; it was cut by this exact slice).
-  // Real fix: show the splash only until the user actually starts interacting (first command
-  // submitted), then drop it for the rest of the session, like a normal CLI's startup banner —
-  // not a fixed HUD that permanently eats over half of a normal-height terminal.
-  const showHero = state.history.length === 0;
-  const hero = showHero ? heroBoxLines(cfg, state, cols) : [];
-  const heroH = showHero && (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
+  // Persistent, by explicit request: the hero box (the big ASCII logo + version/status lines)
+  // stays on screen for the WHOLE session, not just the pre-first-command splash a prior fix
+  // made it. That prior fix existed because a permanent hero shrinks contentH and therefore the
+  // scrollback window — but real PageUp/PageDown/mouse-wheel scrolling exists now (state.scrollOffset,
+  // added alongside this change), so "less of it visible at once" no longer means "silently gone
+  // forever" the way it did before scrolling existed. RECENT_RAW_LINES below is bumped with a
+  // higher fixed floor for the same reason: a smaller, permanent contentH should still leave real
+  // depth to scroll back into, not just the same few screens worth. Only degrades to no hero at
+  // all on a genuinely tiny terminal (the same >=4-visible-content-row floor as before) rather
+  // than rendering a broken/negative layout.
+  const hero = heroBoxLines(cfg, state, cols);
+  const heroH = (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
   const contentH = Math.max(1, rows - heroH - dropdownH - inputH - tipH);
 
   const pending = state._pendingPartial ? [state._pendingPartial] : [];
@@ -426,7 +431,10 @@ function redraw(state) {
   // last few dozen raw lines can ever end up visible in contentH rows (wrapping only ever
   // SPLITS a line into more rows, never fewer) — slice to a bounded recent window before
   // wrapping, so redraw cost stays roughly constant regardless of how long the session has run.
-  const RECENT_RAW_LINES = Math.max(contentH * 4, 200);
+  // Floor bumped from 200 -> 800: with the hero box now persistent (shrinking contentH for the
+  // whole session, not just before the first command), a smaller contentH would otherwise also
+  // shrink the retained scrollback window right when real depth to scroll into matters most.
+  const RECENT_RAW_LINES = Math.max(contentH * 4, 800);
   const allLines = state.transcript.slice(-RECENT_RAW_LINES).concat(pending);
   const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
   // scrollOffset = wrapped rows scrolled UP from the live tail (0 = pinned to bottom, the
@@ -747,6 +755,58 @@ async function dispatch(line, state, cfg) {
       else out(state, c.dim(`current org: ${state.org}`));
       break;
     }
+    case 'create': {
+      // "the organisation is for that path root repo" -- initRepoShard() is the exact same
+      // mechanism /setup already uses to create a repo-local shard, just exposed directly with
+      // an explicit org name and an arbitrary path instead of always cwd + a derived name. Once
+      // created, findRepoIcarusDataRoot() (loadCfg's own repo-walk) picks it up automatically the
+      // next time icarus runs from inside that path -- no separate mapping to maintain.
+      const newOrg = flags._[0];
+      const repoPath = flags._[1];
+      if (!newOrg || !repoPath) { out(state, err('usage: /create <org> <path>  — creates a new org shard rooted at <path>')); break; }
+      const resolved = path.resolve(repoPath);
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) { out(state, err(`not a directory: ${resolved}`)); break; }
+      try {
+        const { dataRoot, org: createdOrg } = initRepoShard(resolved, newOrg, cfg.dim);
+        out(state, ok(`created org "${createdOrg}" rooted at ${c.path(resolved)} — shard: ${c.path(dataRoot)}. Running icarus from inside that path uses this org automatically.`));
+      } catch (e) { out(state, err(e.message || String(e))); }
+      break;
+    }
+    case 'delete': {
+      // Real double confirmation, per the exact ask ("confirm twice surely want to delete") --
+      // two SEPARATE y/n modals, the second restating the org name and byte count again rather
+      // than just re-asking the same question, so a reflexive double-Enter doesn't accidentally
+      // satisfy both checks with no real second look at what's being destroyed.
+      const orgs = listOrgsWithMeta(cfg);
+      if (!orgs.length) { out(state, err('no orgs exist yet — nothing to delete')); break; }
+      out(state, c.system('which org should be permanently deleted?'));
+      orgs.forEach((o, i) => {
+        const mb = (o.bytesOnDisk / (1024 * 1024)).toFixed(2);
+        out(state, `  ${c.command(`[${i + 1}]`)} ${c.path(o.org)}  ${c.dim(`${mb} MB`)}`);
+      });
+      out(state, c.dim('  [n] cancel'));
+      const target = await new Promise((resolve) => {
+        scheduleRedraw(state);
+        state._modalResolver = (key) => {
+          if (key === 'n' || key === 'N') { state._modalResolver = null; resolve(null); return; }
+          const n = parseInt(key, 10);
+          if (Number.isInteger(n) && n >= 1 && n <= orgs.length) { state._modalResolver = null; resolve(orgs[n - 1]); }
+        };
+      });
+      if (!target) { out(state, c.dim('  cancelled — nothing deleted')); break; }
+      const mb = (target.bytesOnDisk / (1024 * 1024)).toFixed(2);
+      const stats = richOrgStats(target.org, cfg);
+      const firstOk = await askYesNo(state, `Delete org "${target.org}" — ${mb} MB, ${stats.memories} memories, ${stats.relationships} relationships. This cannot be undone. Continue?`);
+      if (!firstOk) { out(state, c.dim('  cancelled — nothing deleted')); break; }
+      const secondOk = await askYesNo(state, `FINAL CONFIRMATION — permanently delete "${target.org}" and everything in it right now?`);
+      if (!secondOk) { out(state, c.dim('  cancelled — nothing deleted')); break; }
+      try {
+        deleteOrgShard(cfg, target.org);
+        if (state.org === target.org) state.org = 'default';
+        out(state, ok(`deleted org "${target.org}"`));
+      } catch (e) { out(state, err(e.message || String(e))); }
+      break;
+    }
     case 'connect': {
       const authUrl = process.env.HIVEMIND_URL || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
       const restUrl = process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
@@ -805,6 +865,20 @@ async function dispatch(line, state, cfg) {
       out(state, ok(`setup done for ${agents.join(', ')} — restart the agent(s) above to pick up the MCP server.`));
       const buildGraph = await askYesNo(state, 'Build the native symbol/call graph for this repo too?');
       if (buildGraph) await dispatch('/graph build', state, cfg);
+      // Real point of confusion this addresses: setup writes the project instruction file
+      // (CLAUDE.md/AGENTS.md/.cursor rule) and registers the MCP server, but neither takes
+      // effect in an agent session that's ALREADY running — a running Claude Code/Codex/Cursor
+      // session read its instructions and MCP config once, at its own startup, before any of
+      // this existed on disk. Nothing here changes that session retroactively; it has to actually
+      // restart (or a fresh one has to open) to pick up the new project instructions and the MCP
+      // server registration, after which its own baseline behavior is "brief with icarus usage"
+      // automatically -- every prompt in that session already carries the instructions this setup
+      // just wrote, with no separate step required per-conversation.
+      out(state, '');
+      out(state, heading('next step — restart required'));
+      out(state, `  The instructions and MCP registration just written only take effect in a ${c.bold('new')} agent session.`);
+      out(state, `  ${c.bold('Restart your current Claude Code / Codex / Cursor session, or open a new one')}, in this same project.`);
+      out(state, `  From then on it reads the project instructions this setup wrote and already has icarus's MCP tools registered — no per-conversation step needed, it just works from the first prompt.`);
       break;
     }
     // Parent + subcommand, matching the CLI's own `icarus graph build/status/query --repo <dir>`
