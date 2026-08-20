@@ -32,7 +32,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -56,10 +56,8 @@ function parseFlags(args) {
 // per the explicit design choice for this feature. `--local` is the escape hatch for anyone who
 // wants the local engine even with HIVEMIND connected (e.g. testing, or content that should
 // stay off a shared server). `--force` matches the real FE's own `force` field (bypass the
-// same-checksum dedup gate) — sent to match the exact real payload, though the server doesn't
-// actually read it yet (see hivemindUploadFile's doc comment for the full story: there is no
-// real "evidence vs full memory generation" request parameter on this endpoint — a fabricated
-// --full/ingestMode flag existed here earlier and did nothing server-side; removed).
+// same-checksum dedup gate). Connected ingest defaults to `ingestMode=evidence`; pass --full to
+// request the server's more expensive evidence + memory/entity generation mode.
 //
 // Default behavior when HIVEMIND-routed: the server does the chunking/OCR/extraction (real work
 // ICARUS's local engine can't do for pdf/docx/images), then the resulting segment TEXT is pulled
@@ -81,9 +79,11 @@ async function cmdIngest(flags, cfg) {
   const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
   if (skipReason) return console.log(err(skipReason));
   if (viaHivemind) {
+    const ingestMode = flags.full ? 'both' : 'evidence';
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"${flags['no-mirror'] ? '' : c.dim(' (mirroring segments into the local shard too)')}`)));
+    console.log(c.dim(`  mode: ${ingestMode === 'evidence' ? 'evidence only (fast)' : 'both (memory/entity generation)'}`));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+    const result = await hivemindIngestDir(dir, org, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
@@ -91,7 +91,8 @@ async function cmdIngest(flags, cfg) {
     if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
     if (result.purged) notes.push(`${result.purged} cloud document(s) deleted after mirroring — HIVEMIND used as extraction pipeline only`);
     if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — HIVEMIND doesn't create a fetchable document for images`);
-    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${c.bold(result.live)} memories, ${result.chunks} segments (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
+    const outcome = ingestMode === 'evidence' ? `${result.chunks} evidence segments` : `${result.live} memories, ${result.chunks} segments`;
+    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${outcome} (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }
   if (!embeddingsConfigured(cfg)) {
@@ -762,7 +763,8 @@ async function main() {
   Run "icarus" with no arguments on a real terminal for an interactive shell (/ingest, /recall,
   /status, /connect as slash commands) instead of one-shot subcommands below.
 
-  icarus ingest <dir> --org <name>     extract + embed + store a folder. If icarus connect has a
+  icarus ingest <dir> --org <name> [--full]
+                                        extract + embed + store a folder. If icarus connect has a
                                         HIVEMIND token, routes through HIVEMIND's real API
                                         instead of the local engine — accepts everything the
                                         server itself supports (pdf/docx/xlsx/pptx/images/audio),
@@ -779,6 +781,8 @@ async function main() {
                                         pre-existing duplicate found server-side is never deleted,
                                         only what this run itself created.
                                         --local forces the local .amr engine even if connected.
+                                        Connected ingest is evidence-only by default (fast; no
+                                        memory/entity generation). Pass --full for both.
                                         --force matches the real FE's own force field (bypass
                                         dedup) -- not yet read server-side, sent to match the
                                         real contract exactly.

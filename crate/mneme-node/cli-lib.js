@@ -1297,18 +1297,10 @@ function base64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-// Matches the REAL fields the real FE sends — frontend/Da-vinci's api-client.js `uploadDocument()`
-// (file, tags, containerTag, targetScope, force, async) — verified by reading that file directly,
-// not the docs page. A real, materially different finding from what ICARUS shipped with earlier
-// this cycle: `ingestMode` (evidence-vs-full, ICARUS's own --full flag) was NEVER read anywhere
-// in core/src/ for this multipart upload path — a fabricated field that did nothing server-side,
-// the whole time. The real pipeline (core/src/knowledge/kb-ingest-queue.js) always attempts full
-// ingestion; "evidence-only" is a server-computed OUTCOME label (promoted===0 && segments>0), not
-// a request parameter — there is no way to ask for evidence-only via this endpoint today. `force`
-// (bypass the same-checksum dedup gate) IS a real field the FE sends, but routes/knowledge.js's
-// handleKnowledgeUploadRoute never reads it either — sent here to match the real contract exactly
-// (so this starts working the moment the server wires it up, zero client changes needed), but
-// don't rely on it actually bypassing dedup today; it doesn't.
+// Upload contract: `ingestMode=evidence` stores retrievable lexical + semantic evidence without
+// memory/entity/relationship promotion; `both` also runs that more expensive promotion pipeline.
+// ICARUS defaults to evidence-only so bulk document ingest is fast and does not manufacture
+// memories. The user can explicitly choose `both` for a document set that merits it.
 // Exact mirror of upload-contract.js's MIME_PREFIX — the server rejects a mismatched
 // extension/content-type pair with 415 MIME_EXTENSION_MISMATCH. A real bug caught by testing an
 // actual upload: `new Blob([buf])` with no `type` sends no meaningful content-type, which the
@@ -1324,13 +1316,17 @@ const UPLOAD_MIME_BY_EXT = {
   '.m4a': 'audio/mp4',
 };
 
-async function hivemindUploadFile(filePath, org, cfg, { force = false } = {}) {
+async function hivemindUploadFile(filePath, org, cfg, { force = false, ingestMode = 'evidence' } = {}) {
+  if (ingestMode !== 'evidence' && ingestMode !== 'both') {
+    throw new Error(`invalid ingest mode "${ingestMode}" — expected evidence or both`);
+  }
   const base = hivemindApiBase(cfg);
   const buf = fs.readFileSync(filePath);
   const mime = UPLOAD_MIME_BY_EXT[path.extname(filePath).toLowerCase()];
   const form = new FormData();
   form.append('file', new Blob([buf], mime ? { type: mime } : undefined), path.basename(filePath));
   form.append('targetScope', 'personal');
+  form.append('ingestMode', ingestMode);
   form.append('tags', `icarus-org:${org}`);
   if (force) form.append('force', 'true');
   const res = await fetch(`${base}/api/knowledge/upload?async=true`, {
@@ -1927,6 +1923,8 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   let mirrored = 0; // segments actually written into the local .amr shard this run
   let purged = 0; // cloud documents (this ingest itself created) deleted after mirroring
   const purgeCloud = opts.purgeCloud !== false; // default ON — see purgeHivemindDocument's doc comment
+  const ingestMode = opts.ingestMode || 'evidence';
+  if (ingestMode !== 'evidence' && ingestMode !== 'both') throw new Error(`invalid ingest mode "${ingestMode}" — expected evidence or both`);
   let n = 0;
   let completedFiles = 0; // terminal outcomes only; a timed-out remote job is explicitly not done
   // The WHOLE per-file body is wrapped, not just the poll — a real bug, same class as the
@@ -1941,7 +1939,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     };
     try {
       emit({ phase: 'uploading' });
-      const job = await hivemindUploadFile(f, org, cfg, opts);
+      const job = await hivemindUploadFile(f, org, cfg, { ...opts, ingestMode });
       if (job.duplicate) {
         duplicates++; // already ingested server-side — a skip, not a failure
         emit({ phase: 'duplicate' });
@@ -2002,10 +2000,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   }
   return {
     files: files.length, chunks: totalSegments || totalMemories, live: totalMemories,
-    // `distilled` reflects what the server actually did (memories > 0), not a request flag —
-    // there's no real way to ask for "full" vs "evidence-only" on this endpoint (see
-    // hivemindUploadFile's own doc comment).
-    mode: 'hivemind', distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages, purged,
+    mode: ingestMode, distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages, purged,
   };
 }
 
@@ -2208,7 +2203,7 @@ module.exports = {
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,

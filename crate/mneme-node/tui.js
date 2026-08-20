@@ -217,7 +217,7 @@ function transcriptViewport(transcript, { contentH, cols, scrollOffset = 0, pend
 
 // ── Slash-command catalog (autocomplete source) ─────────────────────────────────────────────
 const SLASH_COMMANDS = [
-  { cmd: '/ingest', hint: '<dir> [--org name] [--local] [--force] [--keep-cloud]' },
+  { cmd: '/ingest', hint: '<dir> [--org name] [--full] [--local] [--force] [--keep-cloud]' },
   { cmd: '/recall', hint: '<query> [--org name] [--k 5] [--pq]' },
   { cmd: '/save', hint: '<text> [--org name] [--cloud]' },
   { cmd: '/llm-api', hint: '<openrouter-api-key> — save in macOS Keychain' },
@@ -240,7 +240,7 @@ const SLASH_COMMANDS = [
 function printHelp(state) {
   out(state, '');
   out(state, heading('Commands'));
-  out(state, `  ${c.command('/ingest')} [dir|file] [--org name] [--local] [--force] [--keep-cloud]  ingest a folder or a single file — leave the path off to open a native file/folder picker. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).`);
+  out(state, `  ${c.command('/ingest')} [dir|file] [--org name] [--full] [--local] [--force] [--keep-cloud]  ingest a folder or a single file — leave the path off to open a native file/folder picker. Connected ingest asks for evidence-only (fast, default) or both (adds memory/entity generation); --full chooses both non-interactively.`);
   out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
   out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              uses the save_memory schema (tags/entities/verified relationships) when an LLM key is set; otherwise saves plain local text. --cloud also writes the canonical HIVEMIND memory.`);
   out(state, `  ${c.command('/llm-api')} <openrouter-api-key>                     save an OpenRouter key in macOS Keychain; it is never written to config or echoed.`);
@@ -273,7 +273,7 @@ function parseArgs(argStr) {
   // of the obviously-intended path. Only flag names every command actually reads as a value
   // (grep-verified against every `flags.xxx`/`flags['xxx']` in this file) consume the next
   // token; anything else is treated as a harmless boolean so positional args stay intact.
-  const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud']);
+  const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud', 'full']);
   const valueFlags = new Set(['org', 'name', 'kind', 'repo', 'k']);
   for (let i = 0; i < clean.length; i++) {
     if (clean[i].startsWith('--')) {
@@ -367,6 +367,23 @@ async function chooseOrgInteractive(state, cfg) {
   out(state, c.dim(`  → ${picked}`));
   const confirmed = await askYesNo(state, `Ingest into org "${picked}"?`);
   return confirmed ? picked : null;
+}
+
+// Connected ingest has two real server modes. Make the slower memory/entity promotion an
+// explicit choice instead of silently charging it to every document upload. `e` is deliberately
+// the default-looking first option: evidence remains searchable through the same hybrid recall.
+async function chooseIngestMode(state) {
+  out(state, heading('ingest mode'));
+  out(state, `  ${c.command('[e]')} evidence only  ${c.dim('fast — lexical + semantic evidence, no memories/entities')}`);
+  out(state, `  ${c.command('[b]')} both           ${c.dim('slower — evidence plus memory/entity/relationship generation')}`);
+  out(state, c.dim('  choose e or b'));
+  return new Promise((resolve) => {
+    scheduleRedraw(state);
+    state._modalResolver = (key) => {
+      if (key === 'e' || key === 'E' || key === '\r' || key === '\n') { state._modalResolver = null; resolve('evidence'); }
+      else if (key === 'b' || key === 'B') { state._modalResolver = null; resolve('both'); }
+    };
+  });
 }
 
 /** A user turn — a full-width BANDED row (darker background across the whole line) with the
@@ -861,9 +878,11 @@ async function dispatch(line, state, cfg) {
       const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
       if (skipReason) { out(state, err(skipReason)); break; }
       if (viaHivemind) {
+        const ingestMode = flags.full ? 'both' : await chooseIngestMode(state);
+        out(state, c.dim(`  → ${ingestMode === 'evidence' ? 'evidence only' : 'evidence + memory generation'}`));
         out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(tuiProgressLine(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(tuiProgressLine(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
@@ -871,7 +890,10 @@ async function dispatch(line, state, cfg) {
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
         if (result.purged) notes.push(`${result.purged} cloud doc(s) purged after mirroring`);
         if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — no fetchable HIVEMIND document for images`);
-        out(state, `\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
+        const outcome = ingestMode === 'evidence'
+          ? `${result.chunks} evidence segments`
+          : `${result.live} memories, ${result.chunks} segments`;
+        out(state, `\n${ok(`ingested ${result.files} files → ${outcome} (${ingestMode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;
         const result = await ingestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
