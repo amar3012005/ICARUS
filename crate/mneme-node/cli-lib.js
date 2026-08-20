@@ -1781,6 +1781,34 @@ function statusReport(cfg) {
   };
 }
 
+/** Every existing org shard with its real on-disk size and a real creation date, for a
+ * "which org do you mean?" prompt (/ingest with no --org) — not fabricated: creation date comes
+ * from the earliest file's birthtime (falls back to mtime where the filesystem has no true birth
+ * time, e.g. some Linux setups — still the best real signal available, not guessed). Sorted
+ * oldest-first so the org someone's been using longest reads first, not alphabetically. */
+function listOrgsWithMeta(cfg) {
+  let orgs = [];
+  try {
+    orgs = fs.readdirSync(cfg.dataRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch (_) { return []; }
+  return orgs.map((o) => {
+    const dir = path.join(cfg.dataRoot, o.name);
+    let bytes = 0;
+    let createdAt = null;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        try {
+          const st = fs.statSync(path.join(dir, f));
+          bytes += st.size;
+          const bt = (st.birthtimeMs && st.birthtimeMs > 0) ? st.birthtime : st.mtime;
+          if (!createdAt || bt < createdAt) createdAt = bt;
+        } catch (_) { /* race with a concurrent writer */ }
+      }
+    } catch (_) { /* dir vanished mid-scan */ }
+    return { org: o.name, bytesOnDisk: bytes, createdAt };
+  }).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+
 /** Real per-org content breakdown for a richer /status: memories (structured, real exact count
  * via a full recordsPage scan), relationships (real native edges — sum of slotEdges() over every
  * structured memory found), and evidence/other (everything else live in the shard: /ingest
@@ -1812,7 +1840,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.29';
+const ICARUS_VERSION = '0.3.30';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1896,5 +1924,5 @@ module.exports = {
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
-  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard,
+  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard, listOrgsWithMeta,
 };

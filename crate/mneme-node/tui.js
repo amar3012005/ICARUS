@@ -35,7 +35,7 @@ const {
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory, initRepoShard,
+  hivemindSaveMemory, saveLocalMemory, initRepoShard, listOrgsWithMeta,
 } = require('./cli-lib.js');
 
 // ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
@@ -190,12 +190,21 @@ function parseArgs(argStr) {
   const tokens = argStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
   const clean = tokens.map((t) => t.replace(/^["']|["']$/g, ''));
   const out2 = { _: [] };
+  // Real bug this whitelist fixes: `/ingest --amar /some/path` (a plain typo for `--org amar`)
+  // used to treat ANY unrecognized `--foo` as a value-flag and swallow the very next token as
+  // its value — so the real positional path argument silently vanished into out2.amar, leaving
+  // out2._ empty and the command falling through to "no path given" / the folder picker instead
+  // of the obviously-intended path. Only flag names every command actually reads as a value
+  // (grep-verified against every `flags.xxx`/`flags['xxx']` in this file) consume the next
+  // token; anything else is treated as a harmless boolean so positional args stay intact.
+  const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud']);
+  const valueFlags = new Set(['org', 'name', 'kind', 'repo', 'k']);
   for (let i = 0; i < clean.length; i++) {
     if (clean[i].startsWith('--')) {
       const name = clean[i].slice(2);
-      const boolFlags = new Set(['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud']);
       if (boolFlags.has(name)) out2[name] = true;
-      else out2[name] = clean[++i];
+      else if (valueFlags.has(name)) out2[name] = clean[++i];
+      else out2[name] = true; // unknown flag -- boolean, never eats the next positional token
     } else out2._.push(clean[i]);
   }
   return out2;
@@ -218,6 +227,40 @@ function askYesNo(state, question) {
       // any other key: keep waiting, don't resolve
     };
   });
+}
+
+/** Ask which org an ingest should go into when the user didn't pass --org, instead of silently
+ * dropping it into whatever org happens to be active that session — a real reported confusion
+ * ("/ingest <path>" landed in org "default" with no indication that's what would happen). Lists
+ * every org that already exists, with its real on-disk size and a real creation date (never
+ * fabricated), then a single numeric keypress both picks and confirms via the same one-keystroke
+ * modal pattern askYesNo already uses. Typing a brand-new org name isn't handled here (that
+ * would need a second, full line-editing input path this TUI doesn't have yet) — that case is
+ * pointed at the existing `--org <name>` flag instead. Returns the chosen org, or null if the
+ * user backed out (caller must treat null as "abort the ingest", not "use the default"). */
+async function chooseOrgInteractive(state, cfg) {
+  const orgs = listOrgsWithMeta(cfg);
+  if (!orgs.length) return state.org; // nothing to choose between yet -- first-ever ingest
+  out(state, c.system('which org should this go into?'));
+  orgs.forEach((o, i) => {
+    const mb = (o.bytesOnDisk / (1024 * 1024)).toFixed(2);
+    const created = o.createdAt ? new Date(o.createdAt).toLocaleDateString() : 'unknown date';
+    out(state, `  ${c.command(`[${i + 1}]`)} ${c.path(o.org)}  ${c.dim(`${mb} MB, created ${created}`)}`);
+  });
+  out(state, c.dim(`  [n] a different org — cancel and re-run: /ingest <path> --org <name>`));
+  const picked = await new Promise((resolve) => {
+    scheduleRedraw(state);
+    state._modalResolver = (key) => {
+      if (key === 'n' || key === 'N') { state._modalResolver = null; resolve(null); return; }
+      const n = parseInt(key, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= orgs.length) { state._modalResolver = null; resolve(orgs[n - 1].org); }
+      // any other key: keep waiting, don't resolve
+    };
+  });
+  if (!picked) { out(state, c.dim('  cancelled — re-run: /ingest <path> --org <name>')); return null; }
+  out(state, c.dim(`  → ${picked}`));
+  const confirmed = await askYesNo(state, `Ingest into org "${picked}"?`);
+  return confirmed ? picked : null;
 }
 
 /** A user turn — a full-width BANDED row (darker background across the whole line) with the
@@ -576,17 +619,25 @@ async function dispatch(line, state, cfg) {
         // everyone to paste a path. Async, not execFileSync — the redraw loop and stdin
         // handling keep running while the dialog is open, so the TUI doesn't freeze on it.
         out(state, c.dim('  no path given — opening the native folder picker...'));
-        dir = await pickFolderNative(`icarus: select a folder to ingest into org "${org}"`);
+        dir = await pickFolderNative(`icarus: select a folder to ingest into org "${flags.org || state.org}"`);
         if (!dir) { out(state, err('no file or folder selected — usage: /ingest <dir|file> [--org name] [--local] [--force] [--no-mirror] [--keep-cloud]')); break; }
         out(state, ok(`selected ${c.path(dir)}`));
+      }
+      // Real reported confusion: a bare "/ingest <path>" (no --org) silently landed in whatever
+      // org happened to be active, with no indication that's what would happen. When --org is
+      // actually given, skip straight past this — no reason to interrupt an explicit choice.
+      let ingestOrg = flags.org;
+      if (!ingestOrg) {
+        ingestOrg = await chooseOrgInteractive(state, cfg);
+        if (!ingestOrg) { out(state, err('ingest cancelled — no org selected')); break; }
       }
       const viaHivemind = hivemindConfigured(cfg) && !flags.local;
       const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
       if (skipReason) { out(state, err(skipReason)); break; }
       if (viaHivemind) {
-        out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
+        out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
@@ -597,7 +648,7 @@ async function dispatch(line, state, cfg) {
         out(state, `\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;
-        const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
+        const result = await ingestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
         out(state, `\n${ok(`ingested ${result.chunks} chunks from ${result.files} files (mode=${result.mode})`)}`);
       }
       break;
