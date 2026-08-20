@@ -19,7 +19,7 @@ function rgb(r, g, b) { return [r, g, b]; }
 const palette = {
   fg: rgb(225, 225, 225),
   fgDark: rgb(200, 200, 200),
-  comment: rgb(108, 108, 108), // muted/dim
+  comment: rgb(145, 145, 145), // muted/dim — brightened from 108 (real user complaint: too dark to read on a real terminal)
   blue: rgb(122, 162, 247),    // accent_system
   cyan: rgb(125, 207, 255),    // running
   green: rgb(158, 206, 106),   // accent_success

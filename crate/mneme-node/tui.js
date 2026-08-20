@@ -52,10 +52,13 @@ const moveTo = (row, col) => `\x1b[${row};${col}H`;
 // whose own background differs from the app's.
 const BG_BLACK = '\x1b[48;2;0;0;0m';
 const BG_BAND = '\x1b[48;2;26;26;26m';   // user-row band — grok's own prompt_band_color_for()
+// Brightened from the original 200/120/85 — real user complaint on a real terminal: too dark to
+// read comfortably, especially FG_FAINT (used for borders, the tip hint line, and the "Worked
+// for..." marker — a lot of persistent, always-visible chrome, not rare text).
 const FG_BRIGHT = '\x1b[38;2;235;235;235m';
-const FG_NORMAL = '\x1b[38;2;200;200;200m';
-const FG_MUTED = '\x1b[38;2;120;120;120m';
-const FG_FAINT = '\x1b[38;2;85;85;85m';
+const FG_NORMAL = '\x1b[38;2;212;212;212m';
+const FG_MUTED = '\x1b[38;2;158;158;158m';
+const FG_FAINT = '\x1b[38;2;128;128;128m';
 const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
 
@@ -358,7 +361,16 @@ function redraw(state) {
   const contentH = Math.max(1, rows - heroH - dropdownH - inputH - tipH);
 
   const pending = state._pendingPartial ? [state._pendingPartial] : [];
-  const allLines = state.transcript.concat(pending);
+  // Real perf bug caught live ("jerking", "stuck", "slow" on a real terminal after a long
+  // session): this used to wrap/measure EVERY line ever written to the transcript, on EVERY
+  // redraw — called on every single keystroke. Cost grew with total session history, not with
+  // what's actually on screen, so a session with hundreds of lines of accumulated ingest/recall
+  // output made every keystroke redo work proportional to the WHOLE session so far. Only the
+  // last few dozen raw lines can ever end up visible in contentH rows (wrapping only ever
+  // SPLITS a line into more rows, never fewer) — slice to a bounded recent window before
+  // wrapping, so redraw cost stays roughly constant regardless of how long the session has run.
+  const RECENT_RAW_LINES = Math.max(contentH * 4, 200);
+  const allLines = state.transcript.slice(-RECENT_RAW_LINES).concat(pending);
   const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
   const visible = wrapped.slice(Math.max(0, wrapped.length - contentH));
   const padCount = Math.max(0, contentH - visible.length);
