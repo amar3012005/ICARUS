@@ -770,6 +770,22 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .launch_arguments
         .iter()
         .any(|argument| argument == "--strict-mcp-config"));
+    let settings_path = claude_prepared
+        .adapter_settings_path
+        .as_ref()
+        .expect("Claude receives a task-scoped hook settings file");
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+    assert_eq!(settings["disableAllHooks"], false);
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Edit|Write");
+    assert!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains(&task.task_id));
+    assert!(claude_prepared
+        .launch_arguments
+        .windows(2)
+        .any(|pair| { pair[0] == "--settings" && pair[1] == *settings_path }));
     assert!(repo
         .path()
         .join(".icarus/runtime/context")
@@ -888,6 +904,9 @@ fn isolated_run_reconciliation_imports_only_contract_scoped_regular_files() {
 fn agent_arguments_cannot_weaken_rust_selected_launch_controls() {
     assert!(validate_agent_arguments("codex", &["--model".into(), "gpt-5".into()]).is_ok());
     assert!(validate_agent_arguments("claude", &["--model".into(), "sonnet".into()]).is_ok());
+    assert!(
+        validate_agent_arguments("claude", &["--settings".into(), "unsafe.json".into()]).is_err()
+    );
     assert!(validate_agent_arguments("codex", &["--sandbox=danger-full-access".into()]).is_err());
     assert!(validate_agent_arguments("codex", &["-sdanger-full-access".into()]).is_err());
     assert!(validate_agent_arguments(

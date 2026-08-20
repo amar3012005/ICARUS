@@ -231,6 +231,9 @@ pub struct RunPreparation {
     /// Ephemeral, Rust-generated adapter configuration passed by the presentation layer without
     /// interpretation. These files are ignored runtime state, never repository instructions.
     pub adapter_config_paths: Vec<String>,
+    /// Optional task-scoped settings passed using the adapter's documented settings flag. It is
+    /// separate from MCP configuration because hooks and permissions are not valid MCP fields.
+    pub adapter_settings_path: Option<String>,
     /// `certified` is reserved for adapters that have passed the complete enforcement contract.
     /// No current adapter may self-assert it from JavaScript launch code.
     pub certification: String,
@@ -291,6 +294,7 @@ fn adapter_launch_arguments(
     task_id: &str,
     context_pack_path: &Path,
     adapter_config_paths: &[PathBuf],
+    adapter_settings_path: Option<&Path>,
 ) -> Vec<String> {
     let workspace = workspace.display().to_string();
     match agent {
@@ -355,6 +359,14 @@ fn adapter_launch_arguments(
             if !adapter_config_paths.is_empty() {
                 arguments.push("--strict-mcp-config".into());
             }
+            if let Some(settings) = adapter_settings_path {
+                // `--settings` is Claude Code's documented per-session settings input. It
+                // loads the Rust-generated hook policy without writing tracked repository
+                // settings, and user-provided `--settings` is rejected by the native argument
+                // validator below.
+                arguments.push("--settings".into());
+                arguments.push(settings.display().to_string());
+            }
             arguments
         }
         // Cursor/Grok are only launched from the isolated CWD at present. Their capabilities
@@ -371,15 +383,15 @@ fn persist_adapter_config(
     workspace: &Path,
     task: &TaskRecord,
     agent: &str,
-) -> Result<Vec<PathBuf>> {
+) -> Result<(Vec<PathBuf>, Option<PathBuf>)> {
     if agent != "claude" {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
-    let path = workspace
+    let directory = workspace
         .join(".icarus/runtime/adapters")
-        .join(&task.task_id)
-        .join(format!("{}.claude-mcp.json", task.execution_id));
-    let config = serde_json::to_vec_pretty(&json!({
+        .join(&task.task_id);
+    let mcp_path = directory.join(format!("{}.claude-mcp.json", task.execution_id));
+    let mcp_config = serde_json::to_vec_pretty(&json!({
         "mcpServers": {
             "icarus": {
                 "command": "icarus",
@@ -387,8 +399,29 @@ fn persist_adapter_config(
             }
         }
     }))?;
-    atomic_write(&path, &config)?;
-    Ok(vec![path])
+    atomic_write(&mcp_path, &mcp_config)?;
+
+    // Claude Code command hooks receive their event payload on stdin. The generated command
+    // delegates every decision to `icarus harness hook`, which validates the task execution in
+    // Rust. It is intentionally scoped to Edit/Write: arbitrary Bash cannot be soundly reduced
+    // to a set of files before shell execution, so it remains manual-permission compatibility
+    // mode rather than pretending full command interception exists.
+    let hook_command = format!(
+        "icarus harness hook --task {} --event pre-tool --repo \"$CLAUDE_PROJECT_DIR\"",
+        task.task_id
+    );
+    let settings_path = directory.join(format!("{}.claude-settings.json", task.execution_id));
+    let settings = serde_json::to_vec_pretty(&json!({
+        "disableAllHooks": false,
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Edit|Write",
+                "hooks": [{"type": "command", "command": hook_command, "timeout": 30}]
+            }]
+        }
+    }))?;
+    atomic_write(&settings_path, &settings)?;
+    Ok((vec![mcp_path], Some(settings_path)))
 }
 
 fn persist_launch_context(
@@ -453,6 +486,10 @@ pub fn validate_agent_arguments(agent: &str, arguments: &[String]) -> Result<()>
             "--append-system-prompt",
             "--system-prompt",
             "--add-dir",
+            "--settings",
+            "--setting-sources",
+            "--strict-mcp-config",
+            "--mcp-config",
         ],
         _ => &[],
     };
@@ -1623,7 +1660,8 @@ pub fn prepare_run(
     // compiled within its budget, no coding agent is started.
     let (context_pack_path, context_pack_hash) =
         persist_launch_context(&root, &workspace_path, &task)?;
-    let adapter_config_paths = persist_adapter_config(&workspace_path, &task, &agent)?;
+    let (adapter_config_paths, adapter_settings_path) =
+        persist_adapter_config(&workspace_path, &task, &agent)?;
     let capabilities = adapter_capabilities(&agent);
     let certification = if capabilities.pre_action_authorization
         && capabilities.post_action_event_capture
@@ -1651,6 +1689,9 @@ pub fn prepare_run(
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        adapter_settings_path: adapter_settings_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         certification: certification.into(),
         compatibility_mode: certification != "certified",
         capabilities,
@@ -1660,6 +1701,7 @@ pub fn prepare_run(
             task_id,
             &context_pack_path,
             &adapter_config_paths,
+            adapter_settings_path.as_deref(),
         ),
     };
     write_snapshot(
