@@ -547,6 +547,17 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     assert_eq!(prepared.certification, "compatibility");
     assert!(prepared.compatibility_mode);
     assert!(!prepared.capabilities.pre_action_authorization);
+    assert_eq!(
+        prepared.launch_arguments,
+        vec![
+            "--cd",
+            prepared.workspace_path.as_str(),
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "on-request",
+        ]
+    );
     assert!(std::path::Path::new(&prepared.workspace_path)
         .join("README.md")
         .exists());

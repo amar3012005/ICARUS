@@ -200,6 +200,9 @@ pub struct RunPreparation {
     /// No current adapter may self-assert it from JavaScript launch code.
     pub certification: String,
     pub capabilities: AdapterCapabilities,
+    /// Exact, deterministic CLI arguments selected from the task's governed workspace. Node may
+    /// launch them, but may not weaken the safety posture or invent an adapter profile.
+    pub launch_arguments: Vec<String>,
     pub compatibility_mode: bool,
 }
 
@@ -230,6 +233,36 @@ fn adapter_capabilities(_agent: &str) -> AdapterCapabilities {
         completion_interception: false,
         external_write_interception: false,
         stable_session_identity: false,
+    }
+}
+
+fn adapter_launch_arguments(agent: &str, workspace: &Path, task_id: &str) -> Vec<String> {
+    let workspace = workspace.display().to_string();
+    match agent {
+        // Codex's built-in sandbox is an additional boundary around the isolated worktree.
+        // `on-request` keeps potentially external/elevated commands visible to the human.
+        "codex" => vec![
+            "--cd".into(),
+            workspace,
+            "--sandbox".into(),
+            "workspace-write".into(),
+            "--ask-for-approval".into(),
+            "on-request".into(),
+        ],
+        // Claude Code's manual permission mode is the non-bypass posture. It is deliberately
+        // not advertised as an ICARUS interception hook; MCP/context instructions remain the
+        // compatibility surface until hook conformance is implemented.
+        "claude" => vec![
+            "--permission-mode".into(),
+            "manual".into(),
+            "--append-system-prompt".into(),
+            format!(
+                "This is governed ICARUS task {task_id}. Read the ICARUS context pack before planning; do not claim verification without ICARUS receipts."
+            ),
+        ],
+        // Cursor/Grok are only launched from the isolated CWD at present. Their capabilities
+        // remain explicit compatibility mode rather than assumed parity with the CLIs above.
+        _ => Vec::new(),
     }
 }
 
@@ -1020,6 +1053,7 @@ pub fn prepare_run(
         certification: certification.into(),
         compatibility_mode: certification != "certified",
         capabilities,
+        launch_arguments: adapter_launch_arguments(&agent, &workspace_path, task_id),
     };
     write_snapshot(
         &root,

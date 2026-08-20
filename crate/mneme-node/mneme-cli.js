@@ -272,7 +272,7 @@ function cmdRun(flags) {
   console.log(c.dim(`  agent must call icarus_context_get before planning; task ${preparation.task_id} remains the governing contract.`));
   if (flags['dry-run']) return;
   const task = harness.transitionTask(flags.repo || process.cwd(), taskId, 'executing');
-  const result = spawnSync(command, [], { cwd: preparation.workspace_path, stdio: 'inherit' });
+  const result = spawnSync(command, preparation.launch_arguments || [], { cwd: preparation.workspace_path, stdio: 'inherit' });
   if (result.error) throw new Error(`failed to launch ${agent}: ${result.error.message}`);
   if (result.status === 0) {
     harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'verifying');
