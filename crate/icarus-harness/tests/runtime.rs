@@ -1,8 +1,8 @@
 use icarus_harness::{
     amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
     graph_source_fingerprint, init, prepare_run, read_snapshot, record_graph_receipt, resume_task,
-    start_task, task_status, transition_task, verify_event_chain, write_snapshot, Action,
-    EventInput, InitOptions, TaskContract,
+    start_task, task_status, transition_task, verify_event_chain, verify_task_criterion,
+    write_snapshot, Action, EventInput, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -557,4 +557,34 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut verified_contract = contract();
+    verified_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'unit pass\\n'","required":true},
+        {"id":"artifact","type":"artifact","path":"README.md","required":true}
+    ]);
+    fs::write(repo.path().join("README.md"), "artifact\n").unwrap();
+    let task = start_task(repo.path(), "verify real evidence", verified_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let receipt = verify_task_criterion(repo.path(), &task.task_id, "unit").unwrap();
+    assert_eq!(receipt.status, "pass");
+    assert!(receipt.output_excerpt.contains("unit pass"));
+    assert!(repo.path().join(&receipt.output_path).exists());
+    let artifact = verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap();
+    assert_eq!(artifact.status, "pass");
+    assert_eq!(artifact.artifacts, vec!["README.md"]);
+    assert!(verify_task_criterion(repo.path(), &task.task_id, "not-in-contract").is_err());
 }

@@ -626,6 +626,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_verify',
+    {
+      title: 'Run one immutable acceptance criterion and store a receipt',
+      description: 'Use in verifying state. ICARUS runs only the command or artifact check declared in the immutable task contract, stores complete local output plus a bounded excerpt and workspace fingerprints, and never accepts a model statement that a check passed.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), criterion_id: z.string() },
+    },
+    async ({ repo, task_id, criterion_id }) => {
+      try { return textResult(harnessFor().verifyTaskCriterion(repo, task_id, criterion_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_context_get',
     {
       title: 'Compile a bounded, traceable ICARUS context pack',

@@ -121,6 +121,20 @@ pub fn harness_prepare_run(
 }
 
 #[napi]
+pub fn harness_verify_task_criterion(
+    repo_root: String,
+    task_id: String,
+    criterion_id: String,
+) -> Result<String> {
+    let receipt =
+        harness::verify_task_criterion(std::path::Path::new(&repo_root), &task_id, &criterion_id)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_amend_task_contract(
     repo_root: String,
     task_id: String,

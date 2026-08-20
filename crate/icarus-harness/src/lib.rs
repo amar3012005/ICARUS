@@ -199,6 +199,33 @@ pub struct RunPreparation {
     pub compatibility_mode: bool,
 }
 
+/// Evidence produced by ICARUS itself for one contract criterion. Agent prose is deliberately
+/// absent: only an executed command, inspected artifact, or explicit pending human gate can
+/// create one of these records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub criterion_id: String,
+    pub criterion_type: String,
+    pub status: String,
+    pub command: Option<String>,
+    pub working_directory: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub exit_code: Option<i32>,
+    pub git_sha: Option<String>,
+    pub dirty_state_fingerprint: String,
+    pub contract_digest: String,
+    pub toolchain: Value,
+    pub output_digest: String,
+    pub output_excerpt: String,
+    pub output_path: String,
+    pub artifacts: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -1060,6 +1087,229 @@ pub fn checkpoint_task(
         },
     )?;
     Ok(checkpoint)
+}
+
+fn criterion_for(task: &TaskRecord, criterion_id: &str) -> Result<Value> {
+    task.contract
+        .acceptance_criteria
+        .as_array()
+        .and_then(|criteria| {
+            criteria
+                .iter()
+                .find(|criterion| criterion.get("id").and_then(Value::as_str) == Some(criterion_id))
+        })
+        .cloned()
+        .ok_or_else(|| {
+            HarnessError::invalid(format!(
+                "criterion `{criterion_id}` is not in the immutable task contract"
+            ))
+        })
+}
+
+fn evidence_dir(root: &Path, task_id: &str) -> PathBuf {
+    runtime_root(root).join("evidence").join(task_id)
+}
+
+fn bounded_excerpt(bytes: &[u8]) -> String {
+    const MAX: usize = 16 * 1024;
+    let text = String::from_utf8_lossy(bytes);
+    if text.len() <= MAX {
+        text.into_owned()
+    } else {
+        format!(
+            "{}\n… output truncated in receipt; see complete local output file …",
+            &text[..MAX]
+        )
+    }
+}
+
+fn toolchain_versions(root: &Path) -> Value {
+    let version = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .current_dir(root)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    json!({
+        "git": version("git", &["--version"]),
+        "node": version("node", &["--version"]),
+        "rustc": version("rustc", &["--version"]),
+    })
+}
+
+/// Execute one immutable contract criterion in the managed repository and emit a machine-backed
+/// receipt. The shell command is taken only from the immutable contract, never from a free-form
+/// agent parameter.
+pub fn verify_task_criterion(
+    repo_root: &Path,
+    task_id: &str,
+    criterion_id: &str,
+) -> Result<VerificationReceipt> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if !matches!(task.status.as_str(), "executing" | "verifying") {
+        return Err(HarnessError::invalid(
+            "verification requires an executing or verifying task",
+        ));
+    }
+    let criterion = criterion_for(&task, criterion_id)?;
+    let criterion_type = criterion
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HarnessError::invalid("criterion requires a type"))?
+        .to_owned();
+    if !matches!(
+        criterion_type.as_str(),
+        "test"
+            | "build"
+            | "lint"
+            | "runtime_probe"
+            | "artifact"
+            | "manual_review"
+            | "external_approval"
+    ) {
+        return Err(HarnessError::invalid(format!(
+            "unsupported criterion type `{criterion_type}`"
+        )));
+    }
+    let started_at = now_rfc3339();
+    let mut command = criterion
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let (status, exit_code, output, artifacts) = match criterion_type.as_str() {
+        "artifact" => {
+            let artifact = criterion
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    HarnessError::invalid("artifact criterion requires a repository-relative path")
+                })?;
+            let candidate = Path::new(artifact);
+            if candidate.is_absolute()
+                || candidate
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+            {
+                return Err(HarnessError::invalid(
+                    "artifact path must stay inside the repository",
+                ));
+            }
+            let exists = root.join(candidate).exists();
+            (
+                if exists { "pass" } else { "fail" }.into(),
+                None,
+                format!(
+                    "artifact {} {}",
+                    artifact,
+                    if exists { "exists" } else { "is missing" }
+                )
+                .into_bytes(),
+                if exists {
+                    vec![artifact.into()]
+                } else {
+                    Vec::new()
+                },
+            )
+        }
+        "manual_review" | "external_approval" => {
+            command = None;
+            (
+                "pending".into(),
+                None,
+                format!(
+                    "{} requires explicit external evidence; ICARUS did not infer approval.",
+                    criterion_type
+                )
+                .into_bytes(),
+                Vec::new(),
+            )
+        }
+        _ => {
+            let command_text = command.clone().ok_or_else(|| {
+                HarnessError::invalid(format!("{criterion_type} criterion requires a command"))
+            })?;
+            #[cfg(unix)]
+            let output = Command::new("/bin/sh")
+                .args(["-lc", &command_text])
+                .current_dir(&root)
+                .output()
+                .map_err(HarnessError::from)?;
+            #[cfg(windows)]
+            let output = Command::new("cmd")
+                .args(["/C", &command_text])
+                .current_dir(&root)
+                .output()
+                .map_err(HarnessError::from)?;
+            let mut combined = output.stdout;
+            combined.extend_from_slice(&output.stderr);
+            (
+                if output.status.success() {
+                    "pass"
+                } else {
+                    "fail"
+                }
+                .into(),
+                output.status.code(),
+                combined,
+                Vec::new(),
+            )
+        }
+    };
+    let output_digest = sha256(&output);
+    let output_path = evidence_dir(&root, task_id)
+        .join("test-results")
+        .join(format!("{}-{}.log", criterion_id, &output_digest[..12]));
+    atomic_write(&output_path, &output)?;
+    let git_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let receipt = VerificationReceipt {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        criterion_id: criterion_id.into(),
+        criterion_type,
+        status,
+        command,
+        working_directory: root.display().to_string(),
+        started_at,
+        finished_at: now_rfc3339(),
+        exit_code,
+        git_sha: git_output(&root, &["rev-parse", "HEAD"]),
+        dirty_state_fingerprint: sha256(git_status.as_bytes()),
+        contract_digest: task.contract_digest.clone(),
+        toolchain: toolchain_versions(&root),
+        output_digest,
+        output_excerpt: bounded_excerpt(&output),
+        output_path: output_path
+            .strip_prefix(&root)
+            .unwrap_or(&output_path)
+            .to_string_lossy()
+            .replace('\\', "/"),
+        artifacts,
+    };
+    let receipts_path = evidence_dir(&root, task_id).join("commands.jsonl");
+    fs::create_dir_all(receipts_path.parent().unwrap())?;
+    let mut log = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&receipts_path)?;
+    writeln!(log, "{}", serde_json::to_string(&receipt)?)?;
+    log.sync_all()?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "criterion_verified".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: json!({"criterion_id": criterion_id, "status": receipt.status, "output_digest": receipt.output_digest, "git_sha": receipt.git_sha, "dirty_state_fingerprint": receipt.dirty_state_fingerprint}),
+        },
+    )?;
+    Ok(receipt)
 }
 
 fn read_checkpoints(root: &Path, task_id: &str) -> Result<Vec<Checkpoint>> {

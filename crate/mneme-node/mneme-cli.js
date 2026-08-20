@@ -201,7 +201,16 @@ function cmdTask(flags) {
     if (!decision.allowed) process.exitCode = 3;
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize>');
+  if (subcommand === 'verify') {
+    const criterion = flags.criterion || target;
+    if (!criterion) throw new Error('usage: icarus task verify <TASK-ID> --criterion <id> [--repo <dir>]');
+    const receipt = harness.verifyTaskCriterion(repo, taskId, criterion);
+    console.log(receipt.status === 'pass' ? ok(`${c.path(receipt.criterion_id)} passed`) : receipt.status === 'pending' ? c.command(`pending ${receipt.criterion_id}`) : err(`${c.path(receipt.criterion_id)} failed`));
+    console.log(c.dim(`  receipt: ${receipt.output_path} · ${receipt.output_digest.slice(0, 12)}`));
+    if (receipt.status === 'fail') process.exitCode = 3;
+    return;
+  }
+  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize|verify>');
 }
 
 function cmdContext(flags) {

@@ -45,6 +45,10 @@ function prepareRun(repoRoot, taskId, agent, workspaceMode, acknowledgeDirtyCurr
   return invoke('harnessPrepareRun', [repoRoot, taskId, agent, workspaceMode, !!acknowledgeDirtyCurrent]);
 }
 
+function verifyTaskCriterion(repoRoot, taskId, criterionId) {
+  return invoke('harnessVerifyTaskCriterion', [repoRoot, taskId, criterionId]);
+}
+
 function amendTaskContract(repoRoot, taskId, contract, reason, approvalId) {
   return invoke('harnessAmendTaskContract', [repoRoot, taskId, JSON.stringify(contract), reason, approvalId]);
 }
@@ -79,6 +83,7 @@ module.exports = {
   transitionTask,
   resumeTask,
   prepareRun,
+  verifyTaskCriterion,
   amendTaskContract,
   checkpointTask,
   buildContext,
