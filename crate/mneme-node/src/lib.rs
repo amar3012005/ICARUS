@@ -154,6 +154,24 @@ pub fn harness_build_context(
 }
 
 #[napi]
+pub fn harness_build_context_delta(
+    repo_root: String,
+    task_id: String,
+    checkpoint_sequence: u32,
+    budget_tokens: u32,
+) -> Result<String> {
+    let pack = harness::build_context_delta(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        checkpoint_sequence as u64,
+        budget_tokens as usize,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    let markdown = harness::render_context_markdown(&pack);
+    harness_json(serde_json::json!({"pack": pack, "markdown": markdown}))
+}
+
+#[napi]
 pub fn harness_authorize_action(
     repo_root: String,
     task_id: String,

@@ -49,8 +49,10 @@ function checkpointTask(repoRoot, taskId, phase, input) {
   return invoke('harnessCheckpointTask', [repoRoot, taskId, phase, JSON.stringify(input)]);
 }
 
-function buildContext(repoRoot, taskId, budgetTokens) {
-  return invoke('harnessBuildContext', [repoRoot, taskId, budgetTokens]);
+function buildContext(repoRoot, taskId, budgetTokens, checkpointSequence) {
+  return checkpointSequence == null
+    ? invoke('harnessBuildContext', [repoRoot, taskId, budgetTokens])
+    : invoke('harnessBuildContextDelta', [repoRoot, taskId, checkpointSequence, budgetTokens]);
 }
 
 function authorizeAction(repoRoot, taskId, action) {

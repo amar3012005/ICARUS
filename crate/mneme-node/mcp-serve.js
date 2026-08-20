@@ -630,11 +630,11 @@ async function run() {
     {
       title: 'Compile a bounded, traceable ICARUS context pack',
       description: 'Call before planning and after resume, compaction, or a material repository change. Produces deterministic JSON plus Markdown from the same Rust pack. It includes mandatory contract/policy/worktree items or fails budget_unsatisfied; ICARUS never calls an LLM to summarize it.',
-      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), budget_tokens: z.number().int().positive().max(1_000_000).default(12_000), format: z.enum(['json', 'markdown', 'both']).default('both') },
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), budget_tokens: z.number().int().positive().max(1_000_000).default(12_000), since_checkpoint: z.number().int().positive().optional().describe('Build only the continuation delta after this checkpoint sequence'), format: z.enum(['json', 'markdown', 'both']).default('both') },
     },
-    async ({ repo, task_id, budget_tokens, format }) => {
+    async ({ repo, task_id, budget_tokens, since_checkpoint, format }) => {
       try {
-        const result = harnessFor().buildContext(repo, task_id, budget_tokens || 12_000);
+        const result = harnessFor().buildContext(repo, task_id, budget_tokens || 12_000, since_checkpoint);
         if (format === 'json') return textResult(result.pack);
         if (format === 'markdown') return textResult(result.markdown);
         return textResult(result);

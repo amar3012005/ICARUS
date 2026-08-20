@@ -308,3 +308,31 @@ fn context_compiler_is_deterministic_traceable_and_budgeted() {
         .to_string()
         .contains("budget_unsatisfied"));
 }
+
+#[test]
+fn delta_context_contains_only_changes_after_a_checkpoint() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "delta context", contract()).unwrap();
+    let checkpoint = checkpoint_task(
+        repo.path(),
+        &task.task_id,
+        "planned",
+        serde_json::json!({"next_valid_action":"edit"}),
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "orienting").unwrap();
+    let delta = icarus_harness::build_context_delta(
+        repo.path(),
+        &task.task_id,
+        checkpoint.sequence,
+        20_000,
+    )
+    .unwrap();
+    assert_eq!(delta.base_checkpoint_sequence, Some(checkpoint.sequence));
+    assert!(delta
+        .items
+        .iter()
+        .any(|item| item.kind == "lifecycle_delta"));
+    assert!(!delta.items.iter().any(|item| item.kind == "contract"));
+}

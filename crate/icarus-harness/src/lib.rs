@@ -239,6 +239,7 @@ pub struct ContextPack {
     pub task_id: String,
     pub execution_id: String,
     pub status: String,
+    pub base_checkpoint_sequence: Option<u64>,
     pub budget_tokens: usize,
     /// Conservative upper bound: UTF-8 bytes are never fewer than tokens for byte-based BPE
     /// tokenizers. It is deliberately conservative until a selected adapter supplies its exact
@@ -956,6 +957,7 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
         task_id: task.task_id.clone(),
         execution_id: task.execution_id.clone(),
         status: task.status.clone(),
+        base_checkpoint_sequence: None,
         budget_tokens,
         upper_bound_tokens: 0,
         items: Vec::new(),
@@ -1056,6 +1058,155 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             "integrity status for the task history",
             false,
             content,
+        ),
+    )?;
+    Ok(pack)
+}
+
+/// Produce the compact continuation pack for an agent that already consumed the full pack at a
+/// checkpoint. Immutable contract/policy content is referenced by digest rather than repeated;
+/// changed lifecycle and workspace evidence is included verbatim.
+pub fn build_context_delta(
+    repo_root: &Path,
+    task_id: &str,
+    checkpoint_sequence: u64,
+    budget_tokens: usize,
+) -> Result<ContextPack> {
+    if budget_tokens == 0 {
+        return Err(HarnessError::invalid(
+            "budget_unsatisfied: context budget must be positive",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    let checkpoints = read_checkpoints(&root, task_id)?;
+    let base = checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.sequence == checkpoint_sequence)
+        .ok_or_else(|| {
+            HarnessError::invalid(format!(
+                "checkpoint {checkpoint_sequence} does not exist for task `{task_id}`"
+            ))
+        })?;
+    let manifest = load_manifest(&root)?;
+    let events = read_events(&root)?;
+    let base_event_sequence = events
+        .iter()
+        .find(|event| {
+            event.task_id == task_id
+                && event.event_type == "checkpoint"
+                && event
+                    .payload
+                    .get("checkpoint_sequence")
+                    .and_then(Value::as_u64)
+                    == Some(checkpoint_sequence)
+        })
+        .map(|event| event.sequence)
+        .ok_or_else(|| HarnessError::invalid("checkpoint has no durable lifecycle event"))?;
+    let lifecycle: Vec<_> = events
+        .iter()
+        .filter(|event| event.task_id == task_id && event.sequence > base_event_sequence)
+        .collect();
+    let mut pack = ContextPack {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        status: task.status.clone(),
+        base_checkpoint_sequence: Some(checkpoint_sequence),
+        budget_tokens,
+        upper_bound_tokens: 0,
+        items: Vec::new(),
+    };
+    let contract_bytes = fs::read(contract_path(&root, task_id, task.contract_version)?)?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "contract_reference",
+            format!(
+                ".icarus/runtime/tasks/{task_id}/contract.v{}.json",
+                task.contract_version
+            ),
+            "snapshot",
+            "task contract",
+            "unchanged immutable scope; resolve by digest from the base pack",
+            true,
+            format!("digest: {}", sha256(&contract_bytes)),
+        ),
+    )?;
+    let policy_bytes = fs::read(root.join(".icarus/policies/default.yaml"))
+        .map_err(|_| HarnessError::invalid("ICARUS harness policy is missing"))?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "policy_reference",
+            ".icarus/policies/default.yaml",
+            "current",
+            "repository policy",
+            "unchanged policy reference from the base pack",
+            true,
+            format!("digest: {}", sha256(&policy_bytes)),
+        ),
+    )?;
+    let worktree = serde_json::to_string_pretty(&json!({
+        "base_checkpoint": {"sequence": base.sequence, "git_sha": base.git_sha, "dirty_state_fingerprint": base.dirty_state_fingerprint},
+        "current": {"git_sha": git_output(&root, &["rev-parse", "HEAD"]), "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()), "graph_digest": graph_digest(&root)},
+    }))?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "worktree_delta",
+            "git + runtime graph",
+            "current",
+            "observed workspace",
+            "changes since the base checkpoint",
+            true,
+            worktree,
+        ),
+    )?;
+    let lifecycle_content = serde_json::to_string_pretty(&lifecycle)?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "lifecycle_delta",
+            ".icarus/runtime/logs/events.jsonl",
+            "current",
+            "runtime audit log",
+            "task events after the base checkpoint",
+            false,
+            lifecycle_content,
+        ),
+    )?;
+    let later_checkpoints: Vec<_> = checkpoints
+        .into_iter()
+        .filter(|checkpoint| checkpoint.sequence > checkpoint_sequence)
+        .collect();
+    if !later_checkpoints.is_empty() {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "checkpoint_delta",
+                format!(".icarus/runtime/tasks/{task_id}/checkpoints.jsonl"),
+                "checkpoint",
+                "agent checkpoint",
+                "agent checkpoint(s) after the base",
+                false,
+                serde_json::to_string_pretty(&later_checkpoints)?,
+            ),
+        )?;
+    }
+    let chain = verify_event_chain(&root, &manifest.repo_id)?;
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "event_integrity",
+            ".icarus/runtime/logs/events.jsonl",
+            "current",
+            "runtime audit log",
+            "integrity status for the continuation",
+            false,
+            serde_json::to_string_pretty(
+                &json!({"valid": chain.valid, "events": chain.events, "issues": chain.issues}),
+            )?,
         ),
     )?;
     Ok(pack)

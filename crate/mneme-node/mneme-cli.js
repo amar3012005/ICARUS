@@ -205,11 +205,13 @@ function cmdTask(flags) {
 
 function cmdContext(flags) {
   const subcommand = flags._[0];
-  if (subcommand !== 'build') throw new Error('usage: icarus context build --task <TASK-ID> [--budget <tokens>] [--format json|markdown] [--repo <dir>]');
+  if (subcommand !== 'build') throw new Error('usage: icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]');
   if (!flags.task) throw new Error('context build requires --task <TASK-ID>');
   const budget = Number(flags.budget || 12_000);
   if (!Number.isInteger(budget) || budget <= 0) throw new Error('--budget must be a positive integer');
-  const result = require('./harness.js').buildContext(flags.repo || process.cwd(), flags.task, budget);
+  const checkpoint = flags['since-checkpoint'] == null ? undefined : Number(flags['since-checkpoint']);
+  if (checkpoint != null && (!Number.isInteger(checkpoint) || checkpoint <= 0)) throw new Error('--since-checkpoint must be a positive checkpoint sequence');
+  const result = require('./harness.js').buildContext(flags.repo || process.cwd(), flags.task, budget, checkpoint);
   if (flags.format && !['json', 'markdown'].includes(flags.format)) throw new Error('--format must be json or markdown');
   if (flags.format === 'json') console.log(JSON.stringify(result.pack, null, 2));
   else console.log(result.markdown);
@@ -976,7 +978,7 @@ async function main() {
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]
-  icarus context build --task <TASK-ID> [--budget <tokens>] [--format json|markdown] [--repo <dir>]
+  icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]
                                         compile a deterministic, source-traceable context pack
                                         without making an LLM or network call.
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
