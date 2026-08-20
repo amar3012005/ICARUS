@@ -3,6 +3,7 @@
 //! per-org shard held in the JS object; the JS wrapper (MnemeVectorStore) adapts them to the
 //! async `upsert`/`search` interface HIVEMIND expects.
 
+use icarus_harness as harness;
 use mneme_bm25::{bm25_search, Bm25Doc, Bm25Params};
 use mseg::{Filter, MemoryInput, Shard};
 use napi::bindgen_prelude::*;
@@ -26,6 +27,94 @@ fn hash_id(id: &str) -> u64 {
     let mut h = DefaultHasher::new();
     id.hash(&mut h);
     h.finish()
+}
+
+fn harness_json(value: serde_json::Value) -> Result<String> {
+    serde_json::to_string(&value).map_err(|error| Error::from_reason(error.to_string()))
+}
+
+/// Rust-backed ICARUS Harness bridge. The JavaScript CLI/TUI layer transports these values but
+/// never owns the persistent policy, task, lock, or event semantics.
+#[napi]
+pub fn harness_init(repo_root: String, agents: Vec<String>) -> Result<String> {
+    let result = harness::init(
+        std::path::Path::new(&repo_root),
+        harness::InitOptions { agents },
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::json!({
+        "created": result.created,
+        "manifest": result.manifest,
+        "graph_migrated": result.graph_migrated,
+    }))
+}
+
+#[napi]
+pub fn harness_doctor(repo_root: String) -> Result<String> {
+    let report = harness::doctor(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::json!({
+        "healthy": report.healthy,
+        "repo_id": report.repo_id,
+        "checks": report.checks.into_iter().map(|check| serde_json::json!({"id": check.id, "status": check.status, "detail": check.detail})).collect::<Vec<_>>(),
+        "issues": report.issues,
+    }))
+}
+
+#[napi]
+pub fn harness_start_task(
+    repo_root: String,
+    objective: String,
+    contract_json: String,
+) -> Result<String> {
+    let contract = serde_json::from_str(&contract_json)
+        .map_err(|error| Error::from_reason(format!("invalid task contract JSON: {error}")))?;
+    let task = harness::start_task(std::path::Path::new(&repo_root), objective, contract)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_task_status(repo_root: String, task_id: String) -> Result<String> {
+    let task = harness::task_status(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_transition_task(
+    repo_root: String,
+    task_id: String,
+    target: String,
+) -> Result<String> {
+    let task = harness::transition_task(std::path::Path::new(&repo_root), &task_id, &target)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_resume_task(repo_root: String, task_id: String) -> Result<String> {
+    let task = harness::resume_task(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_authorize_action(
+    repo_root: String,
+    task_id: String,
+    kind: String,
+    path: Option<String>,
+) -> Result<String> {
+    let authorization = harness::authorize_action(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        harness::Action { kind, path },
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::json!({"allowed": authorization.allowed, "reason": authorization.reason}),
+    )
 }
 
 /// One recall hit returned to JS.
