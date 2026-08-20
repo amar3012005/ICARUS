@@ -186,6 +186,13 @@ function cmdTask(flags) {
     console.log(ok(`checkpoint ${checkpoint.sequence} · ${checkpoint.phase} · ${checkpoint.git_sha || 'no git HEAD'}`));
     return;
   }
+  if (subcommand === 'block') {
+    if (!flags.reason) throw new Error('usage: icarus task block <TASK-ID> --reason <text> [--repo <dir>]');
+    const task = harness.transitionTask(repo, taskId, 'blocked');
+    harness.checkpointTask(repo, taskId, 'blocked', { open_risks: [flags.reason], next_valid_action: 'resolve blocking condition' });
+    console.log(ok(`${c.path(task.task_id)} blocked with an attributable checkpoint`));
+    return;
+  }
   if (subcommand === 'authorize') {
     if (!flags.kind) throw new Error('usage: icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]');
     const decision = harness.authorizeAction(repo, taskId, { kind: flags.kind, path: flags.path });
@@ -193,7 +200,7 @@ function cmdTask(flags) {
     if (!decision.allowed) process.exitCode = 3;
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|authorize>');
+  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize>');
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -955,6 +962,7 @@ async function main() {
   icarus task transition <TASK-ID> <state> [--repo <dir>]
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
+  icarus task block <TASK-ID> --reason <text> [--repo <dir>]
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
                                         inspect, resume, transition, or ask the Rust authority
                                         whether a scoped action is allowed. No LLM is invoked.

@@ -4,6 +4,7 @@ use icarus_harness::{
     write_snapshot, Action, EventInput, InitOptions, TaskContract,
 };
 use std::fs;
+use std::process::Command;
 use tempfile::tempdir;
 
 fn repo() -> tempfile::TempDir {
@@ -260,4 +261,26 @@ fn checkpoints_capture_worktree_fingerprint_and_agent_supplied_progress() {
             task.task_id
         ))
         .exists());
+}
+
+#[test]
+fn resume_refuses_worktree_divergence_since_the_last_checkpoint() {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "safe resume", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    checkpoint_task(repo.path(), &task.task_id, "planned", serde_json::json!({})).unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/changed.rs"), "changed\n").unwrap();
+    let error = resume_task(repo.path(), &task.task_id).unwrap_err();
+    assert!(error.to_string().contains("worktree divergence"));
 }

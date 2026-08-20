@@ -609,6 +609,23 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_block',
+    {
+      title: 'Block a governed task with attributable reason',
+      description: 'Use when progress cannot safely continue. Transitions the task to blocked and persists a checkpoint containing the stated blocker, so the next session can resolve it instead of guessing.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), reason: z.string() },
+    },
+    async ({ repo, task_id, reason }) => {
+      try {
+        const harness = harnessFor();
+        const task = harness.transitionTask(repo, task_id, 'blocked');
+        const checkpoint = harness.checkpointTask(repo, task_id, 'blocked', { open_risks: [reason], next_valid_action: 'resolve blocking condition' });
+        return textResult({ task_id: task.task_id, execution_id: task.execution_id, status: task.status, checkpoint, issues: [reason] });
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_graph_build',
     {
       title: 'Build the native symbol/call graph for a codebase',
