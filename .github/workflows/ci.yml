@@ -138,11 +138,13 @@ jobs:
 
       # langchain-core / llama-index-core are installed here so those integration tests actually
       # run rather than silently skipping via pytest.importorskip.
-      - name: Install maturin, pytest, and the optional integrations
-        run: pip install maturin pytest langchain-core llama-index-core
+      - name: Create test environment and install maturin, pytest, and optional integrations
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install maturin pytest langchain-core llama-index-core
 
       - name: Build wheel and install into this environment
-        run: maturin develop --release
+        run: .venv/bin/maturin develop --release
 
       - name: Python tests
-        run: python -m pytest tests/ -v
+        run: .venv/bin/python -m pytest tests/ -v

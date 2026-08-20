@@ -32,8 +32,11 @@ fn main() {
     let ground_truth: Vec<Vec<usize>> = queries
         .iter()
         .map(|q| {
-            let mut scored: Vec<(f32, usize)> =
-                corpus.iter().enumerate().map(|(i, v)| (dot(q, v), i)).collect();
+            let mut scored: Vec<(f32, usize)> = corpus
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (dot(q, v), i))
+                .collect();
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             scored.truncate(k);
             scored.into_iter().map(|(_, i)| i).collect()
@@ -53,8 +56,12 @@ fn main() {
 
     let mut overlap = 0usize;
     for (qi, q) in queries.iter().enumerate() {
-        let hits = shard.segment().recall(q, &Filter::default(), k).expect("recall");
-        let got: std::collections::HashSet<usize> = hits.iter().map(|h| h.slot_id as usize).collect();
+        let hits = shard
+            .segment()
+            .recall(q, &Filter::default(), k)
+            .expect("recall");
+        let got: std::collections::HashSet<usize> =
+            hits.iter().map(|h| h.slot_id as usize).collect();
         for &gt in &ground_truth[qi] {
             if got.contains(&gt) {
                 overlap += 1;
@@ -62,5 +69,8 @@ fn main() {
         }
     }
     let recall = overlap as f64 / (queries.len() * k) as f64;
-    println!("default_recall_at_k={recall:.4} (zero env overrides, n={})", corpus.len());
+    println!(
+        "default_recall_at_k={recall:.4} (zero env overrides, n={})",
+        corpus.len()
+    );
 }

@@ -580,9 +580,9 @@ impl MnemeStore {
 // and the append-only signature log all live in cli-lib.js.
 mod sign {
     use ml_dsa::{Generate, Keypair, MlDsa65, Signature, SigningKey, VerifyingKey};
-    use signature::{SignatureEncoding, Signer, Verifier};
     use napi::bindgen_prelude::*;
     use napi_derive::napi;
+    use signature::{SignatureEncoding, Signer, Verifier};
 
     /// A freshly generated ML-DSA-65 keypair, as raw bytes for the Node layer to persist.
     /// `signing_key` is the 32-byte SEED (`SigningKey::to_seed()`/`from_seed()` — the crate's own
@@ -610,8 +610,12 @@ mod sign {
     /// signed are never ambiguous from reading this file alone.
     #[napi]
     pub fn sign_bytes(signing_key_seed: Buffer, payload: Buffer) -> Result<Buffer> {
-        let seed = ml_dsa::B32::try_from(signing_key_seed.as_ref())
-            .map_err(|_| Error::from_reason(format!("signing key must be exactly 32 bytes, got {}", signing_key_seed.len())))?;
+        let seed = ml_dsa::B32::try_from(signing_key_seed.as_ref()).map_err(|_| {
+            Error::from_reason(format!(
+                "signing key must be exactly 32 bytes, got {}",
+                signing_key_seed.len()
+            ))
+        })?;
         let sk = SigningKey::<MlDsa65>::from_seed(&seed);
         let sig = sk.sign(&payload);
         Ok(sig.to_bytes().to_vec().into())
@@ -622,9 +626,18 @@ mod sign {
     /// (wrong length, can't even be parsed) is an error. A caller checking "is this memory
     /// authentic" wants a clean boolean for the common tamper case, not exception-handling for it.
     #[napi]
-    pub fn verify_bytes(verifying_key_bytes: Buffer, payload: Buffer, signature: Buffer) -> Result<bool> {
+    pub fn verify_bytes(
+        verifying_key_bytes: Buffer,
+        payload: Buffer,
+        signature: Buffer,
+    ) -> Result<bool> {
         let enc = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(verifying_key_bytes.as_ref())
-            .map_err(|_| Error::from_reason(format!("verifying key wrong length: got {}", verifying_key_bytes.len())))?;
+            .map_err(|_| {
+                Error::from_reason(format!(
+                    "verifying key wrong length: got {}",
+                    verifying_key_bytes.len()
+                ))
+            })?;
         let vk = VerifyingKey::<MlDsa65>::decode(&enc);
         let sig = Signature::<MlDsa65>::try_from(signature.as_ref())
             .map_err(|e| Error::from_reason(format!("invalid signature encoding: {e}")))?;
@@ -643,12 +656,12 @@ pub use sign::{generate_signing_keypair, sign_bytes, verify_bytes, SigningKeypai
 // itself, its storage, and checkpoint scheduling all live in cli-lib.js — this module is only
 // the cryptographic primitive, same split as the `sign` module above.
 mod audit_sign {
-    use slh_dsa::{Sha2_128s, SigningKey, VerifyingKey};
-    use signature::{Keypair, Signer, Verifier};
-    use rand_core::{TryCryptoRng, TryRng};
-    use std::convert::Infallible;
     use napi::bindgen_prelude::*;
     use napi_derive::napi;
+    use rand_core::{TryCryptoRng, TryRng};
+    use signature::{Keypair, Signer, Verifier};
+    use slh_dsa::{Sha2_128s, SigningKey, VerifyingKey};
+    use std::convert::Infallible;
 
     /// A minimal CryptoRng backed by the OS's own randomness (`getrandom`), written by hand
     /// instead of pulling in the `rand`/`rand_core` "os_rng" feature: rand_core 0.10's own
@@ -707,7 +720,11 @@ mod audit_sign {
     }
 
     #[napi]
-    pub fn audit_verify_bytes(verifying_key_bytes: Buffer, payload: Buffer, signature: Buffer) -> Result<bool> {
+    pub fn audit_verify_bytes(
+        verifying_key_bytes: Buffer,
+        payload: Buffer,
+        signature: Buffer,
+    ) -> Result<bool> {
         let vk = VerifyingKey::<Sha2_128s>::try_from(verifying_key_bytes.as_ref())
             .map_err(|e| Error::from_reason(format!("invalid audit verifying key: {e}")))?;
         let sig = slh_dsa::Signature::<Sha2_128s>::try_from(signature.as_ref())
@@ -715,4 +732,4 @@ mod audit_sign {
         Ok(vk.verify(&payload, &sig).is_ok())
     }
 }
-pub use audit_sign::{generate_audit_keypair, audit_sign_bytes, audit_verify_bytes, AuditKeypair};
+pub use audit_sign::{audit_sign_bytes, audit_verify_bytes, generate_audit_keypair, AuditKeypair};

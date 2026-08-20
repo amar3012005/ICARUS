@@ -225,7 +225,8 @@ impl Segment {
             let code = &slot.vector_pq()[..m];
             candidates.push((table.distance(code), idx));
         }
-        candidates.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(rerank_depth);
 
         // Pass 2: exact cosine rerank of the survivors — identical tail to recall_hnsw.

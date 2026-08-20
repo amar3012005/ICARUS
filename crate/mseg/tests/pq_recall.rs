@@ -62,7 +62,10 @@ fn recall_pq_overlaps_brute_synthetic() {
         total += overlap(&exact, &approx);
     }
     let mean = total / nq as f64;
-    assert!(mean >= 0.90, "PQ vs brute overlap {mean:.3} < 0.90 (synthetic)");
+    assert!(
+        mean >= 0.90,
+        "PQ vs brute overlap {mean:.3} < 0.90 (synthetic)"
+    );
 }
 
 #[test]
@@ -72,7 +75,10 @@ fn recall_pq_with_entity_filter_matches_brute() {
     let dir = tempdir().unwrap();
     let mut seg = Segment::create(dir.path(), "s", dim).unwrap();
     for i in 0..n {
-        let mut m = MemoryInput::new(format!("m{i}"), clustered(dim, (i % 30) as u64, i as u64 + 1));
+        let mut m = MemoryInput::new(
+            format!("m{i}"),
+            clustered(dim, (i % 30) as u64, i as u64 + 1),
+        );
         m.entity_bitmap = 1u64 << (i % 8);
         seg.insert(m).unwrap();
     }
@@ -95,13 +101,20 @@ fn recall_pq_with_entity_filter_matches_brute() {
             .collect();
         let approx = seg.recall_pq(&q, &filter, k).unwrap();
         for h in &approx {
-            assert_eq!(h.entity_bitmap & 0b1, 0b1, "filtered hit must match entity bit");
+            assert_eq!(
+                h.entity_bitmap & 0b1,
+                0b1,
+                "filtered hit must match entity bit"
+            );
         }
         let approx_ids: Vec<u32> = approx.iter().map(|h| h.slot_id).collect();
         total += overlap(&exact, &approx_ids);
     }
     let mean = total / nq as f64;
-    assert!(mean >= 0.90, "entity-filtered PQ vs brute overlap {mean:.3} < 0.90");
+    assert!(
+        mean >= 0.90,
+        "entity-filtered PQ vs brute overlap {mean:.3} < 0.90"
+    );
 }
 
 #[test]
@@ -114,7 +127,10 @@ fn recall_pq_errors_before_training() {
     assert!(!seg.pq_trained());
     let q = clustered(dim, 0, 2);
     let err = seg.recall_pq(&q, &Filter::default(), 5);
-    assert!(err.is_err(), "recall_pq must error before train_pq() has run");
+    assert!(
+        err.is_err(),
+        "recall_pq must error before train_pq() has run"
+    );
 }
 
 #[test]
@@ -127,8 +143,11 @@ fn recall_pq_survives_flush_and_reload() {
     {
         let mut seg = Segment::create(dir.path(), "s", dim).unwrap();
         for i in 0..n {
-            seg.insert(MemoryInput::new(format!("m{i}"), clustered(dim, (i % 20) as u64, i as u64 + 1)))
-                .unwrap();
+            seg.insert(MemoryInput::new(
+                format!("m{i}"),
+                clustered(dim, (i % 20) as u64, i as u64 + 1),
+            ))
+            .unwrap();
         }
         seg.train_pq(1).unwrap();
         seg.flush().unwrap();
@@ -137,5 +156,8 @@ fn recall_pq_survives_flush_and_reload() {
     assert!(reopened.pq_trained(), "PQ_TRAINED flag must survive reopen");
     let q = clustered(dim, 0, 999);
     let hits = reopened.recall_pq(&q, &Filter::default(), 5).unwrap();
-    assert!(!hits.is_empty(), "recall_pq must work on a freshly reopened segment");
+    assert!(
+        !hits.is_empty(),
+        "recall_pq must work on a freshly reopened segment"
+    );
 }

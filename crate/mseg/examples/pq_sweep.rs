@@ -45,14 +45,23 @@ fn main() {
 
     let corpus = load_f32(corpus_path, dim);
     let queries = load_f32(queries_path, dim);
-    eprintln!("corpus={} queries={} dim={} k={}", corpus.len(), queries.len(), dim, k);
+    eprintln!(
+        "corpus={} queries={} dim={} k={}",
+        corpus.len(),
+        queries.len(),
+        dim,
+        k
+    );
 
     eprintln!("computing exact ground truth...");
     let ground_truth: Vec<Vec<usize>> = queries
         .iter()
         .map(|q| {
-            let mut scored: Vec<(f32, usize)> =
-                corpus.iter().enumerate().map(|(i, v)| (dot(q, v), i)).collect();
+            let mut scored: Vec<(f32, usize)> = corpus
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (dot(q, v), i))
+                .collect();
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             scored.truncate(k);
             scored.into_iter().map(|(_, i)| i).collect()
@@ -70,7 +79,8 @@ fn main() {
     }
 
     let recall_at = |hits: &[mseg::Hit], gt: &[usize]| -> usize {
-        let got: std::collections::HashSet<usize> = hits.iter().map(|h| h.slot_id as usize).collect();
+        let got: std::collections::HashSet<usize> =
+            hits.iter().map(|h| h.slot_id as usize).collect();
         gt.iter().filter(|i| got.contains(i)).count()
     };
 
@@ -79,7 +89,10 @@ fn main() {
     let mut overlap_brute = 0usize;
     for (qi, q) in queries.iter().enumerate() {
         let t = Instant::now();
-        let hits = shard.segment().recall_brute(q, &Filter::default(), k).expect("recall_brute");
+        let hits = shard
+            .segment()
+            .recall_brute(q, &Filter::default(), k)
+            .expect("recall_brute");
         lat_brute.push(t.elapsed().as_secs_f64() * 1e6);
         overlap_brute += recall_at(&hits, &ground_truth[qi]);
     }
@@ -92,7 +105,10 @@ fn main() {
     let mut overlap_hnsw = 0usize;
     for (qi, q) in queries.iter().enumerate() {
         let t = Instant::now();
-        let hits = shard.segment().recall(q, &Filter::default(), k).expect("recall (hnsw enabled)");
+        let hits = shard
+            .segment()
+            .recall(q, &Filter::default(), k)
+            .expect("recall (hnsw enabled)");
         lat_hnsw.push(t.elapsed().as_secs_f64() * 1e6);
         overlap_hnsw += recall_at(&hits, &ground_truth[qi]);
     }
@@ -113,7 +129,10 @@ fn main() {
         let mut overlap_pq = 0usize;
         for (qi, q) in queries.iter().enumerate() {
             let t = Instant::now();
-            let hits = shard.segment().recall_pq(q, &Filter::default(), k).expect("recall_pq");
+            let hits = shard
+                .segment()
+                .recall_pq(q, &Filter::default(), k)
+                .expect("recall_pq");
             lat_pq.push(t.elapsed().as_secs_f64() * 1e6);
             overlap_pq += recall_at(&hits, &ground_truth[qi]);
         }

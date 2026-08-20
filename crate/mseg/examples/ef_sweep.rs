@@ -38,15 +38,24 @@ fn main() {
 
     let corpus = load_f32(corpus_path, dim);
     let queries = load_f32(queries_path, dim);
-    eprintln!("corpus={} queries={} dim={} k={}", corpus.len(), queries.len(), dim, k);
+    eprintln!(
+        "corpus={} queries={} dim={} k={}",
+        corpus.len(),
+        queries.len(),
+        dim,
+        k
+    );
 
     // Ground truth: exact brute-force top-k per query, computed once.
     eprintln!("computing exact ground truth...");
     let ground_truth: Vec<Vec<usize>> = queries
         .iter()
         .map(|q| {
-            let mut scored: Vec<(f32, usize)> =
-                corpus.iter().enumerate().map(|(i, v)| (dot(q, v), i)).collect();
+            let mut scored: Vec<(f32, usize)> = corpus
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (dot(q, v), i))
+                .collect();
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             scored.truncate(k);
             scored.into_iter().map(|(_, i)| i).collect()
@@ -65,44 +74,48 @@ fn main() {
     println!("hnsw_efs,ef_floor,rerank_depth,recall_at_k,query_p50_us,query_p99_us");
     for &efs in &efs_grid {
         for &ef in &ef_grid {
-        for &rerank in &rerank_grid {
-            let _ = fs::remove_dir_all(root);
-            fs::create_dir_all(root).unwrap();
-            let mut shard = Shard::open(root, "sweep", dim).expect("open");
-            for (i, v) in corpus.iter().enumerate() {
-                let mut m = MemoryInput::new(i.to_string(), v.clone());
-                m.valid_from = 0;
-                shard.segment().insert(m).expect("insert");
-            }
-            // SAFETY: single-process sweep, sequential runs — env vars read once per call.
-            // MNEME_HNSW_EFS must be set BEFORE enable_hnsw() (index-build-time), the others
-            // are read per-recall-call (query-time) so order relative to enable_hnsw doesn't
-            // matter for them.
-            env::set_var("MNEME_HNSW_EFS", efs.to_string());
-            env::set_var("MNEME_EF_FLOOR", ef.to_string());
-            env::set_var("MNEME_RERANK_DEPTH", rerank.to_string());
-            shard.segment().enable_hnsw().expect("hnsw");
+            for &rerank in &rerank_grid {
+                let _ = fs::remove_dir_all(root);
+                fs::create_dir_all(root).unwrap();
+                let mut shard = Shard::open(root, "sweep", dim).expect("open");
+                for (i, v) in corpus.iter().enumerate() {
+                    let mut m = MemoryInput::new(i.to_string(), v.clone());
+                    m.valid_from = 0;
+                    shard.segment().insert(m).expect("insert");
+                }
+                // SAFETY: single-process sweep, sequential runs — env vars read once per call.
+                // MNEME_HNSW_EFS must be set BEFORE enable_hnsw() (index-build-time), the others
+                // are read per-recall-call (query-time) so order relative to enable_hnsw doesn't
+                // matter for them.
+                env::set_var("MNEME_HNSW_EFS", efs.to_string());
+                env::set_var("MNEME_EF_FLOOR", ef.to_string());
+                env::set_var("MNEME_RERANK_DEPTH", rerank.to_string());
+                shard.segment().enable_hnsw().expect("hnsw");
 
-            let mut overlap = 0usize;
-            let mut latencies_us: Vec<f64> = Vec::with_capacity(queries.len());
-            for (qi, q) in queries.iter().enumerate() {
-                let t = Instant::now();
-                let hits = shard.segment().recall(q, &Filter::default(), k).expect("recall");
-                latencies_us.push(t.elapsed().as_secs_f64() * 1_000_000.0);
-                let got: std::collections::HashSet<usize> =
-                    hits.iter().map(|h| h.slot_id as usize).collect();
-                for &gt_idx in &ground_truth[qi] {
-                    if got.contains(&gt_idx) {
-                        overlap += 1;
+                let mut overlap = 0usize;
+                let mut latencies_us: Vec<f64> = Vec::with_capacity(queries.len());
+                for (qi, q) in queries.iter().enumerate() {
+                    let t = Instant::now();
+                    let hits = shard
+                        .segment()
+                        .recall(q, &Filter::default(), k)
+                        .expect("recall");
+                    latencies_us.push(t.elapsed().as_secs_f64() * 1_000_000.0);
+                    let got: std::collections::HashSet<usize> =
+                        hits.iter().map(|h| h.slot_id as usize).collect();
+                    for &gt_idx in &ground_truth[qi] {
+                        if got.contains(&gt_idx) {
+                            overlap += 1;
+                        }
                     }
                 }
+                latencies_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let p50 = latencies_us[latencies_us.len() / 2];
+                let p99 = latencies_us
+                    [((latencies_us.len() as f64 * 0.99) as usize).min(latencies_us.len() - 1)];
+                let recall = overlap as f64 / (queries.len() * k) as f64;
+                println!("{efs},{ef},{rerank},{recall:.4},{p50:.2},{p99:.2}");
             }
-            latencies_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let p50 = latencies_us[latencies_us.len() / 2];
-            let p99 = latencies_us[((latencies_us.len() as f64 * 0.99) as usize).min(latencies_us.len() - 1)];
-            let recall = overlap as f64 / (queries.len() * k) as f64;
-            println!("{efs},{ef},{rerank},{recall:.4},{p50:.2},{p99:.2}");
-        }
         }
     }
 }

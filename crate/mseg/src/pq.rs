@@ -86,8 +86,7 @@ impl Segment {
                 ));
             }
             let path = self.dir().join(format!("{}.mpq", self.name()));
-            let cb =
-                mpq::load(&path).map_err(|e| MsegError::Corrupt(format!("mpq load: {e}")))?;
+            let cb = mpq::load(&path).map_err(|e| MsegError::Corrupt(format!("mpq load: {e}")))?;
             self.set_pq_cache(cb);
         }
         Ok(self.pq_cache_ref().expect("just populated above"))

@@ -77,7 +77,11 @@ fn measure<F: FnMut(&[f32]) -> Result<Vec<mseg::Hit>, mseg_format::MsegError>>(
         all_hits.push(hits.iter().map(|h| h.slot_id).collect());
     }
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    (percentile(&samples, 50.0), percentile(&samples, 90.0), all_hits)
+    (
+        percentile(&samples, 50.0),
+        percentile(&samples, 90.0),
+        all_hits,
+    )
 }
 
 fn recall_overlap(a: &[Vec<u32>], b: &[Vec<u32>]) -> f64 {
@@ -88,13 +92,20 @@ fn recall_overlap(a: &[Vec<u32>], b: &[Vec<u32>]) -> f64 {
         hit += ha.iter().filter(|x| set_b.contains(x)).count();
         total += ha.len().max(hb.len());
     }
-    if total == 0 { 1.0 } else { hit as f64 / total as f64 }
+    if total == 0 {
+        1.0
+    } else {
+        hit as f64 / total as f64
+    }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
-        eprintln!("usage: {} <corpus> <queries> <dim> <target_n> [top_k]", args[0]);
+        eprintln!(
+            "usage: {} <corpus> <queries> <dim> <target_n> [top_k]",
+            args[0]
+        );
         std::process::exit(2);
     }
     let dim: usize = args[3].parse().expect("dim");
@@ -112,17 +123,25 @@ fn main() {
 
     let t_ins = Instant::now();
     for i in 0..target_n {
-        let v = if i < n_real { real[i].clone() } else { perturb(&real[i % n_real], i as u64) };
+        let v = if i < n_real {
+            real[i].clone()
+        } else {
+            perturb(&real[i % n_real], i as u64)
+        };
         let mut mem = MemoryInput::new(String::new(), v);
         mem.valid_from = i as i64;
         seg.insert(mem).expect("insert");
     }
-    eprintln!("inserted {target_n} in {:.1}s", t_ins.elapsed().as_secs_f64());
+    eprintln!(
+        "inserted {target_n} in {:.1}s",
+        t_ins.elapsed().as_secs_f64()
+    );
 
     let filter = Filter::default();
 
     // ground truth = brute force (exact) — same oracle role as everywhere else in this repo.
-    let (p50_brute, p90_brute, gt_hits) = measure(&queries, |q| seg.recall_brute(q, &filter, top_k));
+    let (p50_brute, p90_brute, gt_hits) =
+        measure(&queries, |q| seg.recall_brute(q, &filter, top_k));
     eprintln!("brute p50={p50_brute:.3}ms p90={p90_brute:.3}ms (ground truth)");
 
     let t_idx = Instant::now();
@@ -138,7 +157,9 @@ fn main() {
     let pq_build_s = t_pq.elapsed().as_secs_f64();
     let (p50_pq, p90_pq, pq_hits) = measure(&queries, |q| seg.recall_pq(q, &filter, top_k));
     let recall_pq = recall_overlap(&pq_hits, &gt_hits);
-    eprintln!("pq   build={pq_build_s:.1}s p50={p50_pq:.3}ms p90={p90_pq:.3}ms recall={recall_pq:.4}");
+    eprintln!(
+        "pq   build={pq_build_s:.1}s p50={p50_pq:.3}ms p90={p90_pq:.3}ms recall={recall_pq:.4}"
+    );
 
     println!("n={target_n} dim={dim} top_k={top_k}");
     println!("brute_p50_ms={p50_brute:.3} brute_p90_ms={p90_brute:.3}");

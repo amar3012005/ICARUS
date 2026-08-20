@@ -34,7 +34,13 @@ fn main() {
 
     let corpus = load_f32(corpus_path, dim);
     let queries = load_f32(queries_path, dim);
-    eprintln!("corpus={} queries={} dim={} k={}", corpus.len(), queries.len(), dim, k);
+    eprintln!(
+        "corpus={} queries={} dim={} k={}",
+        corpus.len(),
+        queries.len(),
+        dim,
+        k
+    );
 
     let root = Path::new("/tmp/mseg-napi-overhead-probe");
     let _ = fs::remove_dir_all(root);
@@ -65,7 +71,8 @@ fn main() {
     latencies_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p50 = latencies_us[latencies_us.len() / 2];
     let p90 = latencies_us[(latencies_us.len() as f64 * 0.9) as usize];
-    let p99 = latencies_us[((latencies_us.len() as f64 * 0.99) as usize).min(latencies_us.len() - 1)];
+    let p99 =
+        latencies_us[((latencies_us.len() as f64 * 0.99) as usize).min(latencies_us.len() - 1)];
     println!("native_query_p50_us={:.3}", p50);
     println!("native_query_p90_us={:.3}", p90);
     println!("native_query_p99_us={:.3}", p99);
