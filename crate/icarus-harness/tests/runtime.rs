@@ -706,6 +706,82 @@ fn context_exposes_failed_evidence_and_unresolved_risks_without_agent_inference(
 }
 
 #[test]
+fn seal_rejects_a_receipt_after_a_real_worktree_edit() {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    for args in [
+        ["init", "-q"].as_slice(),
+        ["config", "user.email", "test@example.invalid"].as_slice(),
+        ["config", "user.name", "test"].as_slice(),
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/initial.rs"), "// baseline\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "baseline"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    init(repo.path(), InitOptions::default()).unwrap();
+    assert!(Command::new("git")
+        .args(["add", ".icarus", ".gitignore"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "harness init"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let mut verified_contract = contract();
+    verified_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'pass\\n'","required":true}
+    ]);
+    let task = start_task(repo.path(), "guard stale evidence", verified_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    assert_eq!(
+        verify_task_criterion(repo.path(), &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "pass"
+    );
+    fs::write(
+        repo.path().join("src/after-verification.rs"),
+        "// changed after receipt\n",
+    )
+    .unwrap();
+    let seal = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(!seal.sealed);
+    assert!(seal
+        .unmet_criteria
+        .iter()
+        .any(|reason| reason.contains("workspace changed since verification")));
+}
+
+#[test]
 fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
