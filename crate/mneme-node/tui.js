@@ -43,6 +43,15 @@ const ENTER_ALT = '\x1b[?1049h';
 const EXIT_ALT = '\x1b[?1049l';
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
+// SGR mouse reporting (mode 1000 = button events, 1006 = SGR extended coordinate encoding) —
+// the same combo every terminal coding agent enables so mouse-wheel scroll works inside an
+// alt-screen app. Without this the terminal's own OWN scrollback would apply, but alt-screen
+// apps have no real scrollback buffer of their own, which is exactly why plain wheel-scrolling
+// silently did nothing before this: there was no scroll STATE anywhere to move, and no listener
+// to move it. Enabled on entering the TUI, disabled on exit so a plain terminal afterward isn't
+// left in mouse-reporting mode.
+const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1006h';
+const DISABLE_MOUSE = '\x1b[?1000l\x1b[?1006l';
 const CLEAR_HOME = '\x1b[2J\x1b[H';
 const moveTo = (row, col) => `\x1b[${row};${col}H`;
 
@@ -420,7 +429,15 @@ function redraw(state) {
   const RECENT_RAW_LINES = Math.max(contentH * 4, 200);
   const allLines = state.transcript.slice(-RECENT_RAW_LINES).concat(pending);
   const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
-  const visible = wrapped.slice(Math.max(0, wrapped.length - contentH));
+  // scrollOffset = wrapped rows scrolled UP from the live tail (0 = pinned to bottom, the
+  // previous, only-ever behavior — there was no scroll state anywhere before this, which is
+  // exactly why PageUp/mouse-wheel/etc did nothing: nothing existed for them to move). Clamped
+  // here every frame (not just where it's changed) since contentH itself can shrink on a resize,
+  // which would otherwise leave a stale offset pointing past the now-shorter available history.
+  const maxScroll = Math.max(0, wrapped.length - contentH);
+  state.scrollOffset = Math.min(Math.max(0, state.scrollOffset || 0), maxScroll);
+  const start = Math.max(0, wrapped.length - contentH - state.scrollOffset);
+  const visible = wrapped.slice(start, start + contentH);
   const padCount = Math.max(0, contentH - visible.length);
 
   const frame = [];
@@ -428,7 +445,9 @@ function redraw(state) {
   frame.push(...visible);
   frame.push(...Array(padCount).fill(''));
   for (const d of dropdown) frame.push(`  ${m.bright(d.cmd)} ${m.faint(d.hint)}`);
-  frame.push(m.faint('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history.'));
+  frame.push(state.scrollOffset > 0
+    ? m.faint(`↑ scrolled up ${state.scrollOffset} lines — PgDn or scroll down to return to live output`)
+    : m.faint('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history, PgUp/wheel scrolls back.'));
   const { lines: inputLines, cursorCol } = inputBoxFrame(state, cols);
   frame.push(...inputLines);
 
@@ -469,21 +488,21 @@ function restoreOutput() {
 }
 
 // ── Terminal lifecycle ───────────────────────────────────────────────────────────────────────
-function enterScreen() { realWrite(ENTER_ALT + CLEAR_HOME); }
+function enterScreen() { realWrite(ENTER_ALT + CLEAR_HOME + ENABLE_MOUSE); }
 let exited = false;
 function exitScreen() {
   if (exited) return;
   exited = true;
   restoreOutput();
   try { process.stdin.setRawMode(false); } catch (_) { /* not a TTY / already restored */ }
-  realWrite(SHOW_CURSOR + EXIT_ALT);
+  realWrite(DISABLE_MOUSE + SHOW_CURSOR + EXIT_ALT);
 }
 
 async function run() {
   const cfg = loadCfg();
   const state = {
     org: 'default', transcript: [], input: '', cursor: 0, history: [], historyIdx: -1,
-    _pendingPartial: '', _spinnerActive: false,
+    _pendingPartial: '', _spinnerActive: false, scrollOffset: 0,
   };
 
   enterScreen();
@@ -534,6 +553,7 @@ async function run() {
     const line = state.input.trim();
     state.input = ''; state.cursor = 0;
     if (!line) return;
+    state.scrollOffset = 0; // a new command always jumps back to the live tail, like any chat UI
     state.history.push(line);
     state.historyIdx = state.history.length;
     if (line === '/quit' || line === '/exit') { running = false; scheduleRedraw(state); setTimeout(() => process.exit(0), 30); return; }
@@ -548,13 +568,23 @@ async function run() {
 
   // Parses a raw stdin chunk into individual key tokens — a chunk can contain more than one key
   // (fast typing, paste, or a multi-byte escape sequence bundled with a following printable char).
+  // Also recognizes PageUp/PageDown (`\x1b[5~`/`\x1b[6~`) and SGR mouse-wheel reports
+  // (`\x1b[<64;...M` / `\x1b[<65;...M`, enabled via ENABLE_MOUSE at screen entry) as single
+  // tokens — without this they'd get shredded into their raw bytes (`\x1b`, `[`, `5`, `~`, ...)
+  // and leak straight into the input line as garbage characters, since nothing recognized them
+  // as one unit.
   function tokenize(chunk) {
     const tokens = [];
     let i = 0;
     while (i < chunk.length) {
       if (chunk[i] === '\x1b' && chunk[i + 1] === '[') {
-        const m = /^\x1b\[[A-D]/.exec(chunk.slice(i));
-        if (m) { tokens.push(m[0]); i += m[0].length; continue; }
+        const rest = chunk.slice(i);
+        let m2 = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(rest);
+        if (m2) { tokens.push(m2[0]); i += m2[0].length; continue; }
+        m2 = /^\x1b\[[56]~/.exec(rest);
+        if (m2) { tokens.push(m2[0]); i += m2[0].length; continue; }
+        m2 = /^\x1b\[[A-D]/.exec(rest);
+        if (m2) { tokens.push(m2[0]); i += m2[0].length; continue; }
       }
       tokens.push(chunk[i]); i++;
     }
@@ -568,6 +598,19 @@ async function run() {
       // very next keypress instead of the normal input-editing logic below — no need to detach/
       // reattach this listener, just route around it while a modal is active.
       if (state._modalResolver) { state._modalResolver(key); continue; }
+      // Scrollback: PageUp/PageDown and mouse-wheel both move state.scrollOffset (redraw() clamps
+      // it to the real available history every frame). SCROLL_STEP for keys is a full page so
+      // PageUp/PageDown feel like an actual page flip; WHEEL_STEP is smaller since a single wheel
+      // notch is one of several rapid-fire events, not one deliberate keypress.
+      if (key === '\x1b[5~') { state.scrollOffset = (state.scrollOffset || 0) + 10; scheduleRedraw(state); continue; } // PageUp
+      if (key === '\x1b[6~') { state.scrollOffset = Math.max(0, (state.scrollOffset || 0) - 10); scheduleRedraw(state); continue; } // PageDown
+      if (key.startsWith('\x1b[<')) {
+        const mm = /^\x1b\[<(\d+);\d+;\d+[Mm]/.exec(key);
+        const btn = mm ? parseInt(mm[1], 10) : -1;
+        if (btn === 64) { state.scrollOffset = (state.scrollOffset || 0) + 3; scheduleRedraw(state); } // wheel up
+        else if (btn === 65) { state.scrollOffset = Math.max(0, (state.scrollOffset || 0) - 3); scheduleRedraw(state); } // wheel down
+        continue; // any other mouse report (clicks, drags) — ignore, never fall into text-input handling
+      }
       if (key === '') { running = false; process.exit(0); return; } // ctrl+c
       if (key === '') { if (!state.input) { running = false; process.exit(0); return; } continue; } // ctrl+d on empty line
       if (key === '\r' || key === '\n') { submit(); continue; }
