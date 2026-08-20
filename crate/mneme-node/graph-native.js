@@ -300,6 +300,12 @@ async function build(repoDir) {
 }
 
 function dbPath(repoDir) {
+  // Keep pre-harness repositories byte-compatible at their original location. Once a repository
+  // has the tracked harness manifest, the graph becomes runtime state and lives beside task
+  // checkpoints/events. `icarus harness init` copies (never moves) any existing legacy graph
+  // before this route changes, so the first post-init graph operation is non-destructive.
+  const manifest = path.join(repoDir, '.icarus', 'manifest.yaml');
+  if (fs.existsSync(manifest)) return path.join(repoDir, '.icarus', 'runtime', 'graph', 'graph.db');
   return path.join(repoDir, '.icarus-graph', 'graph.db');
 }
 
@@ -342,9 +348,8 @@ const SCHEMA = `
 
 async function openDb(repoDir) {
   const SQL = await getSQL();
-  const dir = path.join(repoDir, '.icarus-graph');
-  fs.mkdirSync(dir, { recursive: true });
   const p = dbPath(repoDir);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
   const db = fs.existsSync(p) ? new SQL.Database(fs.readFileSync(p)) : new SQL.Database();
   db.run(SCHEMA);
   return db;

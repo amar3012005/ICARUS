@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor } = require('../../harness.js');
+const { dbPath: graphDbPath } = require('../../graph-native.js');
 
 function tmpRepo() {
   const repo = mkdtempSync(join(tmpdir(), 'icarus-harness-'));
@@ -55,6 +56,7 @@ test('harness init safely copies an existing graph into runtime without deleting
     assert.equal(result.graph_migrated, true);
     assert.equal(readFileSync(join(repo, '.icarus', 'runtime', 'graph', 'graph.db'), 'utf8'), 'legacy graph bytes');
     assert.equal(readFileSync(join(repo, '.icarus-graph', 'graph.db'), 'utf8'), 'legacy graph bytes');
+    assert.equal(graphDbPath(repo), join(repo, '.icarus', 'runtime', 'graph', 'graph.db'), 'subsequent graph writes use the migrated runtime path');
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
