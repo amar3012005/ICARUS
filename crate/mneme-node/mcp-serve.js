@@ -517,6 +517,97 @@ async function run() {
     },
   );
 
+  // ── Rust-governed harness lifecycle ──────────────────────────────────────────────────────
+  // The coding agent supplies objectives, plans, and checkpoint summaries. ICARUS only enforces
+  // durable state and authorization; it never invokes a model or invents task content.
+  const taskContractSchema = z.object({
+    allowed_paths: z.array(z.string()).min(1),
+    forbidden_paths: z.array(z.string()).default([]),
+    acceptance_criteria: z.array(z.unknown()).default([]),
+    risk: z.string(),
+    budgets: z.record(z.unknown()).default({}),
+    authority: z.string(),
+    external_write_policy: z.string(),
+  });
+  const harnessFor = () => require('./harness.js');
+
+  server.registerTool(
+    'icarus_task_start',
+    {
+      title: 'Start a governed ICARUS coding task',
+      description: 'Call before the first managed code write. The calling agent writes the objective and explicit contract; ICARUS persists an immutable v1 contract and returns task_id plus execution_id. This tool makes no LLM or network call.',
+      inputSchema: { repo: z.string().default(process.cwd()), objective: z.string(), contract: taskContractSchema },
+    },
+    async ({ repo, objective, contract }) => {
+      try { return textResult(harnessFor().startTask(repo, { objective, contract })); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_task_status',
+    {
+      title: 'Read a governed task state',
+      description: 'Call after compaction, interruption, or before resuming a governed coding task. Returns the durable task, immutable contract version, execution attempt, and current state from the Rust harness.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try { return textResult(harnessFor().taskStatus(repo, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_action_check',
+    {
+      title: 'Check whether a task action is authorized',
+      description: 'Call immediately before a managed write. Rejects writes outside the executing task contract, forbidden paths, absolute paths, and writes attempted before execution. Do not bypass a denial with a shell command.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), kind: z.string().default('write'), path: z.string().optional() },
+    },
+    async ({ repo, task_id, kind, path: actionPath }) => {
+      try {
+        const harness = harnessFor();
+        const decision = harness.authorizeAction(repo, task_id, { kind, path: actionPath });
+        const task = harness.taskStatus(repo, task_id);
+        return textResult({ task_id: task.task_id, execution_id: task.execution_id, status: task.status, ...decision, issues: decision.allowed ? [] : [decision.reason] });
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_checkpoint',
+    {
+      title: 'Checkpoint governed task progress',
+      description: 'Call after planning, a material edit, test execution, or before ending a session. The agent supplies structured risks, budget consumption, and next action; ICARUS captures Git/worktree/graph fingerprints for safe resume. This is not an LLM summary service.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), phase: z.string(), input: z.record(z.unknown()).default({}) },
+    },
+    async ({ repo, task_id, phase, input }) => {
+      try { return textResult(harnessFor().checkpointTask(repo, task_id, phase, input)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_task_resume',
+    {
+      title: 'Resume a governed task in a new agent session',
+      description: 'Call only after icarus_task_status. Retains task_id, starts a linked execution attempt, and refuses silent worktree divergence from the last checkpoint.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try { return textResult(harnessFor().resumeTask(repo, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_task_amend_contract',
+    {
+      title: 'Create an attributable new task-contract version',
+      description: 'Use only when a governed task scope genuinely changes. Creates contract.vN.json without rewriting prior history; changes during execution require an explicit approval reference.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), contract: taskContractSchema, reason: z.string(), approval_id: z.string().optional() },
+    },
+    async ({ repo, task_id, contract, reason, approval_id }) => {
+      try { return textResult(harnessFor().amendTaskContract(repo, task_id, contract, reason, approval_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
   server.registerTool(
     'icarus_graph_build',
     {
