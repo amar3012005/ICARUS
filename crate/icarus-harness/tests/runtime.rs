@@ -561,6 +561,18 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     assert!(std::path::Path::new(&prepared.workspace_path)
         .join("README.md")
         .exists());
+    let launch_context = std::path::Path::new(&prepared.context_pack_path);
+    assert!(launch_context.exists());
+    let rendered_context = fs::read_to_string(launch_context).unwrap();
+    assert!(rendered_context.contains("# ICARUS context pack"));
+    assert!(rendered_context.contains(&task.task_id));
+    assert_eq!(prepared.context_pack_hash.len(), 64);
+    assert!(repo
+        .path()
+        .join(".icarus/runtime/context")
+        .join(&task.task_id)
+        .join(format!("{}.json", prepared.execution_id))
+        .exists());
     assert!(
         read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
             .unwrap()

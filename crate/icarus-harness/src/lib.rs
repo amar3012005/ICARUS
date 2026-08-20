@@ -196,6 +196,10 @@ pub struct RunPreparation {
     pub workspace_mode: String,
     pub worktree_id: String,
     pub workspace_path: String,
+    /// A launch-time copy of the Rust-generated pack placed inside the launch workspace. Its
+    /// digest is recorded in the authority runtime so later verification can detect divergence.
+    pub context_pack_path: String,
+    pub context_pack_hash: String,
     /// `certified` is reserved for adapters that have passed the complete enforcement contract.
     /// No current adapter may self-assert it from JavaScript launch code.
     pub certification: String,
@@ -236,7 +240,12 @@ fn adapter_capabilities(_agent: &str) -> AdapterCapabilities {
     }
 }
 
-fn adapter_launch_arguments(agent: &str, workspace: &Path, task_id: &str) -> Vec<String> {
+fn adapter_launch_arguments(
+    agent: &str,
+    workspace: &Path,
+    task_id: &str,
+    context_pack_path: &Path,
+) -> Vec<String> {
     let workspace = workspace.display().to_string();
     match agent {
         // Codex's built-in sandbox is an additional boundary around the isolated worktree.
@@ -257,13 +266,46 @@ fn adapter_launch_arguments(agent: &str, workspace: &Path, task_id: &str) -> Vec
             "manual".into(),
             "--append-system-prompt".into(),
             format!(
-                "This is governed ICARUS task {task_id}. Read the ICARUS context pack before planning; do not claim verification without ICARUS receipts."
+                "This is governed ICARUS task {task_id}. Read the launch-time ICARUS context pack at {} before planning; do not claim verification without ICARUS receipts.",
+                context_pack_path.display(),
             ),
         ],
         // Cursor/Grok are only launched from the isolated CWD at present. Their capabilities
         // remain explicit compatibility mode rather than assumed parity with the CLIs above.
         _ => Vec::new(),
     }
+}
+
+fn persist_launch_context(
+    root: &Path,
+    workspace: &Path,
+    task: &TaskRecord,
+) -> Result<(PathBuf, String)> {
+    // Compile before launching an agent and persist the exact same JSON in the authoritative
+    // runtime and in the selected workspace. The workspace copy is deliberately local/ignored:
+    // it makes a managed run self-contained without putting task context into source control.
+    let pack = build_context(root, &task.task_id, 12_000)?;
+    let json = format!("{}\n", serde_json::to_string_pretty(&pack)?);
+    let markdown = render_context_markdown(&pack);
+    let digest = sha256(json.as_bytes());
+    let relative = format!("context/{}/{}", task.task_id, task.execution_id);
+    atomic_write(
+        &runtime_root(root).join(format!("{relative}.json")),
+        json.as_bytes(),
+    )?;
+    atomic_write(
+        &runtime_root(root).join(format!("{relative}.md")),
+        markdown.as_bytes(),
+    )?;
+
+    let workspace_pack = workspace
+        .join(".icarus/runtime/context")
+        .join(&task.task_id)
+        .join(format!("{}.md", task.execution_id));
+    if workspace != root {
+        atomic_write(&workspace_pack, markdown.as_bytes())?;
+    }
+    Ok((workspace_pack, digest))
 }
 
 /// Permit ordinary model/UX arguments after `icarus run -- ...`, but reject options that could
@@ -1075,6 +1117,10 @@ pub fn prepare_run(
         }
         (path, format!("isolated-{task_id}"))
     };
+    // This is a launch gate, not a convenience export: if the mandatory context cannot be
+    // compiled within its budget, no coding agent is started.
+    let (context_pack_path, context_pack_hash) =
+        persist_launch_context(&root, &workspace_path, &task)?;
     let capabilities = adapter_capabilities(&agent);
     let certification = if capabilities.pre_action_authorization
         && capabilities.post_action_event_capture
@@ -1094,10 +1140,17 @@ pub fn prepare_run(
         workspace_mode,
         worktree_id: worktree_id.clone(),
         workspace_path: workspace_path.display().to_string(),
+        context_pack_path: context_pack_path.display().to_string(),
+        context_pack_hash,
         certification: certification.into(),
         compatibility_mode: certification != "certified",
         capabilities,
-        launch_arguments: adapter_launch_arguments(&agent, &workspace_path, task_id),
+        launch_arguments: adapter_launch_arguments(
+            &agent,
+            &workspace_path,
+            task_id,
+            &context_pack_path,
+        ),
     };
     write_snapshot(
         &root,

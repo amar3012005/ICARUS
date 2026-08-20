@@ -275,7 +275,8 @@ function cmdRun(flags) {
     : 'certified managed mode: enforcement contract passed';
   console.log(ok(`prepared ${c.path(preparation.task_id)} in ${c.path(preparation.workspace_path)}`));
   console.log(c.dim(`  ${agent} · ${label}`));
-  console.log(c.dim(`  agent must call icarus_context_get before planning; task ${preparation.task_id} remains the governing contract.`));
+  console.log(c.dim(`  launch context: ${preparation.context_pack_path}`));
+  console.log(c.dim(`  task ${preparation.task_id} remains the governing contract; refresh via icarus_context_get after material changes.`));
   if (flags['dry-run']) return;
   const task = harness.transitionTask(flags.repo || process.cwd(), taskId, 'executing');
   const result = spawnSync(command, [...(preparation.launch_arguments || []), ...userArgs], { cwd: preparation.workspace_path, stdio: 'inherit' });
