@@ -103,6 +103,19 @@ fn malformed_repository_policy_fails_closed_and_doctor_reports_it() {
 }
 
 #[test]
+fn doctor_reports_when_no_managed_adapter_has_been_enabled() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let report = doctor(repo.path()).unwrap();
+    assert!(report.healthy);
+    assert!(report.checks.iter().any(|check| {
+        check.id == "adapters"
+            && check.status == "warn"
+            && check.detail.contains("no managed adapters enabled")
+    }));
+}
+
+#[test]
 fn events_have_a_durable_tamper_evident_chain_and_head() {
     let repo = repo();
     let initialized = init(repo.path(), InitOptions::default()).unwrap();

@@ -696,6 +696,25 @@ fn remote_url(root: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn adapter_command(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "cursor" => Some("cursor"),
+        "grok" => Some("grok"),
+        _ => None,
+    }
+}
+
+fn adapter_available(agent: &str) -> bool {
+    adapter_command(agent).is_some_and(|command| {
+        Command::new(command)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
 fn validate_manifest(manifest: Manifest) -> Result<Manifest> {
     if manifest.schema_version != MANIFEST_VERSION
         || manifest.harness_version != 1
@@ -4429,6 +4448,29 @@ pub fn doctor(repo_root: &Path) -> Result<DoctorReport> {
             "manifest root or git remote fingerprint differs from this workspace".into()
         },
     });
+    if manifest.agents.is_empty() {
+        checks.push(DoctorCheck {
+            id: "adapters".into(),
+            status: "warn".into(),
+            detail: "no managed adapters enabled in the manifest".into(),
+        });
+    } else {
+        for agent in &manifest.agents {
+            let command = adapter_command(agent).expect("validated manifest agent");
+            let available = adapter_available(agent);
+            checks.push(DoctorCheck {
+                id: format!("adapter:{agent}"),
+                status: if available { "pass" } else { "fail" }.into(),
+                detail: if available {
+                    format!("{command} is available on PATH")
+                } else {
+                    format!(
+                        "{command} is not available on PATH; managed {agent} runs cannot launch"
+                    )
+                },
+            });
+        }
+    }
     let runtime = runtime_root(&root);
     let probe = runtime.join(format!(
         ".write-probe-{}",
