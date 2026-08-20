@@ -29,10 +29,27 @@ const EXT_TO_LANG = {
   '.rs': 'rust',
 };
 const _langCache = new Map();
+// Cached across calls within one process — a compiled Bun binary's dynamic import() of the
+// sidecar below is itself cheap once resolved, but no reason to repeat it per language load.
+let _bunWasmAssets = null;
+async function resolveWasmPath(name) {
+  // Real bug fixed here: require.resolve() on a package-relative path works fine under plain
+  // Node, but a `bun build --compile` single binary has no such file on disk at runtime —
+  // confirmed live, this was a real, silent failure in every shipped release
+  // ("Cannot find module 'tree-sitter-wasms/out/tree-sitter-javascript.wasm'"). Bun's own
+  // asset-embedding (`import ... with { type: "file" }`) is the real fix, but that's ESM-only
+  // syntax this CommonJS file can't hold directly — see wasm-assets.bun.mjs's own doc comment.
+  if (typeof Bun !== 'undefined') {
+    if (!_bunWasmAssets) _bunWasmAssets = (await import('./wasm-assets.bun.mjs')).default;
+    return _bunWasmAssets[name];
+  }
+  return require.resolve(LANG_WASM[name]);
+}
+
 async function loadLanguage(name) {
   if (_langCache.has(name)) return _langCache.get(name);
   const Parser = await getParser();
-  const wasmPath = require.resolve(LANG_WASM[name]);
+  const wasmPath = await resolveWasmPath(name);
   const lang = await Parser.Language.load(wasmPath);
   _langCache.set(name, lang);
   return lang;
@@ -134,6 +151,20 @@ function extractJsTs(tree, relPath, language) {
       case 'call_expression': {
         const name = calleeName(n);
         if (name) calls.push({ calleeName: name, line: n.startPosition.row + 1, enclosingQualified: currentEnclosing() });
+        // Real bug fixed here: this codebase (and most real-world Node code) is CommonJS —
+        // `require('./x')`, not ES `import ... from`. import_statement below only fires for
+        // the latter, so imports_of silently returned zero results for require()-based files —
+        // confirmed live: every file in icarus's own source tree came back empty. A require()
+        // call is structurally just a call_expression whose callee is the bare identifier
+        // "require" with one string-literal argument (verified via a real tree-sitter parse,
+        // not guessed at) — record it as an import edge exactly like import_statement does.
+        if (name === 'require') {
+          const argsNode = n.childForFieldName('arguments');
+          const firstArg = argsNode ? [...Array(argsNode.namedChildCount).keys()].map((i) => argsNode.namedChild(i))[0] : null;
+          if (firstArg && firstArg.type === 'string') {
+            imports.push({ source: firstArg.text.replace(/^['"]|['"]$/g, ''), line: n.startPosition.row + 1 });
+          }
+        }
         break;
       }
       case 'import_statement': {
