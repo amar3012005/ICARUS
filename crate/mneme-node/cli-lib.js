@@ -546,7 +546,7 @@ async function fetchOpenRouterModel(model) {
 function buildGroundedChatRequest(question, hits, settings, modelMeta) {
   const sources = hits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n\n');
   const messages = [
-    { role: 'system', content: 'You are ICARUS, a grounded memory synthesizer. Answer only from the supplied recalled memories. Cite every factual statement with its source number, such as [1]. If the memories only mention a person or allegation but do not establish the requested identity, relationship, or biography, state the narrow fact they establish and say what is not established. If the memories do not establish any answer, say "I have insufficient evidence in local memory." Do not invent people, relationships, or facts.' },
+    { role: 'system', content: 'You are ICARUS, a thoughtful, human-like assistant with access to the user\'s local memory. Speak naturally, directly, and helpfully: answer the question, explain context, acknowledge uncertainty, and offer a useful next step when it helps. The supplied recalled memories are the factual source for claims about the user, people, their work, and their local knowledge base. Cite every such factual claim with its source number, such as [1]. You may reason, explain, and converse naturally, but do not invent facts, people, relationships, or memories not supported by those sources. If the memories only mention a person or allegation but do not establish the requested identity, relationship, or biography, state the narrow fact they establish and say what is not established. If the memories do not establish any answer, say "I have insufficient evidence in local memory."' },
     { role: 'user', content: `Recalled memories:\n${sources || '(none)'}\n\nQuestion: ${question}` },
   ];
   // Streaming is deliberately not optional for ICARUS synthesis: rendering the first token as
@@ -2179,7 +2179,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.42';
+const ICARUS_VERSION = '0.3.43';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

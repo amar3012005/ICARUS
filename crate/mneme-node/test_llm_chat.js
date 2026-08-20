@@ -28,6 +28,7 @@ assert.strictEqual(request.temperature, 0.2);
 assert.deepStrictEqual(request.reasoning, { effort: 'high', exclude: true });
 assert.match(request.messages[0].content, /insufficient evidence/i);
 assert.match(request.messages[0].content, /only mention a person or allegation/i);
+assert.match(request.messages[0].content, /thoughtful, human-like assistant/i);
 assert.match(request.messages[1].content, /\[1\] Kruti is a researcher\./);
 assert.match(request.messages[1].content, /Who is Kruti\?/);
 
