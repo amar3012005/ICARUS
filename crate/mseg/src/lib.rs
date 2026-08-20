@@ -14,6 +14,6 @@ mod shard;
 mod types;
 
 pub use mseg_format::{flags, MsegError, Result};
-pub use segment::{Segment, SlotId};
+pub use segment::{read_live_texts_read_only, ReadOnlyRecord, Segment, SlotId};
 pub use shard::Shard;
 pub use types::{Filter, Hit, MemoryInput};

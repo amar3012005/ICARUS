@@ -17,7 +17,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use memmap2::MmapMut;
+use memmap2::{Mmap, MmapMut};
 use mseg_format::{
     flags, read_text, FileHeader, MsegError, Result, SlotHeader, TextRef, EDGE_WIRE_BYTES,
     FILE_HEADER_SIZE, SLOT_REGION_OFFSET, SLOT_SIZE,
@@ -31,6 +31,16 @@ const INITIAL_SLOTS: usize = 1024;
 
 /// A stable slot identifier (SPEC §5.1). Here it equals the physical slot index.
 pub type SlotId = u32;
+
+/// A live record observed through the strictly read-only AMR scan. This deliberately omits
+/// vectors and mutable metadata: callers that only need local evidence must not need a writer
+/// handle (or trigger crash recovery) just to read text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyRecord {
+    pub slot_id: SlotId,
+    pub layer: u8,
+    pub text: String,
+}
 
 /// An mmap-backed `.mseg` segment plus its `.vec` and `.txt` companions.
 pub struct Segment {
@@ -621,6 +631,72 @@ impl Segment {
     pub fn index_failures(&self) -> u64 {
         self.hnsw.as_ref().map(|ix| ix.add_failures()).unwrap_or(0)
     }
+}
+
+/// Read all durably committed, live text records without opening any companion file for write.
+///
+/// This does not create missing files, acquire a writer lock, update a header, or run recovery.
+/// The caller is responsible for holding an appropriate shard-level read lock if a writer may
+/// exist concurrently. On a v1 shard, records after `committed_count` are intentionally ignored:
+/// they are not durable evidence and a normal mutable open would discard them during recovery.
+pub fn read_live_texts_read_only(dir: &Path, name: &str) -> Result<Vec<ReadOnlyRecord>> {
+    let (mseg_path, _vec_path, txt_path, _edg_path) = Segment::paths(dir, name);
+    let mseg_file = File::open(&mseg_path)?;
+    let mmap = unsafe { Mmap::map(&mseg_file)? };
+    if mmap.len() < FILE_HEADER_SIZE {
+        return Err(MsegError::Corrupt(format!(
+            "{}.mseg shorter than file header",
+            name
+        )));
+    }
+    let header = read_header(&mmap)?;
+    if !header.is_valid() {
+        return Err(MsegError::BadHeader);
+    }
+    if mmap.len() < mseg_len_for(0) as usize {
+        return Err(MsegError::Corrupt("mseg shorter than slot region".into()));
+    }
+    let capacity = (mmap.len() - SLOT_REGION_OFFSET) / SLOT_SIZE;
+    let visible_slots = if header.format_version() >= 1 {
+        header.committed_count()
+    } else {
+        header.slot_count()
+    };
+    if visible_slots as usize > capacity {
+        return Err(MsegError::Corrupt(
+            "committed slot count exceeds AMR slot capacity".into(),
+        ));
+    }
+    let mut text_file = File::open(txt_path)?;
+    let mut records = Vec::new();
+    for index in 0..visible_slots as usize {
+        let offset = SLOT_REGION_OFFSET + index * SLOT_SIZE;
+        let slot = SlotHeader::ref_from_bytes(&mmap[offset..offset + SLOT_SIZE])
+            .copied()
+            .map_err(|_| MsegError::Corrupt("slot cast failed".into()))?;
+        if slot.is_tombstoned() || slot.is_superseded() || slot.text_len_lz4() == 0 {
+            continue;
+        }
+        let mut block = vec![0u8; slot.text_len_lz4() as usize];
+        text_file.seek(SeekFrom::Start(slot.text_ptr() as u64))?;
+        text_file.read_exact(&mut block)?;
+        let raw = read_text(
+            &block,
+            TextRef {
+                text_ptr: 0,
+                text_len_lz4: slot.text_len_lz4(),
+                text_len_raw: slot.text_len_raw(),
+            },
+        )?;
+        let text = String::from_utf8(raw)
+            .map_err(|error| MsegError::Corrupt(format!("slot text not utf8: {error}")))?;
+        records.push(ReadOnlyRecord {
+            slot_id: slot.id(),
+            layer: slot.layer(),
+            text,
+        });
+    }
+    Ok(records)
 }
 
 impl Drop for Segment {

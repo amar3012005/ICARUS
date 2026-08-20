@@ -502,6 +502,8 @@ version = "0.1.0"
 dependencies = [
  "globset",
  "libc",
+ "mneme-bm25",
+ "mseg",
  "rusqlite",
  "serde",
  "serde_json",

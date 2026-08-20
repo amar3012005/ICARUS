@@ -747,6 +747,68 @@ fn context_exposes_failed_evidence_and_unresolved_risks_without_agent_inference(
 }
 
 #[test]
+fn context_retrieves_task_relevant_committed_repo_local_amr_evidence() {
+    let outer = tempdir().unwrap();
+    let repo_path = outer.path().join("harness-recall-fixture");
+    fs::create_dir_all(&repo_path).unwrap();
+    fs::write(repo_path.join(".git"), "gitdir: fake\n").unwrap();
+    init(&repo_path, InitOptions::default()).unwrap();
+    let mut shard =
+        mseg::Shard::open(&repo_path.join(".icarus/data"), "harness-recall-fixture", 4).unwrap();
+    shard
+        .segment()
+        .insert(mseg::MemoryInput::new(
+            "The orbital cache invalidation path is owned by src/cache.rs.",
+            vec![0.0; 4],
+        ))
+        .unwrap();
+    shard
+        .segment()
+        .insert(mseg::MemoryInput::new(
+            "Unrelated expense policy evidence.",
+            vec![0.0; 4],
+        ))
+        .unwrap();
+    shard.segment().flush().unwrap();
+    drop(shard);
+
+    let task = start_task(&repo_path, "repair orbital cache invalidation", contract()).unwrap();
+    let pack = build_context(&repo_path, &task.task_id, 20_000).unwrap();
+    let recalled: Vec<_> = pack
+        .items
+        .iter()
+        .filter(|item| item.kind == "local_memory_evidence")
+        .collect();
+    assert_eq!(recalled.len(), 1);
+    assert!(recalled[0]
+        .source
+        .contains("harness-recall-fixture/shard.amr#slot-0"));
+    assert!(recalled[0].content.contains("orbital cache invalidation"));
+    assert!(recalled[0].retrieval_reason.contains("full-corpus BM25"));
+}
+
+#[test]
+fn context_never_waits_for_or_bypasses_a_repo_local_shard_writer() {
+    let outer = tempdir().unwrap();
+    let repo_path = outer.path().join("harness-locked-recall");
+    fs::create_dir_all(&repo_path).unwrap();
+    fs::write(repo_path.join(".git"), "gitdir: fake\n").unwrap();
+    init(&repo_path, InitOptions::default()).unwrap();
+    let _writer =
+        mseg::Shard::open(&repo_path.join(".icarus/data"), "harness-locked-recall", 4).unwrap();
+    let task = start_task(&repo_path, "inspect local evidence", contract()).unwrap();
+
+    let pack = build_context(&repo_path, &task.task_id, 20_000).unwrap();
+    let recall_status = pack
+        .items
+        .iter()
+        .find(|item| item.kind == "local_memory_recall")
+        .unwrap();
+    assert_eq!(recall_status.freshness, "unavailable");
+    assert!(recall_status.content.contains("shard is busy"));
+}
+
+#[test]
 fn seal_rejects_a_receipt_after_a_real_worktree_edit() {
     let repo = repo();
     fs::remove_file(repo.path().join(".git")).unwrap();

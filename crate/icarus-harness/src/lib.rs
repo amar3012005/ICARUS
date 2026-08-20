@@ -5,6 +5,7 @@
 //! Language bindings may call it, but must not reimplement these invariants.
 
 use globset::{Glob, GlobSetBuilder};
+use mneme_bm25::{bm25_search, Bm25Doc, Bm25Params};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2263,6 +2264,166 @@ fn graph_slice(root: &Path, objective: &str) -> Value {
     json!({"available": true, "freshness": freshness, "terms": terms, "nodes": nodes, "edges": edges})
 }
 
+fn repo_local_org(root: &Path) -> String {
+    // This deliberately mirrors cli-lib.js's repoOrgName() result: a harness may only read
+    // the repo-local shard, never the user's global/default memory corpus.
+    let raw = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+    for character in raw.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            normalized.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            normalized.push('-');
+            last_was_separator = true;
+        }
+    }
+    normalized = normalized.trim_matches('-').to_owned();
+    if normalized.is_empty() {
+        "default".into()
+    } else {
+        normalized
+    }
+}
+
+#[cfg(unix)]
+struct SharedShardReadLock(File);
+
+#[cfg(unix)]
+impl SharedShardReadLock {
+    fn acquire(path: &Path) -> std::result::Result<Self, String> {
+        use std::os::unix::io::AsRawFd;
+        let file = File::open(path).map_err(|error| error.to_string())?;
+        // SAFETY: the descriptor belongs to `file` for the duration of the call. A shared,
+        // non-blocking lock gives readers a stable committed snapshot without waiting behind a
+        // long-running ingest or opening a competing writer handle.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+        if result == 0 {
+            Ok(Self(file))
+        } else {
+            Err("repo-local shard is busy; retry after the writer releases shard.lock".into())
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SharedShardReadLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: this descriptor is owned by the guard and the unlock is best-effort only.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(not(unix))]
+struct SharedShardReadLock;
+
+#[cfg(not(unix))]
+impl SharedShardReadLock {
+    fn acquire(_path: &Path) -> std::result::Result<Self, String> {
+        Err("repo-local AMR read locking is unsupported on this platform".into())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalRecallHit {
+    slot_id: u32,
+    layer: u8,
+    score: f64,
+    text: String,
+}
+
+fn display_local_memory_record(raw: &str) -> Option<String> {
+    let Ok(record) = serde_json::from_str::<Value>(raw) else {
+        return Some(raw.to_owned());
+    };
+    let Some(object) = record.as_object() else {
+        return Some(raw.to_owned());
+    };
+    // Only ICARUS's structured-memory envelopes have an id. Evidence documents may themselves
+    // be JSON, so do not reinterpret arbitrary JSON as a memory record.
+    if !object.get("id").is_some_and(Value::is_string) {
+        return Some(raw.to_owned());
+    }
+    if object
+        .get("is_latest")
+        .and_then(Value::as_bool)
+        .is_some_and(|latest| !latest)
+    {
+        return None;
+    }
+    let content = object
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let title = object
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let display = if title.is_empty() {
+        content.to_owned()
+    } else if content.is_empty() {
+        title.to_owned()
+    } else {
+        format!("{title}\n{content}")
+    };
+    (!display.trim().is_empty()).then_some(display)
+}
+
+/// Full-corpus, deterministic lexical retrieval over the repository-local AMR shard. This is a
+/// data-source adapter, not an LLM or JS-side heuristic: it reads only committed slots while a
+/// shared lock is held and uses the engine's native BM25 implementation for ranking.
+fn local_memory_recall(
+    root: &Path,
+    query: &str,
+    top_k: usize,
+) -> std::result::Result<Vec<LocalRecallHit>, String> {
+    let org = repo_local_org(root);
+    let shard_dir = root.join(".icarus/data").join(&org);
+    let shard_file = shard_dir.join("shard.amr");
+    let lock_file = shard_dir.join("shard.lock");
+    if !shard_file.exists() || !lock_file.exists() {
+        return Err(format!(
+            "repo-local AMR shard is not initialized for org `{org}`"
+        ));
+    }
+    let _lock = SharedShardReadLock::acquire(&lock_file)?;
+    let records = mseg::read_live_texts_read_only(&shard_dir, "shard")
+        .map_err(|error| format!("cannot read repo-local AMR shard: {error}"))?;
+    let records: Vec<_> = records
+        .into_iter()
+        .filter_map(|record| {
+            display_local_memory_record(&record.text)
+                .map(|text| (record.slot_id, record.layer, text))
+        })
+        .collect();
+    let documents: Vec<_> = records
+        .iter()
+        .enumerate()
+        .map(|(id, (_, _, text))| Bm25Doc {
+            id: id as u32,
+            text,
+        })
+        .collect();
+    let ranked = bm25_search(&documents, query, top_k, Bm25Params::default());
+    Ok(ranked
+        .into_iter()
+        .filter_map(|hit| {
+            let (slot_id, layer, text) = records.get(hit.id as usize)?;
+            Some(LocalRecallHit {
+                slot_id: *slot_id,
+                layer: *layer,
+                score: hit.score,
+                text: text.clone(),
+            })
+        })
+        .collect())
+}
+
 fn referenced_decisions(
     root: &Path,
     references: &[String],
@@ -2593,6 +2754,61 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
                 serde_json::to_string_pretty(&unresolved_risks)?,
             ),
         )?;
+    }
+    // Retrieval remains strictly repository-local. The harness reads the AMR durable snapshot
+    // itself; it does not call a model, a remote recall API, or a JavaScript ranking shim.
+    let local_org = repo_local_org(&root);
+    match local_memory_recall(&root, &task.objective, 8) {
+        Ok(hits) if hits.is_empty() => add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "local_memory_recall",
+                format!(".icarus/data/{local_org}/shard.amr"),
+                "committed snapshot",
+                "repository-local AMR shard",
+                "full-corpus BM25 retrieval from the task objective returned no matching records",
+                false,
+                "no matching committed local memory or evidence records".into(),
+            ),
+        )?,
+        Ok(hits) => {
+            for (rank, hit) in hits.into_iter().enumerate() {
+                let layer = match hit.layer {
+                    0 => "memory",
+                    1 => "evidence",
+                    2 => "cognitive",
+                    _ => "other",
+                };
+                add_context_item(
+                    &mut pack,
+                    ContextItem::new(
+                        "local_memory_evidence",
+                        format!(".icarus/data/{local_org}/shard.amr#slot-{}", hit.slot_id),
+                        "committed snapshot",
+                        format!("repository-local AMR {layer}"),
+                        format!(
+                            "full-corpus BM25 retrieval from the task objective; rank {} with score {:.6}",
+                            rank + 1,
+                            hit.score
+                        ),
+                        false,
+                        hit.text,
+                    ),
+                )?;
+            }
+        }
+        Err(reason) => add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "local_memory_recall",
+                format!(".icarus/data/{local_org}/shard.amr"),
+                "unavailable",
+                "repository-local AMR shard",
+                "local memory/evidence retrieval was not available; no global or remote fallback is used",
+                false,
+                reason,
+            ),
+        )?,
     }
     let event_chain = verify_event_chain(&root, &load_manifest(&root)?.repo_id)?;
     let content = serde_json::to_string_pretty(
