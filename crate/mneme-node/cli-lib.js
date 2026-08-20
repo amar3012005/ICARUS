@@ -854,10 +854,19 @@ async function embed(texts, cfg) {
 }
 
 function chunk(text, size = 900) {
-  const words = text.split(/\s+/);
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const words = trimmed.split(/\s+/);
   const out = [];
   for (let i = 0; i < words.length; i += size) out.push(words.slice(i, i + size).join(' '));
-  return out.filter((c) => c.trim().length > 20);
+  // Never discard real input. The old `> 20` filter silently lost an entire short document and
+  // any final tail of at most 20 characters. At the normal 900-word size only the final piece can
+  // realistically be that small, so fold it into its predecessor to avoid a tiny standalone
+  // index entry while preserving every word. A short whole document remains one valid chunk.
+  if (out.length > 1 && out[out.length - 1].length <= 20) {
+    out[out.length - 2] += ` ${out.pop()}`;
+  }
+  return out;
 }
 
 // Local .amr engine: text-only, since the Rust engine has no extraction/OCR pipeline — reading a

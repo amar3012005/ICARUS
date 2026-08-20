@@ -169,10 +169,9 @@ test('INGESTABLE_EXTS covers the documented local set', () => {
 });
 
 // ── chunk ──────────────────────────────────────────────────────────────────────────────
-// Documenting the REAL contract, which is easy to misread from the call sites: `size` counts
-// WORDS, not characters, and any resulting piece of 20 characters or fewer is discarded. Both
-// of these were asserted wrongly on a first pass at these tests — the tests were wrong, the
-// function was right, and pinning the actual behaviour is the point.
+// `size` counts WORDS, not characters. Every non-whitespace word must survive chunking: short
+// whole documents remain recallable, while a short final tail is folded into the previous chunk
+// instead of becoming a low-value standalone fragment.
 test('chunk splits on word count, not character count', () => {
   const text = Array.from({ length: 2500 }, (_, i) => `word${i}`).join(' ');
   const parts = chunk(text, 900);
@@ -190,10 +189,20 @@ test('chunk treats whitespace-free text as a single word, so it does not split',
   assert.equal(parts.length, 1, 'no whitespace means one word means one chunk');
 });
 
-test('chunk DROPS pieces of 20 characters or fewer — a real content-loss edge', () => {
-  assert.deepEqual(chunk('short', 900), [], '"short" is 5 chars, below the 20-char floor');
-  assert.deepEqual(chunk('tiny bit of text', 900), [], '16 chars, still dropped');
-  assert.equal(chunk('this sentence is comfortably longer than twenty characters', 900).length, 1);
+test('REGRESSION: chunk preserves a short non-whitespace document', () => {
+  assert.deepEqual(chunk('short', 900), ['short']);
+  assert.deepEqual(chunk('tiny bit of text', 900), ['tiny bit of text']);
+});
+
+test('REGRESSION: chunk merges a short final tail instead of discarding it', () => {
+  const words = [...Array.from({ length: 900 }, (_, i) => `word${i}`), 'tail'];
+  const parts = chunk(words.join(' '), 900);
+  assert.equal(parts.length, 1, 'the tiny tail should not become a standalone index fragment');
+  assert.deepEqual(parts.join(' ').split(' '), words, 'the tail must remain present');
+});
+
+test('chunk ignores content that is only whitespace', () => {
+  assert.deepEqual(chunk('  \n\t  ', 900), []);
 });
 
 // ── relationship enum ──────────────────────────────────────────────────────────────────
