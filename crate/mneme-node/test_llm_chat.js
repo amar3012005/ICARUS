@@ -1,7 +1,7 @@
 'use strict';
 // Regression coverage for the user-facing OpenRouter model/chat layer.
 const assert = require('assert');
-const { selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel } = require('./cli-lib.js');
+const { DEFAULT_OPENROUTER_SYNTHESIS_MODEL, resolveSynthesisModel, selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel } = require('./cli-lib.js');
 
 const models = [
   { id: 'acme/vision', name: 'Vision', architecture: { output_modalities: ['image'] }, supported_parameters: [] },
@@ -11,6 +11,9 @@ const models = [
 
 const found = selectOpenRouterModels(models, 'deepseek', 5);
 assert.deepStrictEqual(found.map((m) => m.id), ['deepseek/flash']);
+assert.strictEqual(DEFAULT_OPENROUTER_SYNTHESIS_MODEL, 'deepseek/deepseek-v4-flash-0731');
+assert.strictEqual(resolveSynthesisModel({ llm: { model: 'anthropic/claude-3.5-haiku' } }), DEFAULT_OPENROUTER_SYNTHESIS_MODEL);
+assert.strictEqual(resolveSynthesisModel({ llm: { model: 'deepseek/custom', modelSelected: true } }), 'deepseek/custom');
 
 assert.deepStrictEqual(reasoningForModel(models[1], 'high'), { effort: 'high', exclude: true });
 assert.strictEqual(reasoningForModel(models[1], 'medium'), null);

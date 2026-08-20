@@ -34,7 +34,7 @@ const path = require('path');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
-  openRouterApiKey, setOpenRouterApiKey, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, chatWithOpenRouter,
+  openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, chatWithOpenRouter,
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
@@ -447,12 +447,57 @@ function autocompleteMatches(input) {
   return SLASH_COMMANDS.filter((s) => s.cmd.startsWith(input));
 }
 
+function modelPickerMatches(picker) {
+  return selectOpenRouterModels(picker.models, picker.query, 8);
+}
+function modelPickerLines(state) {
+  const picker = state._modelPicker;
+  if (!picker) return [];
+  const matches = modelPickerMatches(picker);
+  const selected = Math.min(picker.selected, Math.max(0, matches.length - 1));
+  picker.selected = selected;
+  const lines = [heading('Choose synthesis model'), `${m.faint('Search:')} ${m.bright(picker.query || 'all OpenRouter text models')}`];
+  if (!matches.length) lines.push(err('no matching text model — keep typing or Esc to cancel'));
+  matches.forEach((model, i) => {
+    const active = i === selected;
+    const mark = active ? c.success('›') : m.faint(' ');
+    const detail = `${model.name || ''}${model.reasoning ? ' · thinking' : ''}`;
+    lines.push(` ${mark} ${active ? c.command(model.id) : m.normal(model.id)}  ${m.faint(detail)}`);
+  });
+  lines.push(m.faint('↑/↓ choose · type to search · Enter selects · Esc cancels'));
+  return lines;
+}
+function openModelPicker(state, cfg, models, query = '') {
+  state._modelPicker = { models, query, selected: 0 };
+  state._modalResolver = (key) => {
+    const picker = state._modelPicker;
+    if (!picker) return;
+    const matches = modelPickerMatches(picker);
+    if (key === '\x1b') { state._modelPicker = null; state._modalResolver = null; out(state, c.dim('  model selection cancelled.')); scheduleRedraw(state); return; }
+    if (key === '\r' || key === '\n') {
+      const chosen = matches[picker.selected];
+      if (!chosen) return;
+      cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', model: chosen.id, modelSelected: true };
+      saveCfg(cfg);
+      state._modelPicker = null; state._modalResolver = null;
+      out(state, ok(`synthesis model set to ${chosen.id}.`)); scheduleRedraw(state); return;
+    }
+    if (key === '\x1b[A') { picker.selected = Math.max(0, picker.selected - 1); scheduleRedraw(state); return; }
+    if (key === '\x1b[B') { picker.selected = Math.min(Math.max(0, matches.length - 1), picker.selected + 1); scheduleRedraw(state); return; }
+    if (key === '\x7f' || key === '\b') { picker.query = picker.query.slice(0, -1); picker.selected = 0; scheduleRedraw(state); return; }
+    if (key.length === 1 && key >= ' ') { picker.query += key; picker.selected = 0; scheduleRedraw(state); }
+  };
+  scheduleRedraw(state);
+}
+
 function redraw(state) {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
   const matches = autocompleteMatches(state.input);
   const dropdown = matches.slice(0, 6);
   const dropdownH = dropdown.length;
+  const picker = modelPickerLines(state);
+  const pickerH = picker.length;
   const cfg = loadCfg();
 
   const inputH = 3;
@@ -468,8 +513,8 @@ function redraw(state) {
   // all on a genuinely tiny terminal (the same >=4-visible-content-row floor as before) rather
   // than rendering a broken/negative layout.
   const hero = heroBoxLines(cfg, state, cols);
-  const heroH = (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
-  const contentH = Math.max(1, rows - heroH - dropdownH - inputH - tipH);
+  const heroH = (rows - hero.length - pickerH - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
+  const contentH = Math.max(1, rows - heroH - pickerH - dropdownH - inputH - tipH);
 
   const pending = state._pendingPartial ? [state._pendingPartial] : [];
   // Real perf bug caught live ("jerking", "stuck", "slow" on a real terminal after a long
@@ -501,6 +546,7 @@ function redraw(state) {
   if (heroH) frame.push(...hero);
   frame.push(...visible);
   frame.push(...Array(padCount).fill(''));
+  frame.push(...picker);
   for (const d of dropdown) frame.push(`  ${m.bright(d.cmd)} ${m.faint(d.hint)}`);
   frame.push(state.scrollOffset > 0
     ? m.faint(`↑ scrolled up ${state.scrollOffset} lines — PgDn or scroll down to return to live output`)
@@ -529,7 +575,7 @@ function redraw(state) {
 
   // Input row = the box's MIDDLE line: everything above it, plus its own top border, plus 1
   // to convert the 0-indexed count into a 1-indexed terminal row.
-  const inputRowIndex = heroH + visible.length + padCount + dropdownH + tipH + 1 + 1;
+  const inputRowIndex = heroH + visible.length + padCount + pickerH + dropdownH + tipH + 1 + 1;
   realWrite(HIDE_CURSOR + moveTo(1, 1) + body + moveTo(inputRowIndex, cursorCol) + SHOW_CURSOR);
 }
 
@@ -721,27 +767,8 @@ async function dispatch(line, state, cfg) {
     }
     case 'model': {
       if (!openRouterApiKey(cfg)) { out(state, err('no LLM API key set — use /llm-api <openrouter-api-key> and then try again')); break; }
-      const requested = argStr.trim();
-      if (!requested) {
-        const models = await fetchOpenRouterModels();
-        const choices = selectOpenRouterModels(models, '', 12);
-        out(state, heading('OpenRouter text models'));
-        choices.forEach((m) => out(state, `  ${c.command(m.id)}  ${c.dim(`${m.name || ''} · ${(m.context_length || 0).toLocaleString()} context${m.reasoning ? ' · thinking' : ''}`)}`));
-        out(state, c.dim('  Set one: /model <model-id>, or search: /model deepseek'));
-        break;
-      }
       const models = await fetchOpenRouterModels();
-      const exact = models.find((m) => m.id === requested || m.canonical_slug === requested);
-      if (exact) {
-        cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', model: exact.id };
-        saveCfg(cfg);
-        out(state, ok(`model set to ${exact.id}${exact.reasoning ? ` — thinking: ${exact.reasoning.default_enabled ? exact.reasoning.default_effort || 'on' : 'off'}` : ' — no thinking control'}`));
-      } else {
-        const choices = selectOpenRouterModels(models, requested, 12);
-        if (!choices.length) { out(state, err(`no OpenRouter text model matches "${requested}"`)); break; }
-        out(state, heading(`OpenRouter matches for "${requested}"`));
-        choices.forEach((m) => out(state, `  ${c.command(`/model ${m.id}`)}  ${c.dim(m.name || '')}`));
-      }
+      openModelPicker(state, cfg, models, argStr.trim());
       break;
     }
     case 'thinking': {
@@ -751,7 +778,7 @@ async function dispatch(line, state, cfg) {
       if (effort === 'off' || effort === 'none') {
         cfg.llm = { ...(cfg.llm || {}), thinking: 'off' }; saveCfg(cfg); out(state, ok('thinking disabled.')); break;
       }
-      const model = cfg.llm?.model || '~deepseek/deepseek-v4-flash-latest';
+      const model = resolveSynthesisModel(cfg);
       const meta = await fetchOpenRouterModel(model);
       if (!meta.reasoning?.supported_efforts?.includes(effort)) { out(state, err(`${model} does not support thinking effort "${effort}". Supported: ${(meta.reasoning?.supported_efforts || []).join(', ') || 'none'}`)); break; }
       cfg.llm = { ...(cfg.llm || {}), thinking: effort }; saveCfg(cfg); out(state, ok(`thinking set to ${effort} for ${model}.`));

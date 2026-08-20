@@ -474,6 +474,7 @@ function saveCfg(cfg) {
 // `/llm-api` migrates new values away from plaintext.
 const OPENROUTER_KEYCHAIN_SERVICE = 'com.singulance.icarus.openrouter';
 const OPENROUTER_KEYCHAIN_ACCOUNT = 'api-key';
+const DEFAULT_OPENROUTER_SYNTHESIS_MODEL = 'deepseek/deepseek-v4-flash-0731';
 function keychainOpenRouterKey() {
   if (process.platform !== 'darwin') return null;
   try {
@@ -484,11 +485,17 @@ function setOpenRouterApiKey(key, cfg) {
   if (!/^sk-or-v1-[A-Za-z0-9_-]+$/.test(String(key || ''))) throw new Error('invalid OpenRouter API key format (expected sk-or-v1-...)');
   if (process.platform !== 'darwin') throw new Error('secure key storage is currently available on macOS only; set OPENROUTER_API_KEY in your environment instead');
   require('child_process').execFileSync('security', ['add-generic-password', '-U', '-s', OPENROUTER_KEYCHAIN_SERVICE, '-a', OPENROUTER_KEYCHAIN_ACCOUNT, '-w', key], { stdio: 'ignore' });
-  cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', apiKey: null, keychainService: OPENROUTER_KEYCHAIN_SERVICE };
+  // A legacy `llm.model` configured distillation, not the user's selected synthesizer. Reset it
+  // when this flow is first enabled so an old unavailable model cannot hijack `/chat`.
+  cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', apiKey: null, keychainService: OPENROUTER_KEYCHAIN_SERVICE,
+    model: cfg.llm?.modelSelected ? cfg.llm.model : DEFAULT_OPENROUTER_SYNTHESIS_MODEL, modelSelected: !!cfg.llm?.modelSelected };
   saveCfg(cfg);
 }
 function openRouterApiKey(cfg) {
   return process.env.OPENROUTER_API_KEY || keychainOpenRouterKey() || cfg.llm?.apiKey || null;
+}
+function resolveSynthesisModel(cfg) {
+  return cfg.llm?.modelSelected && cfg.llm?.model ? cfg.llm.model : DEFAULT_OPENROUTER_SYNTHESIS_MODEL;
 }
 
 /** True if an embedding provider is actually usable: not explicitly disabled, AND a key is
@@ -551,7 +558,7 @@ async function chatWithOpenRouter(question, org, cfg, { topK = 8 } = {}) {
   if (!openRouterApiKey(cfg)) throw new Error('no LLM API key set — use /llm-api <openrouter-api-key> and then try again');
   if (cfg.llm?.provider && cfg.llm.provider !== 'openrouter') throw new Error('chat requires an OpenRouter key — use /llm-api <openrouter-api-key>');
   const hits = await recallQuery(question, org, cfg, topK);
-  const model = cfg.llm?.model || '~deepseek/deepseek-v4-flash-latest';
+  const model = resolveSynthesisModel(cfg);
   let meta = null;
   try { meta = await fetchOpenRouterModel(model); } catch (_) { /* request still gives OpenRouter the final authority */ }
   const request = buildGroundedChatRequest(question, hits, { model, temperature: cfg.llm?.temperature, maxTokens: cfg.llm?.maxTokens, thinking: cfg.llm?.thinking }, meta);
@@ -1977,7 +1984,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.34';
+const ICARUS_VERSION = '0.3.35';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2051,7 +2058,7 @@ module.exports = {
   pickFolderNative,
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
-  OPENROUTER_KEYCHAIN_SERVICE, openRouterApiKey, setOpenRouterApiKey, fetchOpenRouterModels, fetchOpenRouterModel,
+  OPENROUTER_KEYCHAIN_SERVICE, DEFAULT_OPENROUTER_SYNTHESIS_MODEL, openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel,
   selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, chatWithOpenRouter,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
