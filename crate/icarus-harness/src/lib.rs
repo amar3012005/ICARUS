@@ -283,14 +283,42 @@ fn adapter_launch_arguments(
     match agent {
         // Codex's built-in sandbox is an additional boundary around the isolated worktree.
         // `on-request` keeps potentially external/elevated commands visible to the human.
-        "codex" => vec![
-            "--cd".into(),
-            workspace,
-            "--sandbox".into(),
-            "workspace-write".into(),
-            "--ask-for-approval".into(),
-            "on-request".into(),
-        ],
+        "codex" => {
+            let developer_instructions = format!(
+                "This is governed ICARUS task {task_id}. Read the launch-time ICARUS context pack at {} before planning. Use the ICARUS MCP lifecycle and verification tools; do not claim verification without ICARUS receipts.",
+                context_pack_path.display(),
+            );
+            // `--config` values are documented Codex TOML overrides. They are constructed here,
+            // in Rust, and user-provided config/profile flags are rejected below so this launch
+            // cannot be redirected away from the task-local MCP server or its workspace.
+            vec![
+                "--cd".into(),
+                workspace.clone(),
+                "--sandbox".into(),
+                "workspace-write".into(),
+                "--ask-for-approval".into(),
+                "on-request".into(),
+                "--strict-config".into(),
+                "--config".into(),
+                "mcp_servers.icarus.command=\"icarus\"".into(),
+                "--config".into(),
+                "mcp_servers.icarus.args=[\"mcp\", \"serve\"]".into(),
+                "--config".into(),
+                format!(
+                    "mcp_servers.icarus.cwd={}",
+                    serde_json::to_string(&workspace).expect("workspace path serializes")
+                ),
+                "--config".into(),
+                "mcp_servers.icarus.required=true".into(),
+                "--config".into(),
+                "mcp_servers.icarus.default_tools_approval_mode=\"prompt\"".into(),
+                "--config".into(),
+                format!(
+                    "developer_instructions={}",
+                    serde_json::to_string(&developer_instructions).expect("instruction serializes")
+                ),
+            ]
+        }
         // Claude Code's manual permission mode is the non-bypass posture. It is deliberately
         // not advertised as an ICARUS interception hook; MCP/context instructions remain the
         // compatibility surface until hook conformance is implemented.
@@ -397,6 +425,13 @@ pub fn validate_agent_arguments(agent: &str, arguments: &[String]) -> Result<()>
             "--cd",
             "-C",
             "--add-dir",
+            "--config",
+            "-c",
+            "--profile",
+            "-p",
+            "--remote",
+            "--remote-auth-token-env",
+            "--strict-config",
         ],
         "claude" => &[
             "--dangerously-skip-permissions",
@@ -415,7 +450,7 @@ pub fn validate_agent_arguments(agent: &str, arguments: &[String]) -> Result<()>
                     .strip_prefix(blocked)
                     .is_some_and(|suffix| suffix.starts_with('='))
         }) || matches!(agent, "codex")
-            && ["-s", "-a", "-C"]
+            && ["-s", "-a", "-C", "-c", "-p"]
                 .iter()
                 .any(|short| argument.starts_with(short))
     }) {

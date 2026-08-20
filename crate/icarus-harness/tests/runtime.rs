@@ -618,17 +618,25 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     assert_eq!(prepared.certification, "compatibility");
     assert!(prepared.compatibility_mode);
     assert!(!prepared.capabilities.pre_action_authorization);
-    assert_eq!(
-        prepared.launch_arguments,
-        vec![
-            "--cd",
-            prepared.workspace_path.as_str(),
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "on-request",
-        ]
-    );
+    assert!(prepared
+        .launch_arguments
+        .windows(2)
+        .any(|pair| pair == ["--cd", prepared.workspace_path.as_str()]));
+    assert!(prepared
+        .launch_arguments
+        .windows(2)
+        .any(|pair| pair == ["--sandbox", "workspace-write"]));
+    assert!(prepared
+        .launch_arguments
+        .iter()
+        .any(|argument| argument == "--strict-config"));
+    assert!(prepared
+        .launch_arguments
+        .iter()
+        .any(|argument| argument == "mcp_servers.icarus.command=\"icarus\""));
+    assert!(prepared.launch_arguments.iter().any(|argument| {
+        argument.starts_with("developer_instructions=") && argument.contains(&task.task_id)
+    }));
     assert!(std::path::Path::new(&prepared.workspace_path)
         .join("README.md")
         .exists());
@@ -783,6 +791,18 @@ fn agent_arguments_cannot_weaken_rust_selected_launch_controls() {
     assert!(validate_agent_arguments("claude", &["--model".into(), "sonnet".into()]).is_ok());
     assert!(validate_agent_arguments("codex", &["--sandbox=danger-full-access".into()]).is_err());
     assert!(validate_agent_arguments("codex", &["-sdanger-full-access".into()]).is_err());
+    assert!(validate_agent_arguments(
+        "codex",
+        &[
+            "--config".into(),
+            "sandbox_mode=\"danger-full-access\"".into()
+        ]
+    )
+    .is_err());
+    assert!(
+        validate_agent_arguments("codex", &["-cmcp_servers.evil.command=\"sh\"".into()]).is_err()
+    );
+    assert!(validate_agent_arguments("codex", &["--profile".into(), "unsafe".into()]).is_err());
     assert!(validate_agent_arguments(
         "codex",
         &["--dangerously-bypass-approvals-and-sandbox".into()]
