@@ -319,6 +319,43 @@ function tuiProgressLine(event, spinner, cols = process.stdout.columns || 80) {
   return formatHivemindProgress({ ...event, file: shortenProgressFile(event.file, cols) }, spinner);
 }
 
+const INGEST_PHASE = { uploading: 1, queued: 2, processing: 3, mirroring: 4, purging: 5, complete: 6, duplicate: 3, pending: 6, failed: 6 };
+const INGEST_PHASE_LABEL = { uploading: 'uploading', queued: 'queued', processing: 'extracting', mirroring: 'mirroring locally', purging: 'verifying', complete: 'complete', duplicate: 'already exists', pending: 'processing later', failed: 'failed' };
+
+// A folder ingest is sequential, so make that truth visible: one durable row per file. The bar
+// represents observed lifecycle stages rather than pretending to know an extractor percentage.
+function tuiIngestQueueLine(event, spinner, cols = process.stdout.columns || 80) {
+  const phase = event.phase || 'uploading';
+  const stage = INGEST_PHASE[phase] || 1;
+  const width = 14;
+  const filled = Math.min(width, Math.floor((stage / 6) * width));
+  const bar = `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+  const terminal = phase === 'complete' || phase === 'pending' || phase === 'failed';
+  const mark = phase === 'failed' ? c.error('✕') : terminal ? c.success('✓') : spinner;
+  const file = shortenProgressFile(event.file, cols);
+  return `  ${mark} [${bar}] ${event.current || event.completed || 0}/${event.total || 0}  ${INGEST_PHASE_LABEL[phase] || phase}  ${file || ''}`;
+}
+
+function recordIngestQueue(state, event, spinner, cols = process.stdout.columns || 80) {
+  const current = event.current || event.completed || 1;
+  const isFirst = current === 1 && Number(event.completed || 0) === 0 && event.phase === 'uploading';
+  if (!state._ingestQueue || isFirst) state._ingestQueue = { current: null, row: -1 };
+  const queue = state._ingestQueue;
+  const line = tuiIngestQueueLine(event, spinner, cols);
+  if (queue.current === current && queue.row >= 0) state.transcript[queue.row] = line;
+  else {
+    state.transcript.push(line);
+    queue.current = current;
+    queue.row = state.transcript.length - 1;
+  }
+  if (['complete', 'pending', 'failed'].includes(event.phase)) queue.current = null;
+}
+
+function updateIngestQueue(state, event, spinner) {
+  recordIngestQueue(state, event, spinner);
+  scheduleRedraw(state);
+}
+
 // The status view is an index dashboard, not a log. Each org gets one compact card so the eye
 // can compare its memory, evidence, and relationship inventory on a single scan.
 function statusCardLines(shard, rich, richErr = null) {
@@ -899,18 +936,21 @@ async function dispatch(line, state, cfg) {
         out(state, c.dim(`  → ${ingestMode === 'evidence' ? 'evidence only' : 'evidence + memory generation'}`));
         out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(tuiProgressLine(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
+        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => updateIngestQueue(state, event, c.running(spinnerFrame(tick++))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
+        state._ingestQueue = null;
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);
         if (result.failed) notes.push(`${result.failed} failed — see errors above`);
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
+        if (result.remoteSegments) notes.push(`${result.remoteSegments} new server segments`);
         if (result.purged) notes.push(`${result.purged} cloud doc(s) purged after mirroring`);
         if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — no fetchable HIVEMIND document for images`);
         const outcome = ingestMode === 'evidence'
-          ? `${result.chunks} evidence segments`
+          ? `${result.chunks} local evidence segments`
           : `${result.live} memories, ${result.chunks} segments`;
-        out(state, `\n${ok(`ingested ${result.files} files → ${outcome} (${ingestMode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
+        const action = result.duplicates === result.files ? `checked ${result.files} existing files` : `ingested ${result.files} files`;
+        out(state, `\n${ok(`${action} → ${outcome} (${ingestMode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;
         const result = await ingestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
@@ -1150,4 +1190,4 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, statusCardLines, stripAnsi };
+module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, stripAnsi };

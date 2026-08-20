@@ -556,7 +556,11 @@ function buildGroundedChatRequest(question, hits, settings, modelMeta) {
   if (reasoning) request.reasoning = reasoning;
   return request;
 }
-function consumeOpenRouterSse(buffer, onToken) {
+// OpenRouter can deliver a provider failure only AFTER the HTTP stream is established (HTTP 200
+// with a top-level `error` object). Preserve it instead of swallowing it and falsely reporting
+// "no chat content". Providers may also represent text as a content-part array, so normalize
+// both documented OpenAI-style shapes into ordinary rendered tokens.
+function consumeOpenRouterSse(buffer, onToken, onError = () => {}) {
   const lines = buffer.split(/\r?\n/);
   const remainder = lines.pop();
   for (const line of lines) {
@@ -564,8 +568,20 @@ function consumeOpenRouterSse(buffer, onToken) {
     const payload = line.slice(5).trim();
     if (!payload || payload === '[DONE]') continue;
     try {
-      const token = JSON.parse(payload)?.choices?.[0]?.delta?.content;
-      if (typeof token === 'string' && token) onToken(token);
+      const event = JSON.parse(payload);
+      if (event?.error?.message) {
+        onError(event.error.message);
+        continue;
+      }
+      const choice = event?.choices?.[0];
+      const content = choice?.delta?.content ?? choice?.delta?.text ?? choice?.text;
+      if (typeof content === 'string' && content) onToken(content);
+      else if (Array.isArray(content)) {
+        for (const part of content) {
+          const token = typeof part === 'string' ? part : (part?.text || part?.content || '');
+          if (typeof token === 'string' && token) onToken(token);
+        }
+      }
     } catch (_) {
       // A malformed provider event must not make a grounded answer disappear. The next valid
       // event still renders; incomplete events remain in `remainder` until their newline arrives.
@@ -589,12 +605,15 @@ async function chatWithOpenRouter(question, org, cfg, { topK = 8, onToken = () =
   const decoder = new TextDecoder();
   let remainder = '';
   let answer = '';
+  let streamError = null;
   const emit = (token) => { answer += token; onToken(token); };
+  const captureError = (message) => { streamError = message; };
   for await (const chunk of res.body) {
-    remainder = consumeOpenRouterSse(remainder + decoder.decode(chunk, { stream: true }), emit);
+    remainder = consumeOpenRouterSse(remainder + decoder.decode(chunk, { stream: true }), emit, captureError);
   }
-  remainder = consumeOpenRouterSse(remainder + decoder.decode(), emit);
-  if (!answer) throw new Error('OpenRouter returned no chat content');
+  remainder = consumeOpenRouterSse(remainder + decoder.decode(), emit, captureError);
+  if (streamError) throw new Error(`OpenRouter chat stream error: ${streamError}`);
+  if (!answer) throw new Error(`OpenRouter returned no chat content from ${model} — the provider completed without a text delta`);
   return { answer, hits, model };
 }
 
@@ -1999,7 +2018,11 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     emit({ phase: 'complete', current: n });
   }
   return {
-    files: files.length, chunks: totalSegments || totalMemories, live: totalMemories,
+    // `remoteSegments` is what newly-created server jobs reported. `mirrored` is the only
+    // authoritative count of evidence that actually reached THIS local shard, including the
+    // duplicate-document recovery branch. Keep them separate: reporting zero remote segments
+    // as zero local evidence was a misleading accounting bug.
+    files: files.length, chunks: mirrored, remoteSegments: totalSegments, live: totalMemories,
     mode: ingestMode, distilled: totalMemories > 0, signed: 0, duplicates, pending, failed, mirrored, skippedImages, purged,
   };
 }
@@ -2124,7 +2147,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.39';
+const ICARUS_VERSION = '0.3.40';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

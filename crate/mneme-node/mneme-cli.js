@@ -89,10 +89,12 @@ async function cmdIngest(flags, cfg) {
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
     if (result.failed) notes.push(`${result.failed} failed — see the errors printed above`);
     if (result.mirrored) notes.push(`${result.mirrored} segments mirrored into ${c.path(org)}'s local shard`);
+    if (result.remoteSegments) notes.push(`${result.remoteSegments} new server segments`);
     if (result.purged) notes.push(`${result.purged} cloud document(s) deleted after mirroring — HIVEMIND used as extraction pipeline only`);
     if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — HIVEMIND doesn't create a fetchable document for images`);
-    const outcome = ingestMode === 'evidence' ? `${result.chunks} evidence segments` : `${result.live} memories, ${result.chunks} segments`;
-    console.log(`\n${ok(`HIVEMIND ingested ${c.bold(result.files)} files → ${outcome} (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
+    const outcome = ingestMode === 'evidence' ? `${result.chunks} local evidence segments` : `${result.live} memories, ${result.chunks} segments`;
+    const action = result.duplicates === result.files ? `checked ${result.files} existing files` : `HIVEMIND ingested ${result.files} files`;
+    console.log(`\n${ok(`${action} → ${outcome} (mode=${result.mode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
     return;
   }
   if (!embeddingsConfigured(cfg)) {

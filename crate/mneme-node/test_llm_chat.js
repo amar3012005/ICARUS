@@ -36,4 +36,13 @@ assert.match(remainder, /Hel$/);
 remainder = consumeOpenRouterSse(remainder + 'lo"}}]}\r\n\r\ndata: {"choices":[{"delta":{"content":" world"}}]}\r\ndata: [DONE]\r\n', (token) => streamed.push(token));
 assert.strictEqual(remainder, '');
 assert.deepStrictEqual(streamed, ['Hello', ' world']);
+
+const geminiStyle = [];
+remainder = consumeOpenRouterSse('data: {"choices":[{"delta":{"content":[{"type":"text","text":"Grounded"}]}}]}\n\ndata: {"choices":[{"delta":{"text":" answer"}}]}\n\n', (token) => geminiStyle.push(token));
+assert.strictEqual(remainder, '');
+assert.deepStrictEqual(geminiStyle, ['Grounded', ' answer']);
+
+let streamError = null;
+consumeOpenRouterSse('data: {"error":{"code":429,"message":"provider capacity exhausted"},"choices":[{"delta":{"content":""},"finish_reason":"error"}]}\n\n', () => {}, (message) => { streamError = message; });
+assert.strictEqual(streamError, 'provider capacity exhausted');
 console.log('LLM_CHAT_OK');
