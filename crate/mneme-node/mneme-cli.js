@@ -134,6 +134,50 @@ function cmdDoctor(flags) {
   if (!report.healthy) throw new Error(`harness doctor found ${report.issues.length} blocking issue(s)`);
 }
 
+// Task lifecycle is deliberately a presentation layer over the native Rust harness. Contracts
+// are explicit files, never ad-hoc model output hidden in a command invocation.
+function cmdTask(flags) {
+  const [subcommand, taskId, target] = flags._;
+  const repo = flags.repo || process.cwd();
+  const harness = require('./harness.js');
+  if (subcommand === 'start') {
+    const objective = taskId;
+    if (!objective || !flags.contract) throw new Error('usage: icarus task start <objective> --contract <contract.json> [--repo <dir>]');
+    let contract;
+    try { contract = JSON.parse(fs.readFileSync(flags.contract, 'utf8')); } catch (error) { throw new Error(`cannot read task contract ${flags.contract}: ${error.message}`); }
+    const task = harness.startTask(repo, { objective, contract });
+    console.log(ok(`started ${c.path(task.task_id)} · ${task.status} · contract v${task.contract_version}`));
+    return;
+  }
+  if (!taskId) throw new Error('usage: icarus task <status|resume|transition|authorize> <TASK-ID> [state] [--repo <dir>]');
+  if (subcommand === 'status') {
+    const task = harness.taskStatus(repo, taskId);
+    console.log(`${c.bold(task.task_id)}  ${c.system(task.status)}  contract v${task.contract_version}`);
+    console.log(c.dim(`  execution: ${task.execution_id}${task.previous_execution_id ? `  resumed from: ${task.previous_execution_id}` : ''}`));
+    console.log(c.dim(`  objective: ${task.objective}`));
+    return;
+  }
+  if (subcommand === 'resume') {
+    const task = harness.resumeTask(repo, taskId);
+    console.log(ok(`resumed ${c.path(task.task_id)} as ${task.execution_id} · ${task.status}`));
+    return;
+  }
+  if (subcommand === 'transition') {
+    if (!target) throw new Error('usage: icarus task transition <TASK-ID> <state> [--repo <dir>]');
+    const task = harness.transitionTask(repo, taskId, target);
+    console.log(ok(`${c.path(task.task_id)} → ${task.status}`));
+    return;
+  }
+  if (subcommand === 'authorize') {
+    if (!flags.kind) throw new Error('usage: icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]');
+    const decision = harness.authorizeAction(repo, taskId, { kind: flags.kind, path: flags.path });
+    console.log(decision.allowed ? ok(`authorized — ${decision.reason}`) : err(`denied — ${decision.reason}`));
+    if (!decision.allowed) process.exitCode = 3;
+    return;
+  }
+  throw new Error('usage: icarus task <start|status|resume|transition|authorize>');
+}
+
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
 // connection state. Real reason, not a style choice: an actual test session against a real
 // HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
@@ -794,6 +838,7 @@ async function main() {
       }
       case 'harness': await cmdHarness(flags); break;
       case 'doctor': cmdDoctor(flags); break;
+      case 'task': cmdTask(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -886,6 +931,13 @@ async function main() {
                                         calls are made; existing graph data is copied safely.
   icarus doctor [--repo <dir>]          verify the harness manifest, runtime, event integrity,
                                         graph migration state, and available agent adapters.
+  icarus task start <objective> --contract <contract.json> [--repo <dir>]
+                                        create a Rust-governed task with an immutable v1 contract.
+  icarus task <status|resume> <TASK-ID> [--repo <dir>]
+  icarus task transition <TASK-ID> <state> [--repo <dir>]
+  icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
+                                        inspect, resume, transition, or ask the Rust authority
+                                        whether a scoped action is allowed. No LLM is invoked.
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too
