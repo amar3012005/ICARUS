@@ -52,6 +52,11 @@ const moveTo = (row, col) => `\x1b[${row};${col}H`;
 // whose own background differs from the app's.
 const BG_BLACK = '\x1b[48;2;0;0;0m';
 const BG_BAND = '\x1b[48;2;26;26;26m';   // user-row band — grok's own prompt_band_color_for()
+// Real baseline foreground for the WHOLE frame — plain, unstyled text (a lot of dispatch()'s
+// recall-result body content has no color function wrapping at all) used to inherit the
+// terminal's own default foreground once a RESET cleared any prior color, instead of a real
+// bright white. Applied everywhere BG_BLACK is, for the same reason.
+const FG_DEFAULT = '\x1b[38;2;255;255;255m';
 // Brightened from the original 200/120/85 — real user complaint on a real terminal: too dark to
 // read comfortably, especially FG_FAINT (used for borders, the tip hint line, and the "Worked
 // for..." marker — a lot of persistent, always-visible chrome, not rare text).
@@ -227,7 +232,7 @@ function userRow(state, text) {
   const clock = nowClock();
   const left = `❯ ${text}`;
   const pad = Math.max(1, cols - visLen(left) - visLen(clock) - 1);
-  const banded = `${BG_BAND}${FG_BRIGHT}${left}${' '.repeat(pad)}${FG_MUTED}${clock}${RESET}`;
+  const banded = `${BG_BAND}${BOLD}${FG_DEFAULT}${left}${' '.repeat(pad)}${FG_MUTED}${clock}${RESET}`;
   state.transcript.push('');
   state.transcript.push(banded);
   state.transcript.push('');
@@ -389,15 +394,18 @@ function redraw(state) {
   // the whole screen each frame — flickers visibly on a real terminal).
   const body = frame.map((l) => {
     const pad = Math.max(0, cols - visLen(l));
-    // Every m.xxx() span ends with a bare RESET (\x1b[0m), which clears the background too —
-    // so any content built from more than one styled span (or followed by trailing pad spaces)
-    // would fall through to the terminal's OWN default background between/after them. Real bug
-    // caught from an actual screenshot: white rectangles behind short lines (the tip hints) where
-    // their content's own reset landed well before the padding that fills out the rest of the
-    // row. Re-assert the black background after every internal reset, not just once at the very
-    // start of the line.
-    const forced = l.split(RESET).join(RESET + BG_BLACK);
-    return BG_BLACK + forced + ' '.repeat(pad) + RESET;
+    // Every m.xxx() span ends with a bare RESET (\x1b[0m), which clears BOTH the background AND
+    // the foreground — so any content built from more than one styled span (or followed by
+    // trailing pad spaces, or plain UNSTYLED text like a lot of recall-result body content that
+    // dispatch() writes with no color function at all) falls through to the terminal's OWN
+    // default colors between/after them. Two real bugs from this: white rectangles behind short
+    // lines (background), and washed-out/dim-looking plain text that was actually inheriting
+    // the terminal's own default foreground instead of a real bright white — caught from a real
+    // screenshot next to grok-build's own crisp white-on-black look. Re-assert BOTH the black
+    // background and a bright white foreground after every internal reset, not just once at the
+    // very start of the line.
+    const forced = l.split(RESET).join(RESET + BG_BLACK + FG_DEFAULT);
+    return BG_BLACK + FG_DEFAULT + forced + ' '.repeat(pad) + RESET;
   }).join('\r\n');
 
   // Input row = the box's MIDDLE line: everything above it, plus its own top border, plus 1
