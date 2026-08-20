@@ -14,15 +14,21 @@
 // blocker for icarus's actual distribution model. Raw ANSI has no such risk: it's only our own
 // code, holding zero dynamic requires.
 //
-// All existing command logic (dispatch()'s /ingest, /recall, /save, /status, etc. cases) is
-// UNCHANGED from the previous readline-based version — only the rendering shell around it is
-// new. dispatch() still just calls console.log/console.error and writes progress ticks via
-// process.stdout.write('\r...'); this file intercepts process.stdout.write globally for the
-// whole session and routes it into the transcript pane instead of letting it hit the real
-// terminal directly (which would corrupt the manually-controlled alt-screen layout). A bare `\r`
-// -prefixed write (the spinner tick pattern already used by /ingest's progress callback) replaces
-// the transcript's last line instead of appending a new one, so progress ticks still look like a
-// single evolving status line, not a scroll of hundreds of ticks.
+// All existing command logic (dispatch()'s /ingest, /recall, /save, /status, etc. cases) calls
+// out(state, ...) directly rather than console.log — a REAL bug caught live, not theoretical:
+// under a bun-compiled binary (icarus's actual distribution format), Bun's console.log does NOT
+// go through the JS-visible process.stdout.write at all — confirmed by a minimal isolated repro
+// (monkey-patch process.stdout.write, call console.log twice, the patched function never fires,
+// both lines leak straight to the real terminal). Every dispatch() case originally used
+// console.log, meaning EVERY command's output was leaking raw past the alt-screen redraw the
+// whole time, not just a rare edge case — it just often LOOKED right because the leaked text
+// happened to land near the correct spot for a lone first command. process.stdout.write IS still
+// intercepted globally (progress-tick writes like `\r...` from /ingest's callback still go
+// through it fine, and it protects against a stray direct write from anywhere else), but dispatch
+// output itself now bypasses console.log/process.stdout.write entirely via out(state, ...) —
+// pushing straight into the transcript array, the same mechanism userRow/markerRow already used
+// successfully. A bare `\r`-prefixed write into that path still replaces the transcript's last
+// line instead of appending, so progress ticks still read as one evolving status line.
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
@@ -334,12 +340,21 @@ function redraw(state) {
   const dropdownH = dropdown.length;
   const cfg = loadCfg();
 
-  const hero = heroBoxLines(cfg, state, cols);
   const inputH = 3;
   const tipH = 1;
-  // The hero box is fixed chrome, but must never squeeze the transcript to nothing on a short
-  // terminal — drop it entirely rather than render a screen with no room for output.
-  const heroH = (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
+  // Real bug caught live: the hero box (14 rows — the big ASCII logo + version/status lines) is
+  // a SPLASH, not permanent chrome — but it used to render on EVERY frame for the whole session.
+  // On a common 24-row terminal that leaves contentH = 24-14-3-1 = 6 visible transcript rows, so
+  // the scrollback window (wrapped.slice(wrapped.length - contentH)) correctly, silently discards
+  // anything older than the last ~6 lines — including a command's OWN response line, moments
+  // after it was written, with nothing wrong in the data itself (confirmed via direct instrumentation:
+  // state.transcript held the missing line the whole time; it was cut by this exact slice).
+  // Real fix: show the splash only until the user actually starts interacting (first command
+  // submitted), then drop it for the rest of the session, like a normal CLI's startup banner —
+  // not a fixed HUD that permanently eats over half of a normal-height terminal.
+  const showHero = state.history.length === 0;
+  const hero = showHero ? heroBoxLines(cfg, state, cols) : [];
+  const heroH = showHero && (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
   const contentH = Math.max(1, rows - heroH - dropdownH - inputH - tipH);
 
   const pending = state._pendingPartial ? [state._pendingPartial] : [];
@@ -540,16 +555,16 @@ async function dispatch(line, state, cfg) {
         // folder" dialog on macOS via osascript, zenity/kdialog on Linux) instead of forcing
         // everyone to paste a path. Async, not execFileSync — the redraw loop and stdin
         // handling keep running while the dialog is open, so the TUI doesn't freeze on it.
-        console.log(c.dim('  no path given — opening the native folder picker...'));
+        out(state, c.dim('  no path given — opening the native folder picker...'));
         dir = await pickFolderNative(`icarus: select a folder to ingest into org "${org}"`);
-        if (!dir) { console.log(err('no file or folder selected — usage: /ingest <dir|file> [--org name] [--local] [--force] [--no-mirror] [--keep-cloud]')); break; }
-        console.log(ok(`selected ${c.path(dir)}`));
+        if (!dir) { out(state, err('no file or folder selected — usage: /ingest <dir|file> [--org name] [--local] [--force] [--no-mirror] [--keep-cloud]')); break; }
+        out(state, ok(`selected ${c.path(dir)}`));
       }
       const viaHivemind = hivemindConfigured(cfg) && !flags.local;
       const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
-      if (skipReason) { console.log(err(skipReason)); break; }
+      if (skipReason) { out(state, err(skipReason)); break; }
       if (viaHivemind) {
-        console.log(bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
+        out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(org)}"...`)));
         let tick = 0;
         const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
         const notes = [];
@@ -559,17 +574,17 @@ async function dispatch(line, state, cfg) {
         if (result.mirrored) notes.push(`${result.mirrored} segments mirrored locally`);
         if (result.purged) notes.push(`${result.purged} cloud doc(s) purged after mirroring`);
         if (result.skippedImages) notes.push(`${result.skippedImages} image(s) skipped — no fetchable HIVEMIND document for images`);
-        console.log(`\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
+        out(state, `\n${ok(`ingested ${result.files} files → ${result.live} memories, ${result.chunks} segments`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;
         const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
-        console.log(`\n${ok(`ingested ${result.chunks} chunks from ${result.files} files (mode=${result.mode})`)}`);
+        out(state, `\n${ok(`ingested ${result.chunks} chunks from ${result.files} files (mode=${result.mode})`)}`);
       }
       break;
     }
     case 'recall': {
       const q = argStr.trim();
-      if (!q) { console.log(err('usage: /recall <query> [--org name] [--k 5]')); break; }
+      if (!q) { out(state, err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
       const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
       const modeLabel = hits[0]?.rerankFailed
@@ -578,70 +593,70 @@ async function dispatch(line, state, cfg) {
         : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 only)')
         : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid, RRF-merged — too few candidates to rerank)')
         : '';
-      console.log(`\n${heading(`top ${hits.length}`)}${modeLabel}\n`);
-      hits.forEach((h, i) => console.log(`  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${h.text.replace(/\s+/g, ' ').slice(0, 140)}`));
+      out(state, `\n${heading(`top ${hits.length}`)}${modeLabel}\n`);
+      hits.forEach((h, i) => out(state, `  ${c.dim(String(i + 1).padStart(2))} ${c.assistant(glyphs.promptArrow)} ${c.model(`[${h.score.toFixed(4)}]`)} ${h.text.replace(/\s+/g, ' ').slice(0, 140)}`));
       break;
     }
     case 'save': {
       const text = argStr.trim();
-      if (!text) { console.log(err('usage: /save <text> [--org name] [--cloud]')); break; }
+      if (!text) { out(state, err('usage: /save <text> [--org name] [--cloud]')); break; }
       if (hivemindConfigured(cfg) && flags.cloud) {
         const r = await hivemindSaveMemory(text, org, cfg);
         await saveLocalMemory(text, org, cfg, { viaCloud: true });
-        console.log(ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
+        out(state, ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
       } else {
         await saveLocalMemory(text, org, cfg);
-        console.log(ok(`saved as a local memory in "${c.path(org)}"'s shard (embedded${embeddingsConfigured(cfg) ? '' : ' lexically — no embedding provider configured'}).`));
+        out(state, ok(`saved as a local memory in "${c.path(org)}"'s shard (embedded${embeddingsConfigured(cfg) ? '' : ' lexically — no embedding provider configured'}).`));
       }
       break;
     }
     case 'status': {
       const s = statusReport(cfg);
-      console.log(`${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
-      console.log(`HIVEMIND: ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}   Signing: ${signingEnabled(cfg) ? c.success('on') : c.dim('off')}`);
-      if (!s.shards.length) { console.log(c.dim('no shards yet')); break; }
+      out(state, `${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
+      out(state, `HIVEMIND: ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}   Signing: ${signingEnabled(cfg) ? c.success('on') : c.dim('off')}`);
+      if (!s.shards.length) { out(state, c.dim('no shards yet')); break; }
       for (const sh of s.shards) {
         let rich = null, richErr = null;
         try { rich = richOrgStats(sh.org, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
-        console.log(`  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`);
+        out(state, `  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`);
         if (rich) {
-          console.log(`    ${c.dim('memories:')} ${c.bold(rich.memoriesLatest)}${rich.memories !== rich.memoriesLatest ? c.dim(` (${rich.memories - rich.memoriesLatest} superseded)`) : ''}   ${c.dim('relationships:')} ${c.bold(rich.relationships)}   ${c.dim('evidence/other:')} ${c.bold(rich.evidenceAndOther)}`);
-          console.log(`    ${c.dim('entities: not tracked locally (no local entity extraction — a real HIVEMIND server-side capability)')}`);
+          out(state, `    ${c.dim('memories:')} ${c.bold(rich.memoriesLatest)}${rich.memories !== rich.memoriesLatest ? c.dim(` (${rich.memories - rich.memoriesLatest} superseded)`) : ''}   ${c.dim('relationships:')} ${c.bold(rich.relationships)}   ${c.dim('evidence/other:')} ${c.bold(rich.evidenceAndOther)}`);
+          out(state, `    ${c.dim('entities: not tracked locally (no local entity extraction — a real HIVEMIND server-side capability)')}`);
         } else {
-          console.log(`    ${c.command(`(memory/relationship counts unavailable — ${richErr})`)}`);
+          out(state, `    ${c.command(`(memory/relationship counts unavailable — ${richErr})`)}`);
         }
       }
       break;
     }
     case 'org': {
-      if (flags._[0]) { state.org = flags._[0]; console.log(ok(`default org set to "${c.path(state.org)}"`)); }
-      else console.log(c.dim(`current org: ${state.org}`));
+      if (flags._[0]) { state.org = flags._[0]; out(state, ok(`default org set to "${c.path(state.org)}"`)); }
+      else out(state, c.dim(`current org: ${state.org}`));
       break;
     }
     case 'connect': {
       const authUrl = process.env.HIVEMIND_URL || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
       const restUrl = process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
-      console.log(c.running('  Opening your browser...'));
+      out(state, c.running('  Opening your browser...'));
       const oauth = await attemptHivemindOAuth(authUrl);
       if (oauth) {
         cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
         saveCfg(cfg);
-        console.log(ok(`HIVEMIND connected${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
+        out(state, ok(`HIVEMIND connected${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
       } else {
-        console.log(err('browser sign-in didn\'t complete — run `icarus connect` outside the TUI for the manual-token fallback.'));
+        out(state, err('browser sign-in didn\'t complete — run `icarus connect` outside the TUI for the manual-token fallback.'));
       }
       break;
     }
     case 'update': {
-      console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
+      out(state, c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
       const { current, latest, upToDate } = await checkForUpdate();
-      if (upToDate) { console.log(ok(`already up to date (${current}).`)); break; }
-      if (upToDate === null) console.log(c.dim('  couldn\'t check the latest version — trying the update anyway.'));
-      else console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
-      console.log(bullet(c.system('downloading and verifying the new binary...')));
+      if (upToDate) { out(state, ok(`already up to date (${current}).`)); break; }
+      if (upToDate === null) out(state, c.dim('  couldn\'t check the latest version — trying the update anyway.'));
+      else out(state, c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
+      out(state, bullet(c.system('downloading and verifying the new binary...')));
       const bytes = await performSelfUpdate();
-      console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB).`));
-      console.log(c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
+      out(state, ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB).`));
+      out(state, c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
       break;
     }
     case 'setup': {
@@ -651,29 +666,29 @@ async function dispatch(line, state, cfg) {
       const icarusCmd = mi.resolveIcarusCommand();
       const validAgents = Object.keys(mi.AGENT_INSTALLERS);
       if (!arg || (arg !== '--all' && arg !== 'all' && !validAgents.includes(arg))) {
-        console.log(err(`usage: /setup <${validAgents.join('|')}|--all>`));
+        out(state, err(`usage: /setup <${validAgents.join('|')}|--all>`));
         break;
       }
       async function setupOne(agentName) {
         const { mcp, global, project } = mi.AGENT_INSTALLERS[agentName];
-        console.log(heading(agentName));
+        out(state, heading(agentName));
         const mcpResult = mcp(icarusCmd);
-        console.log(mcpResult.installed ? ok(`registered: ${mcpResult.path}`) : c.dim(`skipped: ${mcpResult.reason}`));
+        out(state, mcpResult.installed ? ok(`registered: ${mcpResult.path}`) : c.dim(`skipped: ${mcpResult.reason}`));
         if (global) {
           const g = global();
-          console.log(g.installed ? ok(`standing instructions: ${g.path}`) : c.dim(`standing instructions: ${g.reason}`));
+          out(state, g.installed ? ok(`standing instructions: ${g.path}`) : c.dim(`standing instructions: ${g.reason}`));
         }
         const p = project(cwd);
-        console.log(p.installed ? ok(`project instructions: ${p.path} (org "${p.orgName}")`) : c.dim(`project instructions: ${p.reason} (org "${p.orgName}")`));
+        out(state, p.installed ? ok(`project instructions: ${p.path} (org "${p.orgName}")`) : c.dim(`project instructions: ${p.reason} (org "${p.orgName}")`));
         try {
           const shard = initRepoShard(cwd, p.orgName);
-          console.log(ok(`shard: ${shard.dataRoot}/${shard.org}`));
-        } catch (e) { console.log(err(`shard creation skipped: ${e.message}`)); }
+          out(state, ok(`shard: ${shard.dataRoot}/${shard.org}`));
+        } catch (e) { out(state, err(`shard creation skipped: ${e.message}`)); }
         return p.orgName;
       }
       const agents = (arg === '--all' || arg === 'all') ? validAgents : [arg];
       for (const name of agents) await setupOne(name);
-      console.log(ok(`setup done for ${agents.join(', ')} — restart the agent(s) above to pick up the MCP server.`));
+      out(state, ok(`setup done for ${agents.join(', ')} — restart the agent(s) above to pick up the MCP server.`));
       const buildGraph = await askYesNo(state, 'Build the native symbol/call graph for this repo too?');
       if (buildGraph) await dispatch('/graph build', state, cfg);
       break;
@@ -687,25 +702,25 @@ async function dispatch(line, state, cfg) {
       const gn = require('./graph-native.js');
       const repo = flags.repo || process.cwd();
       if (sub === 'build') {
-        console.log(bullet(c.system(`building graph for ${c.path(repo)}...`)));
+        out(state, bullet(c.system(`building graph for ${c.path(repo)}...`)));
         const r = await gn.buildAndStore(repo);
-        console.log(ok(`graph built: ${r.files} files, ${r.nodes} nodes, ${r.edges} edges`));
+        out(state, ok(`graph built: ${r.files} files, ${r.nodes} nodes, ${r.edges} edges`));
       } else if (sub === 'status') {
         const s = await gn.status(repo);
-        console.log(s ? ok(`${s.files} files, ${s.nodes} nodes, ${s.edges} edges — last updated ${s.lastUpdated || '?'}`) : c.dim('no graph built yet for this repo — run /graph build'));
+        out(state, s ? ok(`${s.files} files, ${s.nodes} nodes, ${s.edges} edges — last updated ${s.lastUpdated || '?'}`) : c.dim('no graph built yet for this repo — run /graph build'));
       } else if (sub === 'query') {
         const kind = flags.kind;
         const name = flags.name || argStr.split(' ').slice(1).join(' ');
-        if (!kind || !name) { console.log(err('usage: /graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]')); break; }
-        console.log(JSON.stringify(await gn.query(repo, kind, name), null, 2));
+        if (!kind || !name) { out(state, err('usage: /graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]')); break; }
+        out(state, JSON.stringify(await gn.query(repo, kind, name), null, 2));
       } else {
-        console.log(err('usage: /graph <build|status|query> [--repo <dir>] [--kind <...> --name <...>]'));
+        out(state, err('usage: /graph <build|status|query> [--repo <dir>] [--kind <...> --name <...>]'));
       }
       break;
     }
     case 'help': printHelp(state); break;
     case 'quit': case 'exit': break; // handled in submit() before reaching dispatch
-    default: console.log(err(`unknown command: /${cmd} — try /help`));
+    default: out(state, err(`unknown command: /${cmd} — try /help`));
   }
 }
 
