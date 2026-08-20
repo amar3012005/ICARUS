@@ -127,3 +127,16 @@ test('doctor reports an actionable healthy baseline, then exposes tampered runti
     assert.ok(tampered.checks.some((check) => check.id === 'event_chain' && check.status === 'fail'));
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
+
+test('doctor fails on a stale runtime lock instead of allowing a second writer to proceed', () => {
+  const repo = tmpRepo();
+  try {
+    initHarness(repo);
+    const lock = join(repo, '.icarus', 'runtime', 'locks', 'events.lock');
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: 999999, acquired_at: '2000-01-01T00:00:00.000Z' }));
+    const report = doctor(repo);
+    assert.equal(report.healthy, false);
+    assert.ok(report.checks.some((check) => check.id === 'stale_locks' && check.status === 'fail'));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});

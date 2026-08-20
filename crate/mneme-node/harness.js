@@ -13,6 +13,7 @@ const YAML = require('yaml');
 
 const MANIFEST_VERSION = 1;
 const RUNTIME_DIR = path.join('.icarus', 'runtime');
+const LOCK_STALE_MS = 15 * 60 * 1000;
 const MANIFEST_SCHEMA = z.object({
   schema_version: z.literal(MANIFEST_VERSION),
   harness_version: z.literal(1),
@@ -57,6 +58,50 @@ function readGitRemote(repoRoot) {
 function manifestPath(repoRoot) { return path.join(repoRoot, '.icarus', 'manifest.yaml'); }
 function eventsPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'logs', 'events.jsonl'); }
 function eventHeadPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'state', 'event-head.json'); }
+function locksDir(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'locks'); }
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function inspectRuntimeLocks(repoRoot, now = Date.now()) {
+  const dir = locksDir(repoRoot);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith('.lock'))
+    .map((entry) => {
+      const lockPath = path.join(dir, entry.name);
+      const ownerPath = path.join(lockPath, 'owner.json');
+      try {
+        const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+        const acquiredAt = Date.parse(owner.acquired_at);
+        const stale = !Number.isFinite(acquiredAt) || (now - acquiredAt > LOCK_STALE_MS && !processIsAlive(owner.pid));
+        return { name: entry.name, path: lockPath, owner, stale };
+      } catch {
+        return { name: entry.name, path: lockPath, owner: null, stale: true };
+      }
+    });
+}
+
+function withRuntimeLock(repoRoot, name, callback) {
+  const lockPath = path.join(locksDir(repoRoot), `${name}.lock`);
+  fs.mkdirSync(locksDir(repoRoot), { recursive: true });
+  try {
+    fs.mkdirSync(lockPath);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const existing = inspectRuntimeLocks(repoRoot).find((lock) => lock.path === lockPath);
+    const state = existing?.stale ? 'stale' : 'active';
+    throw new Error(`${state} runtime lock ${name}; run \`icarus doctor\` before retrying`);
+  }
+  try {
+    atomicWrite(path.join(lockPath, 'owner.json'), `${JSON.stringify({ pid: process.pid, acquired_at: new Date().toISOString() })}\n`);
+    return callback();
+  } finally {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+  }
+}
 
 function renderManifest(manifest) {
   return [
@@ -133,32 +178,34 @@ function initHarness(repoRoot, options = {}) {
 }
 
 function appendRuntimeEvent(repoRoot, input) {
-  const manifest = loadManifest(repoRoot);
-  const file = eventsPath(repoRoot);
-  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
-  const previous = existing.at(-1);
-  const event = {
-    schema_version: 1,
-    execution_id: input.execution_id,
-    task_id: input.task_id,
-    sequence: existing.length + 1,
-    event_type: input.event_type,
-    timestamp: input.timestamp || new Date().toISOString(),
-    repo_id: manifest.repo_id,
-    worktree_id: input.worktree_id || 'main',
-    payload: input.payload || {},
-    previous_hash: previous ? previous.event_hash : null,
-  };
-  event.event_hash = sha256(stableJson(event));
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify(event)}\n`, { mode: 0o600 });
-  atomicWrite(eventHeadPath(repoRoot), `${JSON.stringify({
-    schema_version: 1,
-    repo_id: manifest.repo_id,
-    sequence: event.sequence,
-    event_hash: event.event_hash,
-  })}\n`);
-  return event;
+  return withRuntimeLock(repoRoot, 'events', () => {
+    const manifest = loadManifest(repoRoot);
+    const file = eventsPath(repoRoot);
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+    const previous = existing.at(-1);
+    const event = {
+      schema_version: 1,
+      execution_id: input.execution_id,
+      task_id: input.task_id,
+      sequence: existing.length + 1,
+      event_type: input.event_type,
+      timestamp: input.timestamp || new Date().toISOString(),
+      repo_id: manifest.repo_id,
+      worktree_id: input.worktree_id || 'main',
+      payload: input.payload || {},
+      previous_hash: previous ? previous.event_hash : null,
+    };
+    event.event_hash = sha256(stableJson(event));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    atomicWrite(eventHeadPath(repoRoot), `${JSON.stringify({
+      schema_version: 1,
+      repo_id: manifest.repo_id,
+      sequence: event.sequence,
+      event_hash: event.event_hash,
+    })}\n`);
+    return event;
+  });
 }
 
 function verifyEventChain(repoRoot, expectedRepoId) {
@@ -220,6 +267,9 @@ function doctor(repoRoot) {
   const chain = verifyEventChain(repoRoot, manifest.repo_id);
   checks.push({ id: 'event_chain', status: chain.valid ? 'pass' : 'fail', detail: chain.valid ? `${chain.events} event(s) verified` : chain.issues.join('; ') });
 
+  const staleLocks = inspectRuntimeLocks(repoRoot).filter((lock) => lock.stale);
+  checks.push({ id: 'stale_locks', status: staleLocks.length ? 'fail' : 'pass', detail: staleLocks.length ? staleLocks.map((lock) => lock.name).join(', ') : 'none' });
+
   const runtimeGraph = path.join(repoRoot, RUNTIME_DIR, 'graph', 'graph.db');
   const legacyGraph = path.join(repoRoot, '.icarus-graph', 'graph.db');
   checks.push({
@@ -233,9 +283,10 @@ function doctor(repoRoot) {
     try { execFileSync('which', [adapter], { stdio: 'ignore' }); return true; } catch { return false; }
   });
   checks.push({ id: 'adapters', status: available.length ? 'pass' : 'warn', detail: available.length ? available.join(', ') : 'no supported coding-agent executable found on PATH' });
+  checks.push({ id: 'upgrade_compatibility', status: manifest.harness_version === 1 ? 'pass' : 'fail', detail: `harness v${manifest.harness_version}` });
 
   const issues = checks.filter((check) => check.status === 'fail').map((check) => `${check.id}: ${check.detail}`);
   return { healthy: issues.length === 0, repo_id: manifest.repo_id, checks, issues };
 }
 
-module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, parseManifest, MANIFEST_VERSION };
+module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, parseManifest, inspectRuntimeLocks, MANIFEST_VERSION };
