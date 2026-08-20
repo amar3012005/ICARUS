@@ -18,6 +18,7 @@ export declare function harnessVerifyTaskCriterion(repoRoot: string, taskId: str
 export declare function harnessSealTask(repoRoot: string, taskId: string): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
 export declare function harnessPromoteSkill(repoRoot: string, skillId: string, ownerApproval?: string | undefined | null): string
+export declare function harnessRetireSkill(repoRoot: string, skillId: string, reason: string, ownerApproval?: string | undefined | null): string
 export declare function harnessAmendTaskContract(repoRoot: string, taskId: string, contractJson: string, reason: string, approvalId?: string | undefined | null): string
 export declare function harnessCheckpointTask(repoRoot: string, taskId: string, phase: string, inputJson: string): string
 export declare function harnessBuildContext(repoRoot: string, taskId: string, budgetTokens: number): string

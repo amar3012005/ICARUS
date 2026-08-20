@@ -291,7 +291,12 @@ function cmdHarnessSkill(flags) {
     console.log(ok(`activated harness skill ${harness.promoteSkill(repo, skillId, flags.approval).id}`));
     return;
   }
-  throw new Error('usage: icarus harness-skill <propose|promote>');
+  if (subcommand === 'retire') {
+    if (!skillId || !flags.reason) throw new Error('usage: icarus harness-skill retire <skill-id> --reason <reason> --approval <id> [--repo <dir>]');
+    console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
+    return;
+  }
+  throw new Error('usage: icarus harness-skill <propose|promote|retire>');
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1014,6 +1019,15 @@ async function main() {
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)
   icarus status                        shards + disk usage
+  icarus harness-skill propose --file <skill.json> [--repo <dir>]
+                                        submit a reusable, untrusted coding procedure backed by
+                                        sealed governed tasks; it cannot enter agent context yet.
+  icarus harness-skill promote <id> [--approval <id>] [--repo <dir>]
+                                        activate a replay-verified procedure. High-risk skills
+                                        require an attributable owner approval.
+  icarus harness-skill retire <id> --reason <text> --approval <id> [--repo <dir>]
+                                        remove a stale or unsafe procedure from future governed
+                                        context while preserving its approval-backed audit trail.
   icarus setup                         guided, one-by-one wizard: detect coding agents, connect
                                         memory generation, embeddings, HIVEMIND — do this first
   icarus connect [--api-url <url>] [--token <tok>] [--oauth-only]

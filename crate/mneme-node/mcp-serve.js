@@ -638,6 +638,42 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_skill_propose',
+    {
+      title: 'Propose a governed ICARUS harness procedure',
+      description: 'Use only after sealed tasks demonstrate a reusable procedure. This stores an untrusted candidate; it never makes the procedure available to an agent context or grants execution authority.',
+      inputSchema: { repo: z.string().default(process.cwd()), skill: z.record(z.unknown()) },
+    },
+    async ({ repo, skill }) => {
+      try { return textResult(harnessFor().proposeSkill(repo, skill)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_harness_skill_promote',
+    {
+      title: 'Promote a replay-verified harness procedure',
+      description: 'Promotes only a previously proposed procedure. Low-risk procedures require three sealed source tasks, two successful replays, and confidence; high-risk procedures require an attributable owner approval. The Rust core writes verification state.',
+      inputSchema: { repo: z.string().default(process.cwd()), skill_id: z.string(), owner_approval: z.string().optional() },
+    },
+    async ({ repo, skill_id, owner_approval }) => {
+      try { return textResult(harnessFor().promoteSkill(repo, skill_id, owner_approval)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_harness_skill_retire',
+    {
+      title: 'Retire a governed harness procedure with an audit trail',
+      description: 'Use when an active procedure is unsafe, stale, or superseded. Requires an owner approval reference and a reason. ICARUS preserves an immutable runtime archive and removes the procedure from future context packs.',
+      inputSchema: { repo: z.string().default(process.cwd()), skill_id: z.string(), reason: z.string(), owner_approval: z.string() },
+    },
+    async ({ repo, skill_id, reason, owner_approval }) => {
+      try { return textResult(harnessFor().retireSkill(repo, skill_id, reason, owner_approval)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_context_get',
     {
       title: 'Compile a bounded, traceable ICARUS context pack',

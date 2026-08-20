@@ -1,8 +1,9 @@
 use icarus_harness::{
     amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
     graph_source_fingerprint, init, prepare_run, read_snapshot, record_graph_receipt, resume_task,
-    seal_task, start_task, task_status, transition_task, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
+    retire_skill, seal_task, start_task, task_status, transition_task, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
+    TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -622,6 +623,82 @@ fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
         version: 0,
         confidence: 1.0,
         replay_results: vec![],
+        verification: serde_json::Value::Null,
     };
     assert!(icarus_harness::propose_skill(repo.path(), skill).is_err());
+}
+
+fn sealed_source_task(repo: &std::path::Path, objective: &str) -> String {
+    let mut source_contract = contract();
+    source_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'skill source pass\\n'","required":true}
+    ]);
+    let task = start_task(repo, objective, source_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo, &task.task_id, state).unwrap();
+    }
+    assert_eq!(
+        verify_task_criterion(repo, &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "pass"
+    );
+    assert!(seal_task(repo, &task.task_id).unwrap().sealed);
+    task.task_id
+}
+
+#[test]
+fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trail() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let source = sealed_source_task(repo.path(), "derive reviewed procedure");
+    let skill = HarnessSkill {
+        schema_version: 0,
+        id: "deploy-review".into(),
+        state: "active".into(),
+        triggers: vec!["deployment review".into()],
+        instructions: "Review the deployment receipt before approval.".into(),
+        allowed_tools: vec!["shell".into()],
+        policy_requirements: vec!["require owner approval".into()],
+        verification_steps: vec!["receipt review".into()],
+        source_tasks: vec![source],
+        decision_references: vec![],
+        risk: "deploy".into(),
+        owner: "owner".into(),
+        version: 0,
+        confidence: 1.0,
+        replay_results: vec![],
+        verification: serde_json::Value::Null,
+    };
+    icarus_harness::propose_skill(repo.path(), skill).unwrap();
+    assert!(icarus_harness::promote_skill(repo.path(), "deploy-review", None).is_err());
+    let active =
+        icarus_harness::promote_skill(repo.path(), "deploy-review", Some("APR-42".into())).unwrap();
+    assert_eq!(active.verification["status"], "verified");
+    let active_path = repo.path().join(".icarus/skills/deploy-review.json");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&active_path).unwrap())
+            .unwrap()["verification"]["status"],
+        "verified"
+    );
+    assert!(retire_skill(repo.path(), "deploy-review", "superseded procedure", None).is_err());
+    let retired = retire_skill(
+        repo.path(),
+        "deploy-review",
+        "superseded procedure",
+        Some("APR-43".into()),
+    )
+    .unwrap();
+    assert_eq!(retired.state, "retired");
+    assert_eq!(retired.verification["status"], "retired");
+    assert!(repo
+        .path()
+        .join(".icarus/runtime/skills/retired/deploy-review-v1.json")
+        .exists());
 }

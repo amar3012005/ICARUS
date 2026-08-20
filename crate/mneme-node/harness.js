@@ -55,6 +55,7 @@ function sealTask(repoRoot, taskId) {
 
 function proposeSkill(repoRoot, skill) { return invoke('harnessProposeSkill', [repoRoot, JSON.stringify(skill)]); }
 function promoteSkill(repoRoot, skillId, ownerApproval) { return invoke('harnessPromoteSkill', [repoRoot, skillId, ownerApproval]); }
+function retireSkill(repoRoot, skillId, reason, ownerApproval) { return invoke('harnessRetireSkill', [repoRoot, skillId, reason, ownerApproval]); }
 
 function amendTaskContract(repoRoot, taskId, contract, reason, approvalId) {
   return invoke('harnessAmendTaskContract', [repoRoot, taskId, JSON.stringify(contract), reason, approvalId]);
@@ -94,6 +95,7 @@ module.exports = {
   sealTask,
   proposeSkill,
   promoteSkill,
+  retireSkill,
   amendTaskContract,
   checkpointTask,
   buildContext,

@@ -259,6 +259,10 @@ pub struct HarnessSkill {
     pub confidence: f64,
     #[serde(default)]
     pub replay_results: Vec<Value>,
+    /// Written only by the Rust promotion/retirement gates. Context compilation requires
+    /// `status: verified`, so an agent-authored candidate cannot grant itself authority.
+    #[serde(default)]
+    pub verification: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -1577,9 +1581,63 @@ pub fn promote_skill(
         }
     }
     skill.state = "active".into();
+    skill.verification = json!({
+        "status": "verified",
+        "promotion": {
+            "approval_id": owner_approval,
+            "source_task_count": skill.source_tasks.len(),
+            "successful_replay_count": skill.replay_results.iter().filter(|result| result.get("success").and_then(Value::as_bool) == Some(true)).count(),
+        }
+    });
     let active = root
         .join(".icarus/skills")
         .join(format!("{}.json", skill.id));
+    atomic_write(
+        &active,
+        format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+    )?;
+    Ok(skill)
+}
+
+/// Retire a procedure without erasing its provenance. Retirement is an authority-changing
+/// operation: it needs an attributable owner approval and writes both an immutable runtime
+/// archive and the tracked skill state that causes future context packs to exclude it.
+pub fn retire_skill(
+    repo_root: &Path,
+    skill_id: &str,
+    reason: &str,
+    owner_approval: Option<String>,
+) -> Result<HarnessSkill> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)?;
+    if !skill_id_valid(skill_id) || reason.trim().is_empty() {
+        return Err(HarnessError::invalid(
+            "retirement requires a valid skill id and reason",
+        ));
+    }
+    let approval = owner_approval
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| HarnessError::invalid("skill retirement requires owner approval"))?;
+    let active = root.join(".icarus/skills").join(format!("{skill_id}.json"));
+    let mut skill: HarnessSkill = serde_json::from_reader(
+        File::open(&active).map_err(|_| HarnessError::invalid("active skill does not exist"))?,
+    )?;
+    if skill.state != "active" {
+        return Err(HarnessError::invalid("only an active skill can be retired"));
+    }
+    skill.state = "retired".into();
+    skill.verification = json!({
+        "status": "retired",
+        "reason": reason,
+        "approval_id": approval,
+    });
+    let archive = runtime_root(&root)
+        .join("skills/retired")
+        .join(format!("{}-v{}.json", skill.id, skill.version));
+    atomic_write(
+        &archive,
+        format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+    )?;
     atomic_write(
         &active,
         format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
