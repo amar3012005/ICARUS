@@ -649,6 +649,11 @@ const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '
 const HIVEMIND_UPLOAD_EXTS = new Set([...HIVEMIND_INGESTABLE_EXTS].filter((e) => !IMAGE_EXTS.has(e)));
 
 function walkFiles(dir, extSet) {
+  // `dir` may be a single FILE now (the native picker accepts either) — readdirSync on a file
+  // throws ENOTDIR, so check first rather than let the recursion crash on a real, expected input.
+  if (fs.statSync(dir).isFile()) {
+    return extSet.has(path.extname(dir).toLowerCase()) ? [dir] : [];
+  }
   const files = [];
   (function rec(d) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -674,6 +679,13 @@ function walkHivemindIngestable(dir) { return walkFiles(dir, HIVEMIND_INGESTABLE
 function scanIngestable(dir, extSet = INGESTABLE_EXTS) {
   const files = [];
   const skippedByExt = new Map();
+  // Same real input now as walkFiles() above: the native picker can hand back a single file.
+  if (fs.statSync(dir).isFile()) {
+    const ext = path.extname(dir).toLowerCase() || '(no extension)';
+    if (extSet.has(ext)) files.push(dir);
+    else skippedByExt.set(ext, 1);
+    return { files, skippedByExt };
+  }
   (function rec(d) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
@@ -691,6 +703,53 @@ function scanIngestable(dir, extSet = INGESTABLE_EXTS) {
  * the actual extensions seen so "found 32 .pdf, 8 .png, ... — none supported yet" replaces a
  * silent, confusing "✓ ingested 0 files". Pass HIVEMIND_INGESTABLE_EXTS when checking the
  * HIVEMIND-routed path — its real accepted set is much broader than the local engine's. */
+/** Opens a REAL native folder picker — macOS's Finder "choose folder" dialog via osascript
+ * (standard, no extra dependency — every macOS install has osascript), or Linux's zenity/kdialog
+ * if either is actually installed (common on a GUI desktop, absent on a headless/SSH box — that
+ * absence is expected, not an error). Returns the picked path, or null on cancel/no-picker-
+ * available/non-GUI-session — callers fall back to "paste a path" on null, never throw. Async
+ * (execFile, not execFileSync) so a TUI's own redraw loop and keystroke handling keep working
+ * while the native dialog is open, instead of freezing the whole process on it. */
+async function pickFolderNative(promptText) {
+  const { execFile } = require('child_process');
+  const run = (cmd, args) => new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8' }, (error, stdout) => {
+      resolve(error ? null : stdout.trim() || null);
+    });
+  });
+  const prompt = promptText || 'Select a file or folder to ingest';
+  if (process.platform === 'darwin') {
+    // Real, verified constraint: plain AppleScript has NO single dialog that accepts either a
+    // file or a folder — `choose folder` is folder-only, `choose file` is file-only, and
+    // `choose file or folder` (which reads like it should exist) is not a real command — tried
+    // it directly and got a genuine syntax error, not a guess. The real way to get both in one
+    // dialog is JXA (osascript -l JavaScript) driving NSOpenPanel directly with
+    // canChooseFiles/canChooseDirectories both true — verified live: a real panel opens with
+    // both enabled, and returns a clean POSIX path on OK / null on cancel.
+    const script = [
+      'ObjC.import("AppKit");',
+      'const p = $.NSOpenPanel.openPanel;',
+      'p.canChooseFiles = true;',
+      'p.canChooseDirectories = true;',
+      'p.allowsMultipleSelection = false;',
+      `p.prompt = ${JSON.stringify(prompt)};`,
+      'if (p.runModal === $.NSModalResponseOK) { console.log(ObjC.unwrap(p.URLs.objectAtIndex(0).path)); }',
+    ].join('\n');
+    return run('osascript', ['-l', 'JavaScript', '-e', script]);
+  }
+  if (process.platform === 'linux') {
+    // No zenity/kdialog mode picks "either a file or a folder" in one call either — plain
+    // --file-selection (no --directory) is the closer of the two: most GTK/Qt choosers let the
+    // user type or navigate to a bare folder path in the location bar even in file mode, which
+    // --directory mode would refuse for an actual file. Documented compromise, not a perfect
+    // either/or picker.
+    const viaZenity = await run('zenity', ['--file-selection', '--title', prompt]);
+    if (viaZenity) return viaZenity;
+    return run('kdialog', ['--getopenfilename', process.env.HOME || '.']);
+  }
+  return null; // no known native picker for this platform — caller falls back to a typed path
+}
+
 function noIngestableFilesReason(dir, extSet = INGESTABLE_EXTS) {
   const { files, skippedByExt } = scanIngestable(dir, extSet);
   if (files.length || !skippedByExt.size) return null;
@@ -1675,7 +1734,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.20';
+const ICARUS_VERSION = '0.3.22';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1746,6 +1805,7 @@ async function performSelfUpdate(onProgress) {
 module.exports = {
   HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, walkHivemindIngestable,
   INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, HIVEMIND_UPLOAD_EXTS, IMAGE_EXTS, scanIngestable, noIngestableFilesReason,
+  pickFolderNative,
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,

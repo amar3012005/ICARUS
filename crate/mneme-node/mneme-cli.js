@@ -21,7 +21,7 @@ const {
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
   hivemindSaveMemory, saveLocalMemory,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
@@ -69,9 +69,14 @@ function parseFlags(args) {
 // confirmed by reading the real server code, not assumed). `--no-mirror` skips this and leaves
 // the data purely server-side, matching the old behavior.
 async function cmdIngest(flags, cfg) {
-  const dir = flags._[0];
+  let dir = flags._[0];
   const org = flags.org || 'default';
-  if (!dir) throw new Error('usage: icarus ingest <dir> --org <name> [--local] [--force] [--no-mirror]');
+  if (!dir) {
+    console.log(c.dim('no path given — opening the native folder picker...'));
+    dir = await pickFolderNative(`icarus: select a folder to ingest into org "${org}"`);
+    if (!dir) throw new Error('no file or folder selected — usage: icarus ingest <dir|file> --org <name> [--local] [--force] [--no-mirror]');
+    console.log(ok(`selected ${c.path(dir)}`));
+  }
   const viaHivemind = hivemindConfigured(cfg) && !flags.local;
   const skipReason = noIngestableFilesReason(dir, viaHivemind ? HIVEMIND_INGESTABLE_EXTS : undefined);
   if (skipReason) return console.log(err(skipReason));
