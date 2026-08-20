@@ -5,6 +5,7 @@
 //! Language bindings may call it, but must not reimplement these invariants.
 
 use globset::{Glob, GlobSetBuilder};
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1067,6 +1068,123 @@ fn graph_freshness(root: &Path) -> Value {
     })
 }
 
+fn graph_query_terms(objective: &str) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    for word in objective
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .map(str::to_ascii_lowercase)
+    {
+        if word.len() >= 3 {
+            terms.insert(word);
+        }
+    }
+    terms.into_iter().collect()
+}
+
+/// Read a bounded slice from the portable SQLite graph only after its receipt is current. This
+/// keeps relevance selection in Rust and never forwards a stale structural claim to an agent.
+fn graph_slice(root: &Path, objective: &str) -> Value {
+    let freshness = graph_freshness(root);
+    if !freshness
+        .get("current")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return json!({"available": false, "freshness": freshness, "reason": "rebuild graph before using structural context"});
+    }
+    let terms = graph_query_terms(objective);
+    if terms.is_empty() {
+        return json!({"available": true, "freshness": freshness, "nodes": [], "edges": [], "reason": "task objective contains no structural search terms"});
+    }
+    let database = runtime_root(root).join("graph/graph.db");
+    let connection = match Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(connection) => connection,
+        Err(error) => {
+            return json!({"available": false, "freshness": freshness, "reason": format!("cannot read graph database: {error}")})
+        }
+    };
+    let mut nodes = Vec::new();
+    for term in terms.iter().take(8) {
+        let pattern = format!("%{term}%");
+        let mut statement = match connection.prepare(
+            "SELECT qualified_name, file_path, start_line, end_line, language FROM nodes \
+             WHERE lower(name) LIKE ?1 OR lower(qualified_name) LIKE ?1 \
+             ORDER BY file_path, start_line LIMIT 8",
+        ) {
+            Ok(statement) => statement,
+            Err(error) => {
+                return json!({"available": false, "freshness": freshness, "reason": format!("invalid graph node schema: {error}")})
+            }
+        };
+        let rows = match statement.query_map([pattern], |row| {
+            Ok(json!({
+                "qualified_name": row.get::<_, String>(0)?,
+                "file_path": row.get::<_, String>(1)?,
+                "start_line": row.get::<_, i64>(2)?,
+                "end_line": row.get::<_, i64>(3)?,
+                "language": row.get::<_, String>(4)?,
+            }))
+        }) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return json!({"available": false, "freshness": freshness, "reason": format!("cannot query graph nodes: {error}")})
+            }
+        };
+        for row in rows {
+            match row {
+                Ok(node) if !nodes.contains(&node) && nodes.len() < 16 => nodes.push(node),
+                Ok(_) => {}
+                Err(error) => {
+                    return json!({"available": false, "freshness": freshness, "reason": format!("cannot decode graph node: {error}")})
+                }
+            }
+        }
+    }
+    let mut edges = Vec::new();
+    for node in nodes.iter().take(8) {
+        let Some(qualified_name) = node.get("qualified_name").and_then(Value::as_str) else {
+            continue;
+        };
+        let mut statement = match connection.prepare(
+            "SELECT kind, source_qualified, target_qualified, file_path, line FROM edges \
+             WHERE source_qualified = ?1 OR target_qualified = ?1 \
+             ORDER BY file_path, line LIMIT 8",
+        ) {
+            Ok(statement) => statement,
+            Err(error) => {
+                return json!({"available": false, "freshness": freshness, "reason": format!("invalid graph edge schema: {error}")})
+            }
+        };
+        let rows = match statement.query_map([qualified_name], |row| {
+            Ok(json!({
+                "kind": row.get::<_, String>(0)?,
+                "source_qualified": row.get::<_, String>(1)?,
+                "target_qualified": row.get::<_, String>(2)?,
+                "file_path": row.get::<_, String>(3)?,
+                "line": row.get::<_, i64>(4)?,
+            }))
+        }) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return json!({"available": false, "freshness": freshness, "reason": format!("cannot query graph edges: {error}")})
+            }
+        };
+        for row in rows {
+            match row {
+                Ok(edge) if !edges.contains(&edge) && edges.len() < 24 => edges.push(edge),
+                Ok(_) => {}
+                Err(error) => {
+                    return json!({"available": false, "freshness": freshness, "reason": format!("cannot decode graph edge: {error}")})
+                }
+            }
+        }
+    }
+    json!({"available": true, "freshness": freshness, "terms": terms, "nodes": nodes, "edges": edges})
+}
+
 /// Compile a deterministic context pack. This is intentionally extraction and ordering, not
 /// summarization: ICARUS has no LLM in this path, and every included byte is source-addressable.
 pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> Result<ContextPack> {
@@ -1101,6 +1219,27 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             "mandatory execution scope and acceptance criteria",
             true,
             contract,
+        ),
+    )?;
+    let slice = graph_slice(&root, &task.objective);
+    let graph_available = slice
+        .get("available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "graph_slice",
+            ".icarus/runtime/graph/graph.db + receipt.json",
+            if graph_available {
+                "current"
+            } else {
+                "unavailable_or_stale"
+            },
+            "observed code graph",
+            "direct structural matches to the task objective",
+            false,
+            serde_json::to_string_pretty(&slice)?,
         ),
     )?;
     let policy_path = root.join(".icarus/policies/default.yaml");

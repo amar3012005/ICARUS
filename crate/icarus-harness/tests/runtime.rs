@@ -4,6 +4,7 @@ use icarus_harness::{
     task_status, transition_task, verify_event_chain, write_snapshot, Action, EventInput,
     InitOptions, TaskContract,
 };
+use rusqlite::Connection;
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
@@ -375,4 +376,55 @@ fn graph_receipt_is_atomically_bound_to_source_and_database() {
         .checks
         .iter()
         .any(|check| check.id == "graph" && check.status == "warn"));
+}
+
+#[test]
+fn context_compiler_reads_a_bounded_current_graph_slice_in_rust() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(
+        repo.path().join("src/parser.rs"),
+        "pub fn graph_parser() { graph_helper(); }\npub fn graph_helper() {}\n",
+    )
+    .unwrap();
+    let graph_dir = repo.path().join(".icarus/runtime/graph");
+    fs::create_dir_all(&graph_dir).unwrap();
+    let connection = Connection::open(graph_dir.join("graph.db")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE nodes (qualified_name TEXT, file_path TEXT, start_line INTEGER, end_line INTEGER, language TEXT, name TEXT);
+             CREATE TABLE edges (kind TEXT, source_qualified TEXT, target_qualified TEXT, file_path TEXT, line INTEGER);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO nodes VALUES (?1, ?2, 1, 1, 'rust', 'graph_parser')",
+            ["src/parser.rs::graph_parser", "src/parser.rs"],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO nodes VALUES (?1, ?2, 2, 2, 'rust', 'graph_helper')",
+            ["src/parser.rs::graph_helper", "src/parser.rs"],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO edges VALUES ('CALLS', ?1, ?2, 'src/parser.rs', 1)",
+            ["src/parser.rs::graph_parser", "src/parser.rs::graph_helper"],
+        )
+        .unwrap();
+    drop(connection);
+    record_graph_receipt(repo.path(), graph_source_fingerprint(repo.path()).unwrap()).unwrap();
+    let task = start_task(repo.path(), "improve graph parser", contract()).unwrap();
+    let pack = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    let graph = pack
+        .items
+        .iter()
+        .find(|item| item.kind == "graph_slice")
+        .unwrap();
+    assert_eq!(graph.freshness, "current");
+    assert!(graph.content.contains("src/parser.rs::graph_parser"));
+    assert!(graph.content.contains("graph_helper"));
 }
