@@ -141,6 +141,18 @@ test('doctor fails on a stale runtime lock instead of allowing a second writer t
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
+test('doctor rejects a manifest whose recorded repository root no longer matches the workspace', () => {
+  const repo = tmpRepo();
+  try {
+    const { manifest } = initHarness(repo);
+    const file = join(repo, '.icarus', 'manifest.yaml');
+    writeFileSync(file, readFileSync(file, 'utf8').replace(JSON.stringify(manifest.repo_root), JSON.stringify('/different/repository')));
+    const report = doctor(repo);
+    assert.equal(report.healthy, false);
+    assert.ok(report.checks.some((check) => check.id === 'repository_identity' && check.status === 'fail'));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
 test('runtime snapshots are atomically stored under runtime state and reject path escapes', () => {
   const repo = tmpRepo();
   try {

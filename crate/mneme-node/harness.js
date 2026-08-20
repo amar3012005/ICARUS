@@ -274,7 +274,17 @@ function doctor(repoRoot) {
     return { healthy: false, repo_id: null, checks, issues: [error.message] };
   }
 
-  const runtime = path.join(repoRoot, RUNTIME_DIR);
+  const actualRoot = fs.realpathSync(repoRoot);
+  const currentRemote = readGitRemote(actualRoot);
+  const currentFingerprint = sha256(currentRemote || `local:${actualRoot}`).slice(0, 16);
+  const identityMatches = manifest.repo_root === actualRoot && manifest.git_remote_fingerprint === currentFingerprint;
+  checks.push({
+    id: 'repository_identity',
+    status: identityMatches ? 'pass' : 'fail',
+    detail: identityMatches ? manifest.repo_id : 'manifest root or git remote fingerprint differs from this workspace',
+  });
+
+  const runtime = path.join(actualRoot, RUNTIME_DIR);
   try {
     fs.mkdirSync(runtime, { recursive: true });
     const probe = path.join(runtime, `.write-probe-${process.pid}-${crypto.randomUUID()}`);
