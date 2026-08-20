@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icarus-memory-map.svg" alt="ICARUS memory map — semantic, lexical, temporal, and graph retrieval converge on a tenant-owned AMR file" width="100%" />
+  <img src="assets/icarus-readme-storyboard.png" alt="ICARUS campaign storyboard: introduction, local recall, and local developer capability" width="100%" />
 </p>
 
 <h1 align="center">ICARUS</h1>
