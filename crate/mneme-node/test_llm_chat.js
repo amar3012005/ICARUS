@@ -1,0 +1,28 @@
+'use strict';
+// Regression coverage for the user-facing OpenRouter model/chat layer.
+const assert = require('assert');
+const { selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel } = require('./cli-lib.js');
+
+const models = [
+  { id: 'acme/vision', name: 'Vision', architecture: { output_modalities: ['image'] }, supported_parameters: [] },
+  { id: 'deepseek/flash', name: 'DeepSeek Flash', architecture: { output_modalities: ['text'] }, supported_parameters: ['reasoning'], reasoning: { supported_efforts: ['high', 'low'], default_effort: 'low' } },
+  { id: 'openai/mini', name: 'Mini', architecture: { output_modalities: ['text'] }, supported_parameters: ['temperature'] },
+];
+
+const found = selectOpenRouterModels(models, 'deepseek', 5);
+assert.deepStrictEqual(found.map((m) => m.id), ['deepseek/flash']);
+
+assert.deepStrictEqual(reasoningForModel(models[1], 'high'), { effort: 'high', exclude: true });
+assert.strictEqual(reasoningForModel(models[1], 'medium'), null);
+
+const request = buildGroundedChatRequest('Who is Kruti?', [
+  { score: 0.9, text: 'Kruti is a researcher.' },
+  { score: 0.7, text: 'Kruti works on memory systems.' },
+], { model: 'deepseek/flash', temperature: 0.2, maxTokens: 300, thinking: 'high' }, models[1]);
+assert.strictEqual(request.model, 'deepseek/flash');
+assert.strictEqual(request.temperature, 0.2);
+assert.deepStrictEqual(request.reasoning, { effort: 'high', exclude: true });
+assert.match(request.messages[0].content, /insufficient evidence/i);
+assert.match(request.messages[1].content, /\[1\] Kruti is a researcher\./);
+assert.match(request.messages[1].content, /Who is Kruti\?/);
+console.log('LLM_CHAT_OK');

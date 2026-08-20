@@ -34,6 +34,7 @@ const path = require('path');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
+  openRouterApiKey, setOpenRouterApiKey, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, chatWithOpenRouter,
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
@@ -207,6 +208,10 @@ const SLASH_COMMANDS = [
   { cmd: '/ingest', hint: '<dir> [--org name] [--local] [--force] [--keep-cloud]' },
   { cmd: '/recall', hint: '<query> [--org name] [--k 5] [--pq]' },
   { cmd: '/save', hint: '<text> [--org name] [--cloud]' },
+  { cmd: '/llm-api', hint: '<openrouter-api-key> — save in macOS Keychain' },
+  { cmd: '/model', hint: '[search|model-id] — browse or choose OpenRouter model' },
+  { cmd: '/thinking', hint: 'off|minimal|low|medium|high|xhigh|max' },
+  { cmd: '/chat', hint: '<query> [--org name] — grounded recall + synthesis' },
   { cmd: '/status', hint: 'memories, evidence, relationships, shards' },
   { cmd: '/org', hint: '<name> — switch the default org for this session' },
   { cmd: '/create', hint: '<org> <path> — new org shard rooted at that repo path' },
@@ -226,6 +231,10 @@ function printHelp(state) {
   out(state, `  ${c.command('/ingest')} [dir|file] [--org name] [--local] [--force] [--keep-cloud]  ingest a folder or a single file — leave the path off to open a native file/folder picker. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).`);
   out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
   out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              LOCAL ONLY by default — real embedding, never touches HIVEMIND's cloud memory box on its own. --cloud opts in to a real, permanent, smart-routed HIVEMIND memory too — recallable via /recall either way.`);
+  out(state, `  ${c.command('/llm-api')} <openrouter-api-key>                     save an OpenRouter key in macOS Keychain; it is never written to config or echoed.`);
+  out(state, `  ${c.command('/model')} [search|model-id]                           browse text models or set the synthesis model.`);
+  out(state, `  ${c.command('/thinking')} <off|minimal|low|medium|high|xhigh|max> set only an effort supported by the selected model.`);
+  out(state, `  ${c.command('/chat')} <query> [--org name]                        local recall first, then source-cited OpenRouter synthesis. /recall remains raw.`);
   out(state, `  ${c.command('/status')}                                          org shards + real memory/evidence/relationship counts + signing/audit`);
   out(state, `  ${c.command('/connect')}                                         browser sign-in to HIVEMIND`);
   out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
@@ -587,7 +596,7 @@ async function run() {
     dispatching = true;
     while (submitQueue.length) {
       const line = submitQueue.shift();
-      userRow(state, line);
+      userRow(state, line.startsWith('/llm-api ') ? '/llm-api [redacted]' : line);
       const outputStart = state.transcript.length; // bookmark for /copy — see its own doc comment
       const t0 = Date.now();
       try { await dispatch(line, state, cfg); } catch (e) { out(state, err(e.message || String(e))); }
@@ -604,7 +613,7 @@ async function run() {
     state.input = ''; state.cursor = 0;
     if (!line) return;
     state.scrollOffset = 0; // a new command always jumps back to the live tail, like any chat UI
-    state.history.push(line);
+    state.history.push(line.startsWith('/llm-api ') ? '/llm-api [redacted]' : line);
     state.historyIdx = state.history.length;
     if (line === '/quit' || line === '/exit') { running = false; scheduleRedraw(state); setTimeout(() => process.exit(0), 30); return; }
     submitQueue.push(line);
@@ -703,6 +712,60 @@ async function dispatch(line, state, cfg) {
   const org = flags.org || state.org;
 
   switch (cmd) {
+    case 'llm-api': {
+      const key = argStr.trim();
+      if (!key) { out(state, err('usage: /llm-api <openrouter-api-key>')); break; }
+      setOpenRouterApiKey(key, cfg);
+      out(state, ok('OpenRouter API key saved in macOS Keychain. Run /model to choose a synthesis model.'));
+      break;
+    }
+    case 'model': {
+      if (!openRouterApiKey(cfg)) { out(state, err('no LLM API key set — use /llm-api <openrouter-api-key> and then try again')); break; }
+      const requested = argStr.trim();
+      if (!requested) {
+        const models = await fetchOpenRouterModels();
+        const choices = selectOpenRouterModels(models, '', 12);
+        out(state, heading('OpenRouter text models'));
+        choices.forEach((m) => out(state, `  ${c.command(m.id)}  ${c.dim(`${m.name || ''} · ${(m.context_length || 0).toLocaleString()} context${m.reasoning ? ' · thinking' : ''}`)}`));
+        out(state, c.dim('  Set one: /model <model-id>, or search: /model deepseek'));
+        break;
+      }
+      const models = await fetchOpenRouterModels();
+      const exact = models.find((m) => m.id === requested || m.canonical_slug === requested);
+      if (exact) {
+        cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', model: exact.id };
+        saveCfg(cfg);
+        out(state, ok(`model set to ${exact.id}${exact.reasoning ? ` — thinking: ${exact.reasoning.default_enabled ? exact.reasoning.default_effort || 'on' : 'off'}` : ' — no thinking control'}`));
+      } else {
+        const choices = selectOpenRouterModels(models, requested, 12);
+        if (!choices.length) { out(state, err(`no OpenRouter text model matches "${requested}"`)); break; }
+        out(state, heading(`OpenRouter matches for "${requested}"`));
+        choices.forEach((m) => out(state, `  ${c.command(`/model ${m.id}`)}  ${c.dim(m.name || '')}`));
+      }
+      break;
+    }
+    case 'thinking': {
+      if (!openRouterApiKey(cfg)) { out(state, err('no LLM API key set — use /llm-api <openrouter-api-key> and then try again')); break; }
+      const effort = argStr.trim().toLowerCase();
+      if (!effort) { out(state, c.dim(`thinking: ${cfg.llm?.thinking || 'off'} — set with /thinking <off|minimal|low|medium|high|xhigh|max>`)); break; }
+      if (effort === 'off' || effort === 'none') {
+        cfg.llm = { ...(cfg.llm || {}), thinking: 'off' }; saveCfg(cfg); out(state, ok('thinking disabled.')); break;
+      }
+      const model = cfg.llm?.model || '~deepseek/deepseek-v4-flash-latest';
+      const meta = await fetchOpenRouterModel(model);
+      if (!meta.reasoning?.supported_efforts?.includes(effort)) { out(state, err(`${model} does not support thinking effort "${effort}". Supported: ${(meta.reasoning?.supported_efforts || []).join(', ') || 'none'}`)); break; }
+      cfg.llm = { ...(cfg.llm || {}), thinking: effort }; saveCfg(cfg); out(state, ok(`thinking set to ${effort} for ${model}.`));
+      break;
+    }
+    case 'chat': {
+      const query = argStr.replace(/\s--org\s+[^\s]+/, '').trim();
+      if (!query) { out(state, err('usage: /chat <query> [--org name]')); break; }
+      out(state, c.running('  recalling local evidence and synthesizing...'));
+      const result = await chatWithOpenRouter(query, org, cfg);
+      out(state, `\n${heading(`chat · ${result.model}`)}\n\n${result.answer}`);
+      out(state, c.dim(`\n  grounded in ${result.hits.length} local recall result(s); source markers [n] refer to that recalled evidence.`));
+      break;
+    }
     case 'ingest': {
       let dir = flags._[0];
       if (!dir) {

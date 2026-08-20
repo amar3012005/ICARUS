@@ -465,7 +465,30 @@ function loadCfg() {
 }
 function saveCfg(cfg) {
   fs.mkdirSync(HOME, { recursive: true });
-  fs.writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2));
+  fs.writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+}
+
+// OpenRouter is a user-supplied paid API credential, never a coding-agent subscription token.
+// On macOS, keep it in Keychain and persist only this stable reference in config.json.  The
+// legacy `llm.apiKey` field remains readable so existing installs do not lose configuration;
+// `/llm-api` migrates new values away from plaintext.
+const OPENROUTER_KEYCHAIN_SERVICE = 'com.singulance.icarus.openrouter';
+const OPENROUTER_KEYCHAIN_ACCOUNT = 'api-key';
+function keychainOpenRouterKey() {
+  if (process.platform !== 'darwin') return null;
+  try {
+    return require('child_process').execFileSync('security', ['find-generic-password', '-s', OPENROUTER_KEYCHAIN_SERVICE, '-a', OPENROUTER_KEYCHAIN_ACCOUNT, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+  } catch (_) { return null; }
+}
+function setOpenRouterApiKey(key, cfg) {
+  if (!/^sk-or-v1-[A-Za-z0-9_-]+$/.test(String(key || ''))) throw new Error('invalid OpenRouter API key format (expected sk-or-v1-...)');
+  if (process.platform !== 'darwin') throw new Error('secure key storage is currently available on macOS only; set OPENROUTER_API_KEY in your environment instead');
+  require('child_process').execFileSync('security', ['add-generic-password', '-U', '-s', OPENROUTER_KEYCHAIN_SERVICE, '-a', OPENROUTER_KEYCHAIN_ACCOUNT, '-w', key], { stdio: 'ignore' });
+  cfg.llm = { ...(cfg.llm || {}), disabled: false, provider: 'openrouter', endpoint: 'https://openrouter.ai/api/v1', apiKey: null, keychainService: OPENROUTER_KEYCHAIN_SERVICE };
+  saveCfg(cfg);
+}
+function openRouterApiKey(cfg) {
+  return process.env.OPENROUTER_API_KEY || keychainOpenRouterKey() || cfg.llm?.apiKey || null;
 }
 
 /** True if an embedding provider is actually usable: not explicitly disabled, AND a key is
@@ -485,7 +508,61 @@ function embeddingsConfigured(cfg) {
  * vice versa, or both, or neither (raw text storage, the current default either way). */
 function llmConfigured(cfg) {
   if (cfg.llm && cfg.llm.disabled) return false;
-  return !!(cfg.llm?.apiKey || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY);
+  return !!(cfg.llm?.provider === 'anthropic'
+    ? (cfg.llm?.apiKey || process.env.ANTHROPIC_API_KEY)
+    : (openRouterApiKey(cfg) || process.env.ANTHROPIC_API_KEY));
+}
+
+function selectOpenRouterModels(models, query = '', limit = 20) {
+  const needle = query.trim().toLowerCase();
+  return (models || []).filter((m) => {
+    const textOutput = !m.architecture?.output_modalities || m.architecture.output_modalities.includes('text');
+    return textOutput && (!needle || `${m.id || ''} ${m.name || ''}`.toLowerCase().includes(needle));
+  }).slice(0, limit);
+}
+function reasoningForModel(model, effort) {
+  if (!effort || effort === 'off' || effort === 'none') return null;
+  const supported = model?.reasoning?.supported_efforts;
+  if (!Array.isArray(supported) || !supported.includes(effort)) return null;
+  return { effort, exclude: true };
+}
+async function fetchOpenRouterModels() {
+  const res = await fetch('https://openrouter.ai/api/v1/models');
+  if (!res.ok) throw new Error(`OpenRouter models ${res.status}: ${await res.text()}`);
+  return (await res.json()).data || [];
+}
+async function fetchOpenRouterModel(model) {
+  const res = await fetch(`https://openrouter.ai/api/v1/model/${model}`);
+  if (!res.ok) throw new Error(`OpenRouter model ${res.status}: ${await res.text()}`);
+  return (await res.json()).data;
+}
+function buildGroundedChatRequest(question, hits, settings, modelMeta) {
+  const sources = hits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n\n');
+  const messages = [
+    { role: 'system', content: 'You are ICARUS, a grounded memory synthesizer. Answer only from the supplied recalled memories. Cite every factual statement with its source number, such as [1]. If the memories do not establish the answer, say "I have insufficient evidence in local memory." Do not invent people, relationships, or facts.' },
+    { role: 'user', content: `Recalled memories:\n${sources || '(none)'}\n\nQuestion: ${question}` },
+  ];
+  const request = { model: settings.model, messages, temperature: settings.temperature ?? 0.2, max_tokens: settings.maxTokens ?? 800 };
+  const reasoning = reasoningForModel(modelMeta, settings.thinking);
+  if (reasoning) request.reasoning = reasoning;
+  return request;
+}
+async function chatWithOpenRouter(question, org, cfg, { topK = 8 } = {}) {
+  if (!openRouterApiKey(cfg)) throw new Error('no LLM API key set — use /llm-api <openrouter-api-key> and then try again');
+  if (cfg.llm?.provider && cfg.llm.provider !== 'openrouter') throw new Error('chat requires an OpenRouter key — use /llm-api <openrouter-api-key>');
+  const hits = await recallQuery(question, org, cfg, topK);
+  const model = cfg.llm?.model || '~deepseek/deepseek-v4-flash-latest';
+  let meta = null;
+  try { meta = await fetchOpenRouterModel(model); } catch (_) { /* request still gives OpenRouter the final authority */ }
+  const request = buildGroundedChatRequest(question, hits, { model, temperature: cfg.llm?.temperature, maxTokens: cfg.llm?.maxTokens, thinking: cfg.llm?.thinking }, meta);
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${openRouterApiKey(cfg)}` }, body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error(`OpenRouter chat ${res.status}: ${await res.text()}`);
+  const body = await res.json();
+  const answer = body.choices?.[0]?.message?.content?.trim();
+  if (!answer) throw new Error('OpenRouter returned no chat content');
+  return { answer, hits, model };
 }
 
 /** Shared chat-completion call — both summarize() (memory generation) and extractSkill() (skill
@@ -521,7 +598,7 @@ async function chatComplete(systemPrompt, userText, cfg, maxTokens = 300) {
       return j.content?.[0]?.text?.trim() || null;
     }
     // default: openrouter (OpenAI chat-completions shape, routes to Claude/GPT/etc by model name)
-    const orKey = cfg.llm?.apiKey || process.env.OPENROUTER_API_KEY;
+    const orKey = openRouterApiKey(cfg);
     if (!orKey) return null;
     const res = await fetch(`${cfg.llm.endpoint}/chat/completions`, {
       method: 'POST',
@@ -1900,7 +1977,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.33';
+const ICARUS_VERSION = '0.3.34';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1974,6 +2051,8 @@ module.exports = {
   pickFolderNative,
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
+  OPENROUTER_KEYCHAIN_SERVICE, openRouterApiKey, setOpenRouterApiKey, fetchOpenRouterModels, fetchOpenRouterModel,
+  selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, chatWithOpenRouter,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
