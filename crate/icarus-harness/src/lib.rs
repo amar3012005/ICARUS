@@ -162,6 +162,13 @@ pub struct TaskContract {
     pub budgets: Value,
     pub authority: String,
     pub external_write_policy: String,
+    /// Immutable links to decisions the agent must consider. They resolve only from an explicit
+    /// repository snapshot or local authority cache; the compiler never broad-searches a tenant.
+    #[serde(default)]
+    pub decision_references: Vec<String>,
+    /// Optional classifier supplied by the calling agent for selecting verified operating skills.
+    #[serde(default)]
+    pub task_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -584,6 +591,17 @@ fn validate_contract(contract: &TaskContract) -> Result<()> {
     {
         return Err(HarnessError::invalid(
             "task contract is missing a required governance field",
+        ));
+    }
+    if contract.decision_references.iter().any(|reference| {
+        reference.is_empty()
+            || reference.len() > 128
+            || !reference.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            })
+    }) {
+        return Err(HarnessError::invalid(
+            "task contract contains an invalid decision reference",
         ));
     }
     Ok(())
@@ -1185,6 +1203,130 @@ fn graph_slice(root: &Path, objective: &str) -> Value {
     json!({"available": true, "freshness": freshness, "terms": terms, "nodes": nodes, "edges": edges})
 }
 
+fn referenced_decisions(
+    root: &Path,
+    references: &[String],
+) -> Vec<(String, String, String, String)> {
+    let mut items = Vec::new();
+    for reference in references {
+        let candidates = [
+            (
+                root.join(".icarus/decisions")
+                    .join(format!("{reference}.json")),
+                "repository decision",
+            ),
+            (
+                runtime_root(root)
+                    .join("authority/decisions")
+                    .join(format!("{reference}.json")),
+                "cached organizational decision",
+            ),
+        ];
+        let found = candidates.into_iter().find_map(|(path, authority)| {
+            fs::read_to_string(&path)
+                .ok()
+                .map(|content| (path, authority, content))
+        });
+        match found {
+            Some((path, authority, content)) => {
+                let freshness = if path.starts_with(root.join(".icarus/decisions")) { "tracked_snapshot" } else { "local_cache" };
+                items.push((
+                    path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"),
+                    freshness.into(),
+                    authority.into(),
+                    content,
+                ));
+            }
+            None => items.push((
+                format!("decision:{reference}"),
+                "unavailable".into(),
+                "unresolved decision reference".into(),
+                serde_json::to_string_pretty(&json!({"id": reference, "available": false, "reason": "no local decision snapshot or cache entry"})).unwrap_or_default(),
+            )),
+        }
+    }
+    items
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn normalized_pattern_prefix(pattern: &str) -> &str {
+    pattern.split(['*', '?', '[']).next().unwrap_or(pattern)
+}
+
+fn skills_match_contract(skill: &Value, contract: &TaskContract) -> bool {
+    let types = string_list(skill.get("task_types"));
+    if !types.is_empty() {
+        let Some(task_type) = contract.task_type.as_deref() else {
+            return false;
+        };
+        if !types.iter().any(|kind| kind == task_type) {
+            return false;
+        }
+    }
+    let patterns = string_list(skill.get("file_patterns"));
+    patterns.is_empty()
+        || patterns.iter().any(|skill_pattern| {
+            let skill_prefix = normalized_pattern_prefix(skill_pattern);
+            contract.allowed_paths.iter().any(|allowed| {
+                let allowed_prefix = normalized_pattern_prefix(allowed);
+                skill_prefix.starts_with(allowed_prefix) || allowed_prefix.starts_with(skill_prefix)
+            })
+        })
+}
+
+/// Only explicitly active, verified harness procedures may enter a context pack. Persona files
+/// and unverified candidates are intentionally invisible to managed execution.
+fn active_verified_skills(root: &Path, contract: &TaskContract) -> Vec<(String, String)> {
+    let directory = root.join(".icarus/skills");
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                return None;
+            }
+            let content = fs::read_to_string(&path).ok()?;
+            let skill: Value = serde_json::from_str(&content).ok()?;
+            let active = skill.get("state").and_then(Value::as_str) == Some("active");
+            let verified = skill
+                .get("verification")
+                .and_then(Value::as_object)
+                .and_then(|verification| verification.get("status"))
+                .and_then(Value::as_str)
+                == Some("verified");
+            if active && verified && skills_match_contract(&skill, contract) {
+                Some((
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    content,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Compile a deterministic context pack. This is intentionally extraction and ordering, not
 /// summarization: ICARUS has no LLM in this path, and every included byte is source-addressable.
 pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> Result<ContextPack> {
@@ -1257,6 +1399,36 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             policy,
         ),
     )?;
+    for (source, freshness, authority, content) in
+        referenced_decisions(&root, &task.contract.decision_references)
+    {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "decision_reference",
+                source,
+                freshness,
+                authority,
+                "immutable task-linked decision reference",
+                false,
+                content,
+            ),
+        )?;
+    }
+    for (source, content) in active_verified_skills(&root, &task.contract) {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "verified_skill",
+                source,
+                "verified",
+                "verified harness procedure",
+                "active skill matches task type and contract path scope",
+                false,
+                content,
+            ),
+        )?;
+    }
     let task_state = serde_json::to_string_pretty(&json!({
         "task_id": task.task_id, "execution_id": task.execution_id, "status": task.status,
         "contract_version": task.contract_version, "contract_digest": task.contract_digest,
@@ -1411,6 +1583,36 @@ pub fn build_context_delta(
             format!("digest: {}", sha256(&policy_bytes)),
         ),
     )?;
+    for (source, freshness, authority, content) in
+        referenced_decisions(&root, &task.contract.decision_references)
+    {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "decision_reference_delta",
+                source,
+                freshness,
+                authority,
+                "re-resolved task-linked decision reference after checkpoint",
+                false,
+                content,
+            ),
+        )?;
+    }
+    for (source, content) in active_verified_skills(&root, &task.contract) {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "verified_skill_delta",
+                source,
+                "verified",
+                "verified harness procedure",
+                "re-evaluated active verified skill after checkpoint",
+                false,
+                content,
+            ),
+        )?;
+    }
     let worktree = serde_json::to_string_pretty(&json!({
         "base_checkpoint": {"sequence": base.sequence, "git_sha": base.git_sha, "dirty_state_fingerprint": base.dirty_state_fingerprint},
         "current": {"git_sha": git_output(&root, &["rev-parse", "HEAD"]), "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()), "graph": graph_freshness(&root)},

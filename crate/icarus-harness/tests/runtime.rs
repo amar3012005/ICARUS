@@ -123,6 +123,8 @@ fn contract() -> TaskContract {
         budgets: serde_json::json!({"wall_time_minutes": 30}),
         authority: "local".into(),
         external_write_policy: "approval_required".into(),
+        decision_references: Vec::new(),
+        task_type: None,
     }
 }
 
@@ -315,7 +317,9 @@ fn context_compiler_is_deterministic_traceable_and_budgeted() {
 fn delta_context_contains_only_changes_after_a_checkpoint() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
-    let task = start_task(repo.path(), "delta context", contract()).unwrap();
+    let mut scoped_contract = contract();
+    scoped_contract.decision_references = vec!["DEC-missing".into()];
+    let task = start_task(repo.path(), "delta context", scoped_contract).unwrap();
     let checkpoint = checkpoint_task(
         repo.path(),
         &task.task_id,
@@ -337,6 +341,10 @@ fn delta_context_contains_only_changes_after_a_checkpoint() {
         .iter()
         .any(|item| item.kind == "lifecycle_delta"));
     assert!(!delta.items.iter().any(|item| item.kind == "contract"));
+    assert!(delta
+        .items
+        .iter()
+        .any(|item| item.kind == "decision_reference_delta" && item.freshness == "unavailable"));
 }
 
 #[test]
@@ -427,4 +435,47 @@ fn context_compiler_reads_a_bounded_current_graph_slice_in_rust() {
     assert_eq!(graph.freshness, "current");
     assert!(graph.content.contains("src/parser.rs::graph_parser"));
     assert!(graph.content.contains("graph_helper"));
+}
+
+#[test]
+fn context_includes_only_task_linked_decisions_and_verified_matching_skills() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::create_dir_all(repo.path().join(".icarus/decisions")).unwrap();
+    fs::write(
+        repo.path().join(".icarus/decisions/DEC-42.json"),
+        r#"{"id":"DEC-42","authority":"owner","content":"Keep the parser offline."}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(repo.path().join(".icarus/skills")).unwrap();
+    fs::write(
+        repo.path().join(".icarus/skills/parser-review.json"),
+        r#"{"state":"active","task_types":["code_change"],"file_patterns":["src/**"],"verification":{"status":"verified"},"instructions":"Run parser regression tests."}"#,
+    )
+    .unwrap();
+    fs::write(
+        repo.path().join(".icarus/skills/unverified.json"),
+        r#"{"state":"proposed","task_types":["code_change"],"file_patterns":["src/**"],"verification":{"status":"unverified"},"instructions":"Must not enter context."}"#,
+    )
+    .unwrap();
+    let mut scoped_contract = contract();
+    scoped_contract.decision_references = vec!["DEC-42".into(), "DEC-missing".into()];
+    scoped_contract.task_type = Some("code_change".into());
+    let task = start_task(repo.path(), "improve parser", scoped_contract).unwrap();
+    let pack = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "decision_reference"
+            && item.content.contains("Keep the parser offline")));
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "decision_reference" && item.freshness == "unavailable"));
+    assert!(pack.items.iter().any(|item| item.kind == "verified_skill"
+        && item.content.contains("Run parser regression tests")));
+    assert!(!pack
+        .items
+        .iter()
+        .any(|item| item.content.contains("Must not enter context")));
 }
