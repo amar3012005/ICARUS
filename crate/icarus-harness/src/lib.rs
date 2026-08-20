@@ -2411,6 +2411,58 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             ),
         )?;
     }
+    // A resume must see actual failed evidence and outstanding risk, rather than infer either
+    // from a broad event log or an agent's recollection. Passing receipts are not repeated here;
+    // only unresolved/failed material consumes optional context budget.
+    let failed_receipts: Vec<_> = read_verification_receipts(&root, task_id)?
+        .into_iter()
+        .filter(|receipt| receipt.status != "pass")
+        .collect();
+    if !failed_receipts.is_empty() {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "failed_criteria",
+                format!(".icarus/runtime/evidence/{task_id}/commands.jsonl"),
+                "current",
+                "ICARUS verifier",
+                "prior failed or pending contract evidence requiring resolution",
+                false,
+                serde_json::to_string_pretty(&failed_receipts)?,
+            ),
+        )?;
+    }
+    let unresolved_risks: Vec<_> = read_checkpoints(&root, task_id)?
+        .into_iter()
+        .filter(|checkpoint| {
+            checkpoint
+                .open_risks
+                .as_array()
+                .is_some_and(|risks| !risks.is_empty())
+        })
+        .map(|checkpoint| {
+            json!({
+                "sequence": checkpoint.sequence,
+                "phase": checkpoint.phase,
+                "open_risks": checkpoint.open_risks,
+                "next_valid_action": checkpoint.next_valid_action,
+            })
+        })
+        .collect();
+    if !unresolved_risks.is_empty() {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "unresolved_risks",
+                format!(".icarus/runtime/tasks/{task_id}/checkpoints.jsonl"),
+                "checkpoint",
+                "agent checkpoint",
+                "unresolved risks carried forward from prior checkpoints",
+                false,
+                serde_json::to_string_pretty(&unresolved_risks)?,
+            ),
+        )?;
+    }
     let event_chain = verify_event_chain(&root, &load_manifest(&root)?.repo_id)?;
     let content = serde_json::to_string_pretty(
         &json!({"valid": event_chain.valid, "events": event_chain.events, "issues": event_chain.issues}),

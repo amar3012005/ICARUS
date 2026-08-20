@@ -663,6 +663,49 @@ fn external_approval_is_expiry_bound_and_cannot_be_replaced_by_pending_prose() {
 }
 
 #[test]
+fn context_exposes_failed_evidence_and_unresolved_risks_without_agent_inference() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut failing_contract = contract();
+    failing_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"exit 7","required":true}
+    ]);
+    let task = start_task(repo.path(), "repair a failing check", failing_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    assert_eq!(
+        verify_task_criterion(repo.path(), &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "fail"
+    );
+    checkpoint_task(
+        repo.path(),
+        &task.task_id,
+        "verification",
+        serde_json::json!({"open_risks":["unit test still fails"],"next_valid_action":"repair and rerun unit"}),
+    )
+    .unwrap();
+    let pack = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "failed_criteria" && item.content.contains("exit 7")));
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "unresolved_risks"
+            && item.content.contains("unit test still fails")));
+}
+
+#[test]
 fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
