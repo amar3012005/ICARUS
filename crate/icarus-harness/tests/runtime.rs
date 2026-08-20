@@ -2,7 +2,7 @@ use icarus_harness::{
     amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
     graph_source_fingerprint, init, prepare_run, read_snapshot, record_graph_receipt, resume_task,
     seal_task, start_task, task_status, transition_task, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, EventInput, InitOptions, TaskContract,
+    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -599,4 +599,29 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
         .path()
         .join(sealed.final_receipt_path.unwrap())
         .exists());
+}
+
+#[test]
+fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "unsealed source", contract()).unwrap();
+    let skill = HarnessSkill {
+        schema_version: 0,
+        id: "safe-review".into(),
+        state: "active".into(),
+        triggers: vec!["review".into()],
+        instructions: "Run the scoped tests.".into(),
+        allowed_tools: vec!["shell".into()],
+        policy_requirements: vec![],
+        verification_steps: vec!["test".into()],
+        source_tasks: vec![task.task_id],
+        decision_references: vec![],
+        risk: "low".into(),
+        owner: "owner".into(),
+        version: 0,
+        confidence: 1.0,
+        replay_results: vec![],
+    };
+    assert!(icarus_harness::propose_skill(repo.path(), skill).is_err());
 }
