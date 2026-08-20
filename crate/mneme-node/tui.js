@@ -34,7 +34,7 @@ const path = require('path');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
-  openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, classifyChatFailure, chatWithOpenRouter,
+  openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, classifyChatFailure, chatWithOpenRouter, createPersonaSkill, selectPersonaSkill, clearPersonaSkill, skillList,
   hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
@@ -224,6 +224,7 @@ const SLASH_COMMANDS = [
   { cmd: '/model', hint: '[search|model-id] — browse or choose OpenRouter model' },
   { cmd: '/thinking', hint: 'off|minimal|low|medium|high|xhigh|max' },
   { cmd: '/chat', hint: '<query> [--org name] — grounded recall + synthesis' },
+  { cmd: '/skill', hint: 'create <persona brief> | select [name] | default' },
   { cmd: '/status', hint: 'memories, evidence, relationships, shards' },
   { cmd: '/org', hint: '<name> — switch the default org for this session' },
   { cmd: '/create', hint: '<org> <path> — new org shard rooted at that repo path' },
@@ -936,6 +937,23 @@ async function dispatch(line, state, cfg) {
       // Flush the final partial token buffer before printing the grounding footer.
       out(state, '');
       out(state, c.dim(`\n  grounded in ${result.hits.length} local recall result(s); source markers [n] refer to that recalled evidence.`));
+      break;
+    }
+    case 'skill': {
+      const [sub, ...rest] = flags._;
+      if (sub === 'create') {
+        const brief = rest.join(' ').trim();
+        if (!brief) { out(state, err('usage: /skill create <describe the persona in natural language>')); break; }
+        out(state, c.running('  writing persona skill with the selected model...'));
+        const saved = await createPersonaSkill(brief, org, cfg);
+        out(state, saved ? ok(`persona skill "${saved.slug}" created and active for org "${org}".`) : err('could not create persona skill — set an LLM API key first'));
+      } else if (sub === 'select') {
+        const slug = rest.join(' ').trim();
+        const skills = skillList(org).filter((s) => s.slug.startsWith('persona-'));
+        if (!slug) { out(state, heading(`persona skills · ${org}`)); skills.forEach((s) => out(state, `  ${c.command(`/skill select ${s.slug}`)}  ${s.description || ''}`)); if (!skills.length) out(state, c.dim('  none yet — create one with /skill create <persona brief>')); break; }
+        out(state, selectPersonaSkill(slug, org, cfg) ? ok(`persona skill "${slug}" is now active for org "${org}".`) : err(`no persona skill named "${slug}" in org "${org}"`));
+      } else if (sub === 'default') { clearPersonaSkill(org, cfg); out(state, ok(`ICARUS default persona restored for org "${org}".`)); }
+      else out(state, err('usage: /skill create <persona brief> | /skill select [name] | /skill default'));
       break;
     }
     case 'ingest': {

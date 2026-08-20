@@ -546,7 +546,7 @@ async function fetchOpenRouterModel(model) {
 function buildGroundedChatRequest(question, hits, settings, modelMeta) {
   const sources = hits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n\n');
   const messages = [
-    { role: 'system', content: 'You are ICARUS, a thoughtful, human-like assistant with access to the user\'s local memory. Speak naturally, directly, and helpfully: answer the question, explain context, acknowledge uncertainty, and offer a useful next step when it helps. The supplied recalled memories are the factual source for claims about the user, people, their work, and their local knowledge base. Cite every such factual claim with its source number, such as [1]. You may reason, explain, and converse naturally, but do not invent facts, people, relationships, or memories not supported by those sources. If the memories only mention a person or allegation but do not establish the requested identity, relationship, or biography, state the narrow fact they establish and say what is not established. If the memories do not establish any answer, say "I have insufficient evidence in local memory."' },
+    { role: 'system', content: 'You are ICARUS, a thoughtful, human-like assistant with access to the user\'s local memory. Speak in a warm first-person voice, as a real thinking companion: use natural phrases such as "I think," "I\'d say," "my read is," and "I don\'t know" when they fit. Have an opinion when the user asks for one, reason openly, and answer directly rather than narrating a retrieval process. The supplied recalled memories are the factual basis for claims about the user, people, their work, and their local knowledge base. Cite every such factual claim with its source number, such as [1]. You may express an interpretation or recommendation clearly as your own view, but do not present an unsupported interpretation as fact and do not invent facts, people, relationships, or memories. If the memories only mention a person or allegation but do not establish the requested identity, relationship, or biography, say in your own voice what you actually know and what you cannot know. If the memories do not establish any answer, say "I don\'t know from my local memory yet."' + (settings.persona ? `\n\nActive persona skill for this org:\n${settings.persona}` : '') },
     { role: 'user', content: `Recalled memories:\n${sources || '(none)'}\n\nQuestion: ${question}` },
   ];
   // Streaming is deliberately not optional for ICARUS synthesis: rendering the first token as
@@ -556,6 +556,20 @@ function buildGroundedChatRequest(question, hits, settings, modelMeta) {
   if (reasoning) request.reasoning = reasoning;
   return request;
 }
+const PERSONA_SKILL_PROMPT = `Write a detailed persona skill for an AI assistant from the user's natural-language brief. Include voice, values, response style, reasoning habits, and boundaries. It must make the assistant feel like a coherent human conversational partner. Do not invent real-world facts. Output only the skill instructions in Markdown.`;
+function personaSkillPath(org, slug) { return path.join(SKILLS_DIR, org, `${slug}.persona.md`); }
+function activePersonaSkill(org, cfg) { const slug = cfg.llm?.personaSkills?.[org]; return slug ? (fs.existsSync(personaSkillPath(org, slug)) ? fs.readFileSync(personaSkillPath(org, slug), 'utf8') : null) : null; }
+async function createPersonaSkill(brief, org, cfg) {
+  const body = await chatComplete(PERSONA_SKILL_PROMPT, brief, cfg, 1200);
+  if (!body) return null;
+  const slug = `persona-${slugFromSkillMd(`name: ${brief.slice(0, 60)}`)}`;
+  fs.mkdirSync(path.join(SKILLS_DIR, org), { recursive: true });
+  fs.writeFileSync(personaSkillPath(org, slug), body.endsWith('\n') ? body : `${body}\n`);
+  cfg.llm = { ...(cfg.llm || {}), personaSkills: { ...(cfg.llm?.personaSkills || {}), [org]: slug } }; saveCfg(cfg);
+  return { slug, path: personaSkillPath(org, slug) };
+}
+function selectPersonaSkill(slug, org, cfg) { if (!fs.existsSync(personaSkillPath(org, slug))) return false; cfg.llm = { ...(cfg.llm || {}), personaSkills: { ...(cfg.llm?.personaSkills || {}), [org]: slug } }; saveCfg(cfg); return true; }
+function clearPersonaSkill(org, cfg) { if (cfg.llm?.personaSkills) { const next = { ...cfg.llm.personaSkills }; delete next[org]; cfg.llm = { ...cfg.llm, personaSkills: next }; saveCfg(cfg); } }
 // OpenRouter can deliver a provider failure only AFTER the HTTP stream is established (HTTP 200
 // with a top-level `error` object). Preserve it instead of swallowing it and falsely reporting
 // "no chat content". Providers may also represent text as a content-part array, so normalize
@@ -609,7 +623,7 @@ async function chatWithOpenRouter(question, org, cfg, { topK = 8, hits: supplied
   const model = resolveSynthesisModel(cfg);
   let meta = null;
   try { meta = await fetchOpenRouterModel(model); } catch (_) { /* request still gives OpenRouter the final authority */ }
-  const request = buildGroundedChatRequest(question, hits, { model, temperature: cfg.llm?.temperature, maxTokens: cfg.llm?.maxTokens, thinking: cfg.llm?.thinking }, meta);
+  const request = buildGroundedChatRequest(question, hits, { model, temperature: cfg.llm?.temperature, maxTokens: cfg.llm?.maxTokens, thinking: cfg.llm?.thinking, persona: activePersonaSkill(org, cfg) }, meta);
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${openRouterApiKey(cfg)}` }, body: JSON.stringify(request),
   });
@@ -2179,7 +2193,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.43';
+const ICARUS_VERSION = '0.3.45';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2254,7 +2268,7 @@ module.exports = {
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   OPENROUTER_KEYCHAIN_SERVICE, DEFAULT_OPENROUTER_SYNTHESIS_MODEL, openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel,
-  selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, consumeOpenRouterSse, classifyChatFailure, chatWithOpenRouter,
+  selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, consumeOpenRouterSse, classifyChatFailure, chatWithOpenRouter, createPersonaSkill, selectPersonaSkill, clearPersonaSkill, activePersonaSkill,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
