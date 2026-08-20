@@ -633,6 +633,172 @@ fn validate_manifest(manifest: Manifest) -> Result<Manifest> {
     Ok(manifest)
 }
 
+fn object_schema(title: &str, required: &[&str], properties: Value) -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": title,
+        "type": "object",
+        "additionalProperties": false,
+        "required": required,
+        "properties": properties,
+    })
+}
+
+/// Public JSON Schemas are written into every initialized repository so editors, CI, and other
+/// agents can validate ICARUS records without having to link the Rust crate. Native validation
+/// remains authoritative at runtime; these documents are the compatible public contract.
+fn harness_schema_documents() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "manifest.schema.json",
+            object_schema(
+                "ICARUS Harness Manifest",
+                &[
+                    "schema_version",
+                    "harness_version",
+                    "repo_id",
+                    "repo_root",
+                    "git_remote_fingerprint",
+                    "policy_version",
+                    "agents",
+                ],
+                json!({
+                    "schema_version": {"type":"integer","const":1},
+                    "harness_version": {"type":"integer","const":1},
+                    "repo_id": {"type":"string","pattern":"^repo-[a-f0-9]{16}$"},
+                    "repo_root": {"type":"string","minLength":1},
+                    "git_remote_fingerprint": {"type":"string","pattern":"^[a-f0-9]{16}$"},
+                    "policy_version": {"type":"integer","minimum":1},
+                    "agents": {"type":"array","items":{"enum":["claude","codex","cursor","grok"]},"uniqueItems":true}
+                }),
+            ),
+        ),
+        (
+            "contract.schema.json",
+            object_schema(
+                "ICARUS Task Contract",
+                &[
+                    "allowed_paths",
+                    "forbidden_paths",
+                    "acceptance_criteria",
+                    "risk",
+                    "budgets",
+                    "authority",
+                    "external_write_policy",
+                ],
+                json!({
+                    "allowed_paths": {"type":"array","items":{"type":"string","minLength":1},"minItems":1},
+                    "forbidden_paths": {"type":"array","items":{"type":"string"}},
+                    "acceptance_criteria": {"type":["array","object"]},
+                    "risk": {"type":"string","minLength":1},
+                    "budgets": {"type":"object"},
+                    "authority": {"type":"string","minLength":1},
+                    "external_write_policy": {"type":"string","minLength":1},
+                    "decision_references": {"type":"array","items":{"type":"string"}},
+                    "task_type": {"type":["string","null"]}
+                }),
+            ),
+        ),
+        (
+            "checkpoint.schema.json",
+            object_schema(
+                "ICARUS Checkpoint",
+                &[
+                    "schema_version",
+                    "task_id",
+                    "execution_id",
+                    "sequence",
+                    "phase",
+                    "input",
+                    "worktree_fingerprint",
+                    "created_at",
+                ],
+                json!({
+                    "schema_version": {"type":"integer","const":1},
+                    "task_id": {"type":"string","minLength":1},
+                    "execution_id": {"type":"string","minLength":1},
+                    "sequence": {"type":"integer","minimum":1},
+                    "phase": {"type":"string","minLength":1},
+                    "input": {"type":"object"},
+                    "worktree_fingerprint": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+                    "created_at": {"type":"string","format":"date-time"}
+                }),
+            ),
+        ),
+        (
+            "receipt.schema.json",
+            object_schema(
+                "ICARUS Verification Receipt",
+                &[
+                    "schema_version",
+                    "task_id",
+                    "execution_id",
+                    "criterion_id",
+                    "status",
+                    "output_digest",
+                    "output_path",
+                    "created_at",
+                ],
+                json!({
+                    "schema_version": {"type":"integer","const":1},
+                    "task_id": {"type":"string","minLength":1},
+                    "execution_id": {"type":"string","minLength":1},
+                    "criterion_id": {"type":"string","minLength":1},
+                    "status": {"enum":["pass","fail","pending"]},
+                    "output_digest": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+                    "output_path": {"type":"string","minLength":1},
+                    "created_at": {"type":"string","format":"date-time"}
+                }),
+            ),
+        ),
+        (
+            "skill.schema.json",
+            object_schema(
+                "ICARUS Proposed Skill",
+                &[
+                    "schema_version",
+                    "id",
+                    "state",
+                    "triggers",
+                    "instructions",
+                    "allowed_tools",
+                    "policy_requirements",
+                    "verification_steps",
+                    "source_tasks",
+                    "task_types",
+                    "file_patterns",
+                    "proof_expires_at",
+                    "risk",
+                    "owner",
+                    "version",
+                    "confidence",
+                ],
+                json!({
+                    "schema_version": {"type":"integer","const":1},
+                    "id": {"type":"string","pattern":"^[a-z0-9_-]+$"},
+                    "state": {"enum":["proposed","active","demoted","retired"]},
+                    "triggers": {"type":"array","items":{"type":"string","minLength":1},"minItems":1},
+                    "instructions": {"type":"string","minLength":1},
+                    "allowed_tools": {"type":"array","items":{"type":"string"}},
+                    "policy_requirements": {"type":"array","items":{"type":"string"}},
+                    "verification_steps": {"type":"array","items":{"type":"string"}},
+                    "source_tasks": {"type":"array","items":{"type":"string"},"minItems":1},
+                    "decision_references": {"type":"array","items":{"type":"string"}},
+                    "task_types": {"type":"array","items":{"type":"string","minLength":1},"minItems":1},
+                    "file_patterns": {"type":"array","items":{"type":"string","minLength":1},"minItems":1},
+                    "proof_expires_at": {"type":"string","format":"date-time"},
+                    "risk": {"type":"string","minLength":1},
+                    "owner": {"type":"string","minLength":1},
+                    "version": {"type":"integer","minimum":1},
+                    "confidence": {"type":"number","exclusiveMinimum":0},
+                    "replay_results": {"type":"array"},
+                    "verification": {}
+                }),
+            ),
+        ),
+    ]
+}
+
 fn is_fingerprint(value: &str, prefix: &str) -> bool {
     let suffix = value.strip_prefix(prefix).unwrap_or("");
     suffix.len() == 16
@@ -725,14 +891,11 @@ pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
     })?;
     atomic_write(&manifest_file, manifest_yaml(&manifest)?.as_bytes())?;
     atomic_write(&root.join(".icarus/policies/default.yaml"), b"# ICARUS Harness policy v1\npolicy_version: 1\nexternal_writes: approval_required\nnetwork: agent_managed\nlearning: proposal_only\n")?;
-    for (name, title) in [
-        ("manifest.schema.json", "ICARUS Harness Manifest"),
-        ("contract.schema.json", "ICARUS Task Contract"),
-        ("checkpoint.schema.json", "ICARUS Checkpoint"),
-        ("receipt.schema.json", "ICARUS Verification Receipt"),
-        ("skill.schema.json", "ICARUS Proposed Skill"),
-    ] {
-        atomic_write(&root.join(".icarus/schemas").join(name), format!("{{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"{}\",\n  \"type\": \"object\"\n}}\n", title).as_bytes())?;
+    for (name, schema) in harness_schema_documents() {
+        atomic_write(
+            &root.join(".icarus/schemas").join(name),
+            format!("{}\n", serde_json::to_string_pretty(&schema)?).as_bytes(),
+        )?;
     }
     atomic_write(&runtime_root(&root).join(".gitignore"), b"*\n!.gitignore\n")?;
     ensure_root_gitignore(&root)?;

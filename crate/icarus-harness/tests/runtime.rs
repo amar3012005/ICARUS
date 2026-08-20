@@ -34,6 +34,17 @@ fn init_is_idempotent_and_creates_a_tracked_contract() {
         .path()
         .join(".icarus/schemas/manifest.schema.json")
         .exists());
+    let skill_schema: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".icarus/schemas/skill.schema.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(skill_schema["additionalProperties"], false);
+    assert!(skill_schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "proof_expires_at"));
+    assert_eq!(skill_schema["properties"]["state"]["enum"][2], "demoted");
     assert!(repo.path().join(".icarus/runtime/.gitignore").exists());
     assert!(fs::read_to_string(repo.path().join(".gitignore"))
         .unwrap()
