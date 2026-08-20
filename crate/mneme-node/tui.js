@@ -1257,4 +1257,8 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, chatRecallLines, stripAnsi };
+// parseArgs and visLen are exported for tests, not for callers: parseArgs carries a real
+// regression (an unrecognized --flag used to swallow the following positional argument, so
+// `/ingest --typo /some/path` lost the path entirely) and visLen underpins every layout
+// calculation. Untested, both are exactly the kind of quiet logic that breaks a release.
+module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, tuiIngestQueueLine, recordIngestQueue, statusCardLines, chatRecallLines, stripAnsi, parseArgs, visLen };

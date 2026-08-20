@@ -718,6 +718,17 @@ async function cmdDaemon(flags, _cfg) {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
+
+  // `--version` before anything else: release automation has to be able to ask a freshly
+  // built binary what it is, and prove it matches the tag it was published under. That check
+  // must not depend on config being loadable, a shard existing, or the addon being present —
+  // so it is answered here, ahead of loadCfg(), and prints ONLY the bare version so callers
+  // can compare it directly instead of parsing a banner.
+  if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    console.log(ICARUS_VERSION);
+    return;
+  }
+
   const cfg = loadCfg();
   try {
     // Bare `icarus` (no subcommand) on a real TTY launches the interactive shell instead of the
@@ -892,6 +903,19 @@ async function main() {
        ANTHROPIC_API_KEY (memory generation via Anthropic's own API instead — see connect-llm)
        LITELLM_API_KEY / LITELLM_BASE_URL (embeddings via your own LiteLLM/blaiq gateway instead)
        ICARUS_HOME (default ~/.icarus)`));
+        // An UNRECOGNIZED subcommand is a usage error and must exit non-zero. It used to print
+        // this help and exit 0, which meant a typo in a script or CI step silently "succeeded"
+        // while doing nothing — the worst possible outcome for a tool whose whole job is
+        // trustworthy state. Explicitly asking for help (`help`, `--help`, `-h`, or a bare
+        // `icarus` with no arguments) is NOT an error and still exits 0.
+        //
+        // Exit 2 rather than 1, following the long-standing convention that 2 means "wrong
+        // usage" while 1 means "ran correctly and the answer was no / it failed" — that
+        // distinction lets a caller tell a broken invocation apart from a real failure.
+        if (cmd !== undefined && cmd !== 'help' && cmd !== '--help' && cmd !== '-h') {
+          console.error(err(`unknown command: ${cmd}`));
+          process.exitCode = 2;
+        }
     }
   } catch (e) {
     console.error(err(e.message));

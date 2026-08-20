@@ -69,6 +69,43 @@ jobs:
       - name: Durability suite (crash safety, compaction, invariants)
         run: cargo test -p mseg --test crash_safety --test compact --test invariants
 
+  # The Rust job above protects the storage engine. This one protects everything a USER
+  # actually touches: the CLI's argument parsing and exit codes, the TUI's rendering and
+  # scrollback, the project-instruction installers that edit files in someone else's
+  # repository, and the single-source-of-truth version wiring.
+  #
+  # None of it needs a Cargo build, and that is deliberate: cli-lib.js loads the native addon
+  # LAZILY, so every command that does not touch a shard works on a checkout with no
+  # toolchain. Keeping this job toolchain-free both makes it fast (~1s) and continuously
+  # proves that lazy-loading property still holds — if someone converts it to a top-level
+  # require, this job goes red instead of every no-toolchain install silently breaking.
+  node:
+    name: node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same two platforms as the Rust job: the installers write to platform-specific paths
+        # and the clipboard/picker helpers shell out to different binaries per OS.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20   # the minimum install.sh accepts; testing the floor, not just latest
+
+      # The CLI version is baked into the binary at build time (a single self-contained
+      # executable cannot read a VERSION file that is not shipped beside it), so VERSION and
+      # the literal in cli-lib.js are necessarily two copies. This is the gate that stops them
+      # drifting into a release where the tag, the binary, and the update check disagree.
+      - name: Version single-source-of-truth check
+        run: node scripts/version.mjs --check
+
+      - name: Node tests (CLI, TUI, installers, version)
+        working-directory: crate/mneme-node
+        run: npm test
+
   # Separate job, not folded into `test`: mneme-python's `extension-module` pyo3 feature cannot
   # link under plain `cargo build`/`cargo test` (Python provides its own symbols at dlopen time,
   # so a maturin-style build is required) -- proved locally when adding this crate broke the
