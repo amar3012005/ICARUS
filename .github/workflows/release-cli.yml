@@ -71,7 +71,10 @@ jobs:
           - host: macos-latest
             target: aarch64-apple-darwin
             asset: icarus-darwin-arm64
-          - host: macos-13
+          # macos-13 was retired by GitHub Actions in December 2025. This is the hosted Intel
+          # label maintained for x86_64 builds through August 2027; do not replace it with
+          # macos-latest, which is ARM64 and would publish a wrongly-labelled binary.
+          - host: macos-15-intel
             target: x86_64-apple-darwin
             asset: icarus-darwin-x64
           - host: ubuntu-latest
