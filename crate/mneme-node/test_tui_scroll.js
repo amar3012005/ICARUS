@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { transcriptViewport, tuiProgressLine, recordProgressTick } = require('./tui.js');
+const { transcriptViewport, tuiProgressLine, recordProgressTick, statusCardLines, stripAnsi } = require('./tui.js');
 
 const transcript = Array.from({ length: 1200 }, (_, index) => `turn-${index}`);
 const tail = transcriptViewport(transcript, { contentH: 8, cols: 80, scrollOffset: 0 });
@@ -21,4 +21,11 @@ const progressState = { transcript: [], _pendingPartial: '', _spinnerActive: fal
 recordProgressTick(progressState, '\rfirst file · uploading');
 recordProgressTick(progressState, '\rsecond file · extracting');
 assert.deepStrictEqual(progressState.transcript, ['second file · extracting']);
+
+const statusCard = statusCardLines({ org: 'default', bytesOnDisk: 29_530_000 }, {
+  memories: 1, memoriesLatest: 1, evidenceAndOther: 1258, relationships: 0,
+}).map(stripAnsi).join('\n');
+assert.match(statusCard, /default.*29\.53 MB/);
+assert.match(statusCard, /MEMORY\s+1.*EVIDENCE\s+1258.*RELATIONS\s+0/);
+assert.doesNotMatch(statusCard, /not tracked locally/);
 console.log('TUI_SCROLL_OK');

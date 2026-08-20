@@ -319,6 +319,23 @@ function tuiProgressLine(event, spinner, cols = process.stdout.columns || 80) {
   return formatHivemindProgress({ ...event, file: shortenProgressFile(event.file, cols) }, spinner);
 }
 
+// The status view is an index dashboard, not a log. Each org gets one compact card so the eye
+// can compare its memory, evidence, and relationship inventory on a single scan.
+function statusCardLines(shard, rich, richErr = null) {
+  const size = `${(shard.bytesOnDisk / 1e6).toFixed(2)} MB`;
+  const title = `${m.faint('┌─')} ${m.bold(shard.org)} ${m.faint('·')} ${m.muted(size)}`;
+  if (rich && !rich.unavailable) {
+    const memory = rich.memories !== rich.memoriesLatest ? `${rich.memoriesLatest} current` : String(rich.memoriesLatest);
+    return [
+      title,
+      ` ${m.faint('│')} ${m.faint('MEMORY')} ${m.bold(memory.padStart(8))}   ${m.faint('EVIDENCE')} ${m.bold(String(rich.evidenceAndOther).padStart(8))}   ${m.faint('RELATIONS')} ${m.bold(String(rich.relationships).padStart(5))}`,
+      m.faint('└────────────────────────────────────────'),
+    ];
+  }
+  const reason = rich?.unavailable ? 'counts busy — shard open in another ICARUS session' : `counts unavailable — ${richErr || 'unknown error'}`;
+  return [title, ` ${m.faint('│')} ${m.muted(reason)}`, m.faint('└────────────────────────────────────────')];
+}
+
 /** A real y/n prompt from INSIDE a command handler (e.g. /setup asking "build the graph too?")
  * — the main stdin 'data' listener checks state._modalResolver first and routes the next
  * keypress here instead of the normal input-editing path, so no listener detach/reattach is
@@ -951,8 +968,10 @@ async function dispatch(line, state, cfg) {
     }
     case 'status': {
       const s = statusReport(cfg);
-      out(state, `${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
-      out(state, `HIVEMIND: ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}   Signing: ${signingEnabled(cfg) ? c.success('on') : c.dim('off')}`);
+      out(state, `\n${heading('memory atlas')}  ${m.faint('local .amr index')}`);
+      out(state, `${m.faint('root')} ${c.path(s.dataRoot)}  ${m.faint('dimension')} ${s.dim}`);
+      out(state, `${m.faint('HIVEMIND')} ${s.hivemindConnected ? c.success('● connected') : c.dim('○ not connected')}   ${m.faint('SIGNING')} ${signingEnabled(cfg) ? c.success('● enabled') : c.dim('○ off')}`);
+      out(state, m.faint('────────────────────────────────────────────────'));
       if (!s.shards.length) { out(state, c.dim('no shards yet')); break; }
       for (const sh of s.shards) {
         let rich = null, richErr = null;
@@ -962,15 +981,7 @@ async function dispatch(line, state, cfg) {
         // one line of counts. unavailable:true is the instant, expected outcome now, not an
         // error -- the plain try/catch below still guards a genuinely different failure.
         try { rich = richOrgStats(sh.org, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
-        out(state, `  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`);
-        if (rich && !rich.unavailable) {
-          out(state, `    ${c.dim('memories:')} ${c.bold(rich.memoriesLatest)}${rich.memories !== rich.memoriesLatest ? c.dim(` (${rich.memories - rich.memoriesLatest} superseded)`) : ''}   ${c.dim('relationships:')} ${c.bold(rich.relationships)}   ${c.dim('evidence/other:')} ${c.bold(rich.evidenceAndOther)}`);
-          out(state, `    ${c.dim('entities: not tracked locally (no local entity extraction — a real HIVEMIND server-side capability)')}`);
-        } else if (rich && rich.unavailable) {
-          out(state, `    ${c.dim('(memory/relationship counts unavailable — shard actively open by another icarus process, e.g. this project\'s own MCP connection)')}`);
-        } else {
-          out(state, `    ${c.command(`(memory/relationship counts unavailable — ${richErr})`)}`);
-        }
+        statusCardLines(sh, rich, richErr).forEach((line) => out(state, line));
       }
       break;
     }
@@ -1139,4 +1150,4 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick };
+module.exports = { run, transcriptViewport, tuiProgressLine, shortenProgressFile, recordProgressTick, statusCardLines, stripAnsi };
