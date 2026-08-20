@@ -20,3 +20,8 @@ test('REGRESSION: npm engine releases use a distinct engine-v* tag namespace', (
   assert.match(engine, /tags:\s*\['engine-v\*'\]/);
   assert.doesNotMatch(engine, /tags:\s*\['v\*'\]/);
 });
+
+test('REGRESSION: Node CI installs declared dependencies before running unit tests', () => {
+  const ci = workflow('ci.yml');
+  assert.match(ci, /working-directory: crate\/mneme-node\n\s+run: npm ci\n\n\s+- name: Node tests/);
+});

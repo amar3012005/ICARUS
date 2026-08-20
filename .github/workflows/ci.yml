@@ -102,6 +102,12 @@ jobs:
       - name: Version single-source-of-truth check
         run: node scripts/version.mjs --check
 
+      # Unit tests import actual declared dependencies (Zod/YAML/MCP SDK).  Installing here also
+      # keeps this lightweight job honest: a checkout must pass from package-lock alone.
+      - name: Install Node dependencies
+        working-directory: crate/mneme-node
+        run: npm ci
+
       - name: Node tests (CLI, TUI, installers, version)
         working-directory: crate/mneme-node
         run: npm test
