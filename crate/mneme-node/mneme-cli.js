@@ -210,7 +210,18 @@ function cmdTask(flags) {
     if (receipt.status === 'fail') process.exitCode = 3;
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize|verify>');
+  if (subcommand === 'seal') {
+    const result = harness.sealTask(repo, taskId);
+    if (!result.sealed) {
+      console.log(err(`${c.path(taskId)} cannot seal`));
+      for (const issue of [...result.unmet_criteria, ...result.issues]) console.log(c.dim(`  · ${issue}`));
+      process.exitCode = 3;
+      return;
+    }
+    console.log(ok(`${c.path(taskId)} sealed · ${result.final_receipt_path}`));
+    return;
+  }
+  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize|verify|seal>');
 }
 
 function cmdContext(flags) {

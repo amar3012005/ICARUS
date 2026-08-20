@@ -226,6 +226,17 @@ pub struct VerificationReceipt {
     pub artifacts: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SealResult {
+    pub task_id: String,
+    pub execution_id: String,
+    pub sealed: bool,
+    pub unmet_criteria: Vec<String>,
+    pub issues: Vec<String>,
+    pub final_receipt_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -1310,6 +1321,125 @@ pub fn verify_task_criterion(
         },
     )?;
     Ok(receipt)
+}
+
+fn read_verification_receipts(root: &Path, task_id: &str) -> Result<Vec<VerificationReceipt>> {
+    let path = evidence_dir(root, task_id).join("commands.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    fs::read_to_string(path)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(HarnessError::from))
+        .collect()
+}
+
+fn required_criteria(task: &TaskRecord) -> Vec<Value> {
+    task.contract
+        .acceptance_criteria
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|criterion| {
+            criterion
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Seal only with current, machine-produced passing evidence. Any source-state change after a
+/// verification receipt invalidates it; ICARUS intentionally chooses safe over convenient.
+pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "verifying" {
+        return Err(HarnessError::invalid("sealing requires a verifying task"));
+    }
+    let current_sha = git_output(&root, &["rev-parse", "HEAD"]);
+    let current_dirty = sha256(
+        git_output(&root, &["status", "--porcelain=v1"])
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    let receipts = read_verification_receipts(&root, task_id)?;
+    let mut unmet = Vec::new();
+    for criterion in required_criteria(&task) {
+        let Some(id) = criterion.get("id").and_then(Value::as_str) else {
+            unmet.push("contract criterion missing id".into());
+            continue;
+        };
+        match receipts
+            .iter()
+            .rev()
+            .find(|receipt| receipt.criterion_id == id)
+        {
+            None => unmet.push(format!("{id}: no receipt")),
+            Some(receipt) if receipt.status != "pass" => {
+                unmet.push(format!("{id}: receipt status {}", receipt.status))
+            }
+            Some(receipt) if receipt.contract_digest != task.contract_digest => {
+                unmet.push(format!("{id}: contract changed since verification"))
+            }
+            Some(receipt)
+                if receipt.git_sha != current_sha
+                    || receipt.dirty_state_fingerprint != current_dirty =>
+            {
+                unmet.push(format!("{id}: workspace changed since verification"))
+            }
+            Some(_) => {}
+        }
+    }
+    let changed =
+        parse_status_paths(&git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default());
+    let allowed = build_globset(&task.contract.allowed_paths)?;
+    let forbidden = build_globset(&task.contract.forbidden_paths)?;
+    let mut issues: Vec<String> = changed
+        .into_iter()
+        .filter(|path| !allowed.is_match(path) || forbidden.is_match(path))
+        .map(|path| format!("out-of-scope changed file: {path}"))
+        .collect();
+    let chain = verify_event_chain(&root, &load_manifest(&root)?.repo_id)?;
+    if !chain.valid {
+        issues.push(format!("event chain invalid: {}", chain.issues.join("; ")));
+    }
+    if !unmet.is_empty() || !issues.is_empty() {
+        return Ok(SealResult {
+            task_id: task.task_id,
+            execution_id: task.execution_id,
+            sealed: false,
+            unmet_criteria: unmet,
+            issues,
+            final_receipt_path: None,
+        });
+    }
+    let diff = git_output(&root, &["diff", "--binary", "HEAD"]).unwrap_or_default();
+    let diff_path = evidence_dir(&root, task_id).join("diff.patch");
+    atomic_write(&diff_path, diff.as_bytes())?;
+    let final_path = runtime_root(&root)
+        .join("tasks")
+        .join(task_id)
+        .join("final-result.json");
+    let result = SealResult {
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        sealed: true,
+        unmet_criteria: Vec::new(),
+        issues: Vec::new(),
+        final_receipt_path: Some(
+            final_path
+                .strip_prefix(&root)
+                .unwrap_or(&final_path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        ),
+    };
+    atomic_write(&final_path, format!("{}\n", serde_json::to_string_pretty(&json!({"seal": result, "git_sha": current_sha, "dirty_state_fingerprint": current_dirty, "diff_digest": sha256(diff.as_bytes()), "receipts": receipts}))?).as_bytes())?;
+    transition_task(&root, task_id, "sealed")?;
+    Ok(result)
 }
 
 fn read_checkpoints(root: &Path, task_id: &str) -> Result<Vec<Checkpoint>> {

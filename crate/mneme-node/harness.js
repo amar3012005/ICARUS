@@ -49,6 +49,10 @@ function verifyTaskCriterion(repoRoot, taskId, criterionId) {
   return invoke('harnessVerifyTaskCriterion', [repoRoot, taskId, criterionId]);
 }
 
+function sealTask(repoRoot, taskId) {
+  return invoke('harnessSealTask', [repoRoot, taskId]);
+}
+
 function amendTaskContract(repoRoot, taskId, contract, reason, approvalId) {
   return invoke('harnessAmendTaskContract', [repoRoot, taskId, JSON.stringify(contract), reason, approvalId]);
 }
@@ -84,6 +88,7 @@ module.exports = {
   resumeTask,
   prepareRun,
   verifyTaskCriterion,
+  sealTask,
   amendTaskContract,
   checkpointTask,
   buildContext,

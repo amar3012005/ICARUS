@@ -1,7 +1,7 @@
 use icarus_harness::{
     amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
     graph_source_fingerprint, init, prepare_run, read_snapshot, record_graph_receipt, resume_task,
-    start_task, task_status, transition_task, verify_event_chain, verify_task_criterion,
+    seal_task, start_task, task_status, transition_task, verify_event_chain, verify_task_criterion,
     write_snapshot, Action, EventInput, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
@@ -583,8 +583,20 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
     assert_eq!(receipt.status, "pass");
     assert!(receipt.output_excerpt.contains("unit pass"));
     assert!(repo.path().join(&receipt.output_path).exists());
+    assert!(verify_task_criterion(repo.path(), &task.task_id, "not-in-contract").is_err());
+    let sealed = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(!sealed.sealed);
+    assert!(sealed
+        .unmet_criteria
+        .iter()
+        .any(|item| item.contains("artifact")));
     let artifact = verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap();
     assert_eq!(artifact.status, "pass");
     assert_eq!(artifact.artifacts, vec!["README.md"]);
-    assert!(verify_task_criterion(repo.path(), &task.task_id, "not-in-contract").is_err());
+    let sealed = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(sealed.sealed);
+    assert!(repo
+        .path()
+        .join(sealed.final_receipt_path.unwrap())
+        .exists());
 }

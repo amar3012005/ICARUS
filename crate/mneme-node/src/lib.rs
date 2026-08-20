@@ -135,6 +135,15 @@ pub fn harness_verify_task_criterion(
 }
 
 #[napi]
+pub fn harness_seal_task(repo_root: String, task_id: String) -> Result<String> {
+    let result = harness::seal_task(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(result).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_amend_task_contract(
     repo_root: String,
     task_id: String,
