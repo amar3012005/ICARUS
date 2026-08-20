@@ -638,6 +638,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_attest',
+    {
+      title: 'Record an attributable manual review or external approval',
+      description: 'Use only for a manual_review or external_approval criterion in the immutable task contract. This stores the approver and approval reference as a receipt; external approvals must include a future RFC3339 expiry and are rejected by seal after expiry.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), criterion_id: z.string(), approval_id: z.string(), approver: z.string(), expires_at: z.string().optional() },
+    },
+    async ({ repo, task_id, criterion_id, approval_id, approver, expires_at }) => {
+      try { return textResult(harnessFor().attestTaskCriterion(repo, task_id, criterion_id, approval_id, approver, expires_at)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_propose',
     {
       title: 'Propose a governed ICARUS harness procedure',

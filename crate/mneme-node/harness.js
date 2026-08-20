@@ -49,6 +49,10 @@ function verifyTaskCriterion(repoRoot, taskId, criterionId) {
   return invoke('harnessVerifyTaskCriterion', [repoRoot, taskId, criterionId]);
 }
 
+function attestTaskCriterion(repoRoot, taskId, criterionId, approvalId, approver, expiresAt) {
+  return invoke('harnessAttestTaskCriterion', [repoRoot, taskId, criterionId, approvalId, approver, expiresAt]);
+}
+
 function sealTask(repoRoot, taskId) {
   return invoke('harnessSealTask', [repoRoot, taskId]);
 }
@@ -92,6 +96,7 @@ module.exports = {
   resumeTask,
   prepareRun,
   verifyTaskCriterion,
+  attestTaskCriterion,
   sealTask,
   proposeSkill,
   promoteSkill,

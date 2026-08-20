@@ -15,6 +15,7 @@ export declare function harnessTransitionTask(repoRoot: string, taskId: string, 
 export declare function harnessResumeTask(repoRoot: string, taskId: string): string
 export declare function harnessPrepareRun(repoRoot: string, taskId: string, agent: string, workspaceMode: string, acknowledgeDirtyCurrent: boolean): string
 export declare function harnessVerifyTaskCriterion(repoRoot: string, taskId: string, criterionId: string): string
+export declare function harnessAttestTaskCriterion(repoRoot: string, taskId: string, criterionId: string, approvalId: string, approver: string, expiresAt?: string | undefined | null): string
 export declare function harnessSealTask(repoRoot: string, taskId: string): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
 export declare function harnessPromoteSkill(repoRoot: string, skillId: string, ownerApproval?: string | undefined | null): string

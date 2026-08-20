@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  initHarness, doctor, proposeSkill, promoteSkill, retireSkill,
+  initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -40,14 +40,17 @@ test('skill governance remains a thin Rust transport, including attributable ret
     harnessProposeSkill(...args) { calls.push(['propose', args]); return JSON.stringify({ id: 'review', state: 'proposed' }); },
     harnessPromoteSkill(...args) { calls.push(['promote', args]); return JSON.stringify({ id: 'review', state: 'active' }); },
     harnessRetireSkill(...args) { calls.push(['retire', args]); return JSON.stringify({ id: 'review', state: 'retired' }); },
+    harnessAttestTaskCriterion(...args) { calls.push(['attest', args]); return JSON.stringify({ criterion_id: 'owner', status: 'pass' }); },
   });
   const skill = { id: 'review', instructions: 'Use receipts.' };
   assert.equal(proposeSkill('/repo', skill).state, 'proposed');
   assert.equal(promoteSkill('/repo', 'review', 'APR-1').state, 'active');
   assert.equal(retireSkill('/repo', 'review', 'superseded', 'APR-2').state, 'retired');
+  assert.equal(attestTaskCriterion('/repo', 'TASK-1', 'owner', 'APR-3', 'owner', '2099-01-01T00:00:00Z').status, 'pass');
   assert.deepEqual(calls, [
     ['propose', ['/repo', JSON.stringify(skill)]],
     ['promote', ['/repo', 'review', 'APR-1']],
     ['retire', ['/repo', 'review', 'superseded', 'APR-2']],
+    ['attest', ['/repo', 'TASK-1', 'owner', 'APR-3', 'owner', '2099-01-01T00:00:00Z']],
   ]);
 });

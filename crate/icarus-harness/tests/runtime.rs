@@ -1,9 +1,9 @@
 use icarus_harness::{
-    amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
-    graph_source_fingerprint, init, prepare_run, read_snapshot, record_graph_receipt, resume_task,
-    retire_skill, seal_task, start_task, task_status, transition_task, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
-    TaskContract,
+    amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
+    checkpoint_task, doctor, graph_source_fingerprint, init, prepare_run, read_snapshot,
+    record_graph_receipt, resume_task, retire_skill, seal_task, start_task, task_status,
+    transition_task, verify_event_chain, verify_task_criterion, write_snapshot, Action, EventInput,
+    HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -600,6 +600,63 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
         .path()
         .join(sealed.final_receipt_path.unwrap())
         .exists());
+}
+
+#[test]
+fn external_approval_is_expiry_bound_and_cannot_be_replaced_by_pending_prose() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut approval_contract = contract();
+    approval_contract.acceptance_criteria = serde_json::json!([
+        {"id":"owner","type":"external_approval","required":true}
+    ]);
+    let task = start_task(repo.path(), "owner gate", approval_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    assert_eq!(
+        verify_task_criterion(repo.path(), &task.task_id, "owner")
+            .unwrap()
+            .status,
+        "pending"
+    );
+    assert!(!seal_task(repo.path(), &task.task_id).unwrap().sealed);
+    assert!(attest_task_criterion(
+        repo.path(),
+        &task.task_id,
+        "owner",
+        "APR-100",
+        "owner@example.test",
+        None,
+    )
+    .is_err());
+    assert!(attest_task_criterion(
+        repo.path(),
+        &task.task_id,
+        "owner",
+        "APR-100",
+        "owner@example.test",
+        Some("2000-01-01T00:00:00Z".into()),
+    )
+    .is_err());
+    let receipt = attest_task_criterion(
+        repo.path(),
+        &task.task_id,
+        "owner",
+        "APR-100",
+        "owner@example.test",
+        Some("2099-01-01T00:00:00Z".into()),
+    )
+    .unwrap();
+    assert_eq!(receipt.status, "pass");
+    assert_eq!(receipt.expires_at.as_deref(), Some("2099-01-01T00:00:00Z"));
+    assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
 }
 
 #[test]

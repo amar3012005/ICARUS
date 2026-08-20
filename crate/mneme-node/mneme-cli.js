@@ -210,6 +210,12 @@ function cmdTask(flags) {
     if (receipt.status === 'fail') process.exitCode = 3;
     return;
   }
+  if (subcommand === 'attest') {
+    if (!flags.criterion || !flags.approval || !flags.approver) throw new Error('usage: icarus task attest <TASK-ID> --criterion <id> --approval <id> --approver <name> [--expires-at <rfc3339>] [--repo <dir>]');
+    const receipt = harness.attestTaskCriterion(repo, taskId, flags.criterion, flags.approval, flags.approver, flags['expires-at']);
+    console.log(ok(`${c.path(taskId)} · ${receipt.criterion_id} attested`));
+    return;
+  }
   if (subcommand === 'seal') {
     const result = harness.sealTask(repo, taskId);
     if (!result.sealed) {
@@ -1071,6 +1077,9 @@ async function main() {
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]
+  icarus task attest <TASK-ID> --criterion <id> --approval <id> --approver <name> [--expires-at <rfc3339>]
+                                        record a manual/external approval receipt. External
+                                        approvals expire and must remain valid when sealing.
   icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]
                                         compile a deterministic, source-traceable context pack
                                         without making an LLM or network call.

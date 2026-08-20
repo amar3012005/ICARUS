@@ -224,6 +224,12 @@ pub struct VerificationReceipt {
     pub output_excerpt: String,
     pub output_path: String,
     pub artifacts: Vec<String>,
+    /// Present only for a human/manual or external-approval attestation. An external approval
+    /// must have a future expiry at attestation time and again at seal time.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub attestation: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1328,6 +1334,8 @@ pub fn verify_task_criterion(
             .to_string_lossy()
             .replace('\\', "/"),
         artifacts,
+        expires_at: None,
+        attestation: None,
     };
     let receipts_path = evidence_dir(&root, task_id).join("commands.jsonl");
     fs::create_dir_all(receipts_path.parent().unwrap())?;
@@ -1346,6 +1354,130 @@ pub fn verify_task_criterion(
             worktree_id: "main".into(),
             timestamp: None,
             payload: json!({"criterion_id": criterion_id, "status": receipt.status, "output_digest": receipt.output_digest, "git_sha": receipt.git_sha, "dirty_state_fingerprint": receipt.dirty_state_fingerprint}),
+        },
+    )?;
+    Ok(receipt)
+}
+
+fn parse_future_expiry(expires_at: &str) -> Result<()> {
+    let expiry =
+        time::OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| HarnessError::invalid("approval expiry must be an RFC3339 timestamp"))?;
+    if expiry <= time::OffsetDateTime::now_utc() {
+        return Err(HarnessError::invalid(
+            "approval expiry must be in the future",
+        ));
+    }
+    Ok(())
+}
+
+/// Record an attributable human/manual gate for an immutable contract criterion. This is not a
+/// generic 'pass' switch: only `manual_review` and `external_approval` criteria can be
+/// attested, the approval id is required, and external approvals must be expiry-bound.
+pub fn attest_task_criterion(
+    repo_root: &Path,
+    task_id: &str,
+    criterion_id: &str,
+    approval_id: &str,
+    approver: &str,
+    expires_at: Option<String>,
+) -> Result<VerificationReceipt> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if !matches!(task.status.as_str(), "executing" | "verifying") {
+        return Err(HarnessError::invalid(
+            "attestation requires an executing or verifying task",
+        ));
+    }
+    if approval_id.trim().is_empty() || approver.trim().is_empty() {
+        return Err(HarnessError::invalid(
+            "attestation requires approval id and approver",
+        ));
+    }
+    let criterion = criterion_for(&task, criterion_id)?;
+    let criterion_type = criterion
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HarnessError::invalid("criterion requires a type"))?
+        .to_owned();
+    if !matches!(
+        criterion_type.as_str(),
+        "manual_review" | "external_approval"
+    ) {
+        return Err(HarnessError::invalid(
+            "only manual_review or external_approval criteria may be attested",
+        ));
+    }
+    if criterion_type == "external_approval" {
+        let expiry = expires_at
+            .as_deref()
+            .ok_or_else(|| HarnessError::invalid("external approval requires an expiry"))?;
+        parse_future_expiry(expiry)?;
+    }
+    let started_at = now_rfc3339();
+    let output = format!(
+        "{} attested by {} with approval {}{}",
+        criterion_type,
+        approver.trim(),
+        approval_id.trim(),
+        expires_at
+            .as_deref()
+            .map(|value| format!("; expires {value}"))
+            .unwrap_or_default(),
+    )
+    .into_bytes();
+    let output_digest = sha256(&output);
+    let output_path = evidence_dir(&root, task_id).join("approvals").join(format!(
+        "{}-{}.log",
+        criterion_id,
+        &output_digest[..12]
+    ));
+    atomic_write(&output_path, &output)?;
+    let git_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let receipt = VerificationReceipt {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        criterion_id: criterion_id.into(),
+        criterion_type,
+        status: "pass".into(),
+        command: None,
+        working_directory: root.display().to_string(),
+        started_at,
+        finished_at: now_rfc3339(),
+        exit_code: None,
+        git_sha: git_output(&root, &["rev-parse", "HEAD"]),
+        dirty_state_fingerprint: sha256(git_status.as_bytes()),
+        contract_digest: task.contract_digest.clone(),
+        toolchain: json!({"attestation": "explicit human/external reference"}),
+        output_digest,
+        output_excerpt: bounded_excerpt(&output),
+        output_path: output_path
+            .strip_prefix(&root)
+            .unwrap_or(&output_path)
+            .to_string_lossy()
+            .replace('\\', "/"),
+        artifacts: Vec::new(),
+        expires_at,
+        attestation: Some(json!({"approval_id": approval_id.trim(), "approver": approver.trim()})),
+    };
+    let receipts_path = evidence_dir(&root, task_id).join("commands.jsonl");
+    fs::create_dir_all(receipts_path.parent().unwrap())?;
+    let mut log = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&receipts_path)?;
+    writeln!(log, "{}", serde_json::to_string(&receipt)?)?;
+    log.sync_all()?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "criterion_attested".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: json!({"criterion_id": criterion_id, "approval_id": approval_id.trim(), "approver": approver.trim(), "expires_at": receipt.expires_at, "output_digest": receipt.output_digest}),
         },
     )?;
     Ok(receipt)
@@ -1417,6 +1549,23 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
                     || receipt.dirty_state_fingerprint != current_dirty =>
             {
                 unmet.push(format!("{id}: workspace changed since verification"))
+            }
+            Some(receipt)
+                if receipt.criterion_type == "external_approval"
+                    && receipt
+                        .expires_at
+                        .as_deref()
+                        .map(parse_future_expiry)
+                        .transpose()
+                        .is_err() =>
+            {
+                unmet.push(format!("{id}: external approval expired or invalid"))
+            }
+            Some(receipt)
+                if receipt.criterion_type == "external_approval"
+                    && receipt.expires_at.is_none() =>
+            {
+                unmet.push(format!("{id}: external approval has no expiry"))
             }
             Some(_) => {}
         }
