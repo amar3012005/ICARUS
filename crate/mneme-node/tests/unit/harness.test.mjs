@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor } = require('../../harness.js');
+const { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, writeRuntimeSnapshot, readRuntimeSnapshot } = require('../../harness.js');
 const { dbPath: graphDbPath } = require('../../graph-native.js');
 
 function tmpRepo() {
@@ -138,5 +138,17 @@ test('doctor fails on a stale runtime lock instead of allowing a second writer t
     const report = doctor(repo);
     assert.equal(report.healthy, false);
     assert.ok(report.checks.some((check) => check.id === 'stale_locks' && check.status === 'fail'));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('runtime snapshots are atomically stored under runtime state and reject path escapes', () => {
+  const repo = tmpRepo();
+  try {
+    initHarness(repo);
+    const snapshot = { task_id: 'TASK-1', status: 'created' };
+    writeRuntimeSnapshot(repo, 'state/current-task.json', snapshot);
+    assert.deepEqual(readRuntimeSnapshot(repo, 'state/current-task.json'), snapshot);
+    assert.throws(() => writeRuntimeSnapshot(repo, '../outside.json', snapshot), /must stay inside .icarus\/runtime/);
+    assert.equal(existsSync(join(repo, '.icarus', 'outside.json')), false);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

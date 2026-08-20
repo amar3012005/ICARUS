@@ -60,6 +60,27 @@ function eventsPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'logs', 
 function eventHeadPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'state', 'event-head.json'); }
 function locksDir(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'locks'); }
 
+function runtimePath(repoRoot, relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath) throw new Error('runtime snapshot path is required');
+  const runtimeRoot = path.resolve(repoRoot, RUNTIME_DIR);
+  const target = path.resolve(runtimeRoot, relativePath);
+  if (target !== runtimeRoot && !target.startsWith(`${runtimeRoot}${path.sep}`)) {
+    throw new Error('runtime snapshot path must stay inside .icarus/runtime');
+  }
+  return target;
+}
+
+function writeRuntimeSnapshot(repoRoot, relativePath, value) {
+  const target = runtimePath(repoRoot, relativePath);
+  atomicWrite(target, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function readRuntimeSnapshot(repoRoot, relativePath) {
+  const target = runtimePath(repoRoot, relativePath);
+  if (!fs.existsSync(target)) return null;
+  return JSON.parse(fs.readFileSync(target, 'utf8'));
+}
+
 function processIsAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -289,4 +310,4 @@ function doctor(repoRoot) {
   return { healthy: issues.length === 0, repo_id: manifest.repo_id, checks, issues };
 }
 
-module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, parseManifest, inspectRuntimeLocks, MANIFEST_VERSION };
+module.exports = { initHarness, loadManifest, appendRuntimeEvent, verifyEventChain, doctor, parseManifest, inspectRuntimeLocks, writeRuntimeSnapshot, readRuntimeSnapshot, MANIFEST_VERSION };
