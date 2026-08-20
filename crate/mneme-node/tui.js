@@ -29,7 +29,7 @@ const {
   hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory,
+  hivemindSaveMemory, saveLocalMemory, initRepoShard,
 } = require('./cli-lib.js');
 
 // ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
@@ -146,6 +146,8 @@ const SLASH_COMMANDS = [
   { cmd: '/save', hint: '<text> [--org name] [--cloud]' },
   { cmd: '/status', hint: 'memories, evidence, relationships, shards' },
   { cmd: '/org', hint: '<name> — switch the default org for this session' },
+  { cmd: '/setup', hint: '<claude|codex|cursor|--all> — register MCP + project instructions + repo shard' },
+  { cmd: '/graph', hint: 'build|status|query — native symbol/call graph for this repo' },
   { cmd: '/connect', hint: 'browser sign-in to HIVEMIND' },
   { cmd: '/update', hint: 'download + verify the latest release' },
   { cmd: '/help', hint: 'full command list' },
@@ -161,6 +163,8 @@ function printHelp(state) {
   out(state, `  ${c.command('/status')}                                          org shards + real memory/evidence/relationship counts + signing/audit`);
   out(state, `  ${c.command('/connect')}                                         browser sign-in to HIVEMIND`);
   out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
+  out(state, `  ${c.command('/setup')} <claude|codex|cursor|--all>                run from this project's own folder: registers that agent's MCP server, writes its project instruction file (CLAUDE.md/AGENTS.md/.cursor rule) with this repo's own org name, creates a real .icarus/data/<org> shard here, then offers to build the code graph too.`);
+  out(state, `  ${c.command('/graph')} build|status|query [--repo <dir>]         native symbol/call graph (Tree-sitter, no Python dep) for this repo — query needs --kind <callers_of|callees_of|imports_of|find> --name <symbol>.`);
   out(state, `  ${c.command('/update')}                                          download + verify the latest release, replace this binary`);
   out(state, `  ${c.command('/help')}                                             this list`);
   out(state, `  ${c.command('/quit')} / ${c.command('ctrl+d')}                                   exit`);
@@ -185,6 +189,22 @@ function parseArgs(argStr) {
 
 // ── Output capture: routes dispatch()'s console.log/stdout.write into the transcript pane ──
 function out(state, text) { writeToTranscript(state, String(text) + '\n'); }
+
+/** A real y/n prompt from INSIDE a command handler (e.g. /setup asking "build the graph too?")
+ * — the main stdin 'data' listener checks state._modalResolver first and routes the next
+ * keypress here instead of the normal input-editing path, so no listener detach/reattach is
+ * needed. Anything but y/n/enter is ignored (keeps waiting) rather than silently defaulting. */
+function askYesNo(state, question) {
+  return new Promise((resolve) => {
+    out(state, `${question} ${c.dim('[y/n]')}`);
+    scheduleRedraw(state);
+    state._modalResolver = (key) => {
+      if (key === 'y' || key === 'Y') { state._modalResolver = null; out(state, c.dim('y')); resolve(true); }
+      else if (key === 'n' || key === 'N' || key === '\r' || key === '\n') { state._modalResolver = null; out(state, c.dim('n')); resolve(false); }
+      // any other key: keep waiting, don't resolve
+    };
+  });
+}
 
 /** A user turn — a full-width BANDED row (darker background across the whole line) with the
  * `❯ ` prefix and a right-justified clock, exactly the shape grok-build's own user block
@@ -466,6 +486,10 @@ async function run() {
   process.stdin.on('data', (chunk) => {
     if (!running) return;
     for (const key of tokenize(chunk)) {
+      // A pending yes/no prompt (askYesNo(), used by /setup's graph-build offer) intercepts the
+      // very next keypress instead of the normal input-editing logic below — no need to detach/
+      // reattach this listener, just route around it while a modal is active.
+      if (state._modalResolver) { state._modalResolver(key); continue; }
       if (key === '') { running = false; process.exit(0); return; } // ctrl+c
       if (key === '') { if (!state.input) { running = false; process.exit(0); return; } continue; } // ctrl+d on empty line
       if (key === '\r' || key === '\n') { submit(); continue; }
@@ -618,6 +642,65 @@ async function dispatch(line, state, cfg) {
       const bytes = await performSelfUpdate();
       console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB).`));
       console.log(c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
+      break;
+    }
+    case 'setup': {
+      const arg = argStr.trim().toLowerCase();
+      const mi = require('./mcp-install.js');
+      const cwd = process.cwd();
+      const icarusCmd = mi.resolveIcarusCommand();
+      const validAgents = Object.keys(mi.AGENT_INSTALLERS);
+      if (!arg || (arg !== '--all' && arg !== 'all' && !validAgents.includes(arg))) {
+        console.log(err(`usage: /setup <${validAgents.join('|')}|--all>`));
+        break;
+      }
+      async function setupOne(agentName) {
+        const { mcp, global, project } = mi.AGENT_INSTALLERS[agentName];
+        console.log(heading(agentName));
+        const mcpResult = mcp(icarusCmd);
+        console.log(mcpResult.installed ? ok(`registered: ${mcpResult.path}`) : c.dim(`skipped: ${mcpResult.reason}`));
+        if (global) {
+          const g = global();
+          console.log(g.installed ? ok(`standing instructions: ${g.path}`) : c.dim(`standing instructions: ${g.reason}`));
+        }
+        const p = project(cwd);
+        console.log(p.installed ? ok(`project instructions: ${p.path} (org "${p.orgName}")`) : c.dim(`project instructions: ${p.reason} (org "${p.orgName}")`));
+        try {
+          const shard = initRepoShard(cwd, p.orgName);
+          console.log(ok(`shard: ${shard.dataRoot}/${shard.org}`));
+        } catch (e) { console.log(err(`shard creation skipped: ${e.message}`)); }
+        return p.orgName;
+      }
+      const agents = (arg === '--all' || arg === 'all') ? validAgents : [arg];
+      for (const name of agents) await setupOne(name);
+      console.log(ok(`setup done for ${agents.join(', ')} — restart the agent(s) above to pick up the MCP server.`));
+      const buildGraph = await askYesNo(state, 'Build the native symbol/call graph for this repo too?');
+      if (buildGraph) await dispatch('/graph build', state, cfg);
+      break;
+    }
+    // Parent + subcommand, matching the CLI's own `icarus graph build/status/query --repo <dir>`
+    // shape exactly (not a flat /graph-build) — one consistent convention across every icarus
+    // surface (CLI, TUI, MCP tool names icarus_graph_build/status/query) so it stays predictable
+    // wherever an agent or a person encounters it.
+    case 'graph': {
+      const sub = flags._[0];
+      const gn = require('./graph-native.js');
+      const repo = flags.repo || process.cwd();
+      if (sub === 'build') {
+        console.log(bullet(c.system(`building graph for ${c.path(repo)}...`)));
+        const r = await gn.buildAndStore(repo);
+        console.log(ok(`graph built: ${r.files} files, ${r.nodes} nodes, ${r.edges} edges`));
+      } else if (sub === 'status') {
+        const s = await gn.status(repo);
+        console.log(s ? ok(`${s.files} files, ${s.nodes} nodes, ${s.edges} edges — last updated ${s.lastUpdated || '?'}`) : c.dim('no graph built yet for this repo — run /graph build'));
+      } else if (sub === 'query') {
+        const kind = flags.kind;
+        const name = flags.name || argStr.split(' ').slice(1).join(' ');
+        if (!kind || !name) { console.log(err('usage: /graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]')); break; }
+        console.log(JSON.stringify(await gn.query(repo, kind, name), null, 2));
+      } else {
+        console.log(err('usage: /graph <build|status|query> [--repo <dir>] [--kind <...> --name <...>]'));
+      }
       break;
     }
     case 'help': printHelp(state); break;

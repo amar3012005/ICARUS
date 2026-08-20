@@ -334,7 +334,9 @@ function removeStandingInstructions() { return removeMarkedBlock(globalClaudeMdP
 function projectBlockBody(orgName) {
   return `## ICARUS memory (this project)
 
-This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.`;
+This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.
+
+For "where is X" / "who calls X" / "what imports X" in this codebase: call \`icarus_graph_query\` FIRST — a cheap structural lookup (callers_of/callees_of/imports_of/find) — instead of Grep/Read over whole files. Run \`icarus_graph_build\` once for this repo if \`icarus_graph_status\` shows nothing built yet, and again after significant restructuring.`;
 }
 
 const PROJECT_MARK_START = '<!-- icarus:project-instructions -->';
