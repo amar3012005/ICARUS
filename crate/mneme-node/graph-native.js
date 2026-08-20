@@ -9,6 +9,7 @@
 // edges + query — not the fuller communities/flows/visualize feature set the wrapper exposed.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 let ParserMod = null;
 async function getParser() {
@@ -69,6 +70,25 @@ function walkFiles(dir) {
     }
   })(dir);
   return out;
+}
+
+// A graph is current only for the exact supported-source file set it was built from. Metadata
+// times are not enough: restores, rebases, and archive extraction can preserve or rewrite them.
+function sourceFingerprint(repoDir) {
+  const hash = crypto.createHash('sha256');
+  // Default string ordering is locale-independent, so the same source tree has the same
+  // fingerprint on every supported host.
+  const files = walkFiles(repoDir).sort();
+  for (const absolute of files) {
+    const relative = path.relative(repoDir, absolute).replaceAll(path.sep, '/');
+    let content;
+    try { content = fs.readFileSync(absolute); } catch (_) { continue; }
+    hash.update(relative);
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 // One pass per file: collect every function/method-like node (as a symbol) and every call site
@@ -376,6 +396,7 @@ function run(db, sql, params = []) {
 }
 
 async function buildAndStore(repoDir) {
+  const fingerprint = sourceFingerprint(repoDir);
   const result = await build(repoDir);
   const db = await openDb(repoDir);
   db.run('BEGIN;');
@@ -389,10 +410,11 @@ async function buildAndStore(repoDir) {
       [e.kind, e.sourceQualified, e.targetQualified, e.filePath, e.line]);
   }
   run(db, 'INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)', ['last_updated', new Date().toISOString()]);
+  run(db, 'INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)', ['source_fingerprint', fingerprint]);
   db.run('COMMIT;');
   saveDb(db, repoDir);
   db.close();
-  return { files: result.files, nodes: result.nodes.length, edges: result.edges.length };
+  return { files: result.files, nodes: result.nodes.length, edges: result.edges.length, sourceFingerprint: fingerprint };
 }
 
 async function status(repoDir) {
@@ -403,8 +425,10 @@ async function status(repoDir) {
   const files = queryAll(db, 'SELECT COUNT(DISTINCT file_path) c FROM nodes')[0].c;
   const languages = queryAll(db, 'SELECT DISTINCT language FROM nodes').map((r) => r.language);
   const lastUpdated = queryAll(db, "SELECT value FROM metadata WHERE key='last_updated'")[0];
+  const buildFingerprint = queryAll(db, "SELECT value FROM metadata WHERE key='source_fingerprint'")[0];
   db.close();
-  return { nodes, edges, files, languages, lastUpdated: lastUpdated?.value };
+  const currentFingerprint = sourceFingerprint(repoDir);
+  return { nodes, edges, files, languages, lastUpdated: lastUpdated?.value, buildFingerprint: buildFingerprint?.value, currentFingerprint, current: buildFingerprint?.value === currentFingerprint };
 }
 
 // query kinds: callers_of, callees_of, imports_of, find (by bare name)
@@ -436,4 +460,4 @@ async function query(repoDir, kind, name) {
   return rows;
 }
 
-module.exports = { build, buildAndStore, status, query, dbPath, walkFiles };
+module.exports = { build, buildAndStore, status, query, dbPath, walkFiles, sourceFingerprint };

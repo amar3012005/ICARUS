@@ -19,7 +19,10 @@ async function run(flags) {
   if (sub === 'status') {
     const s = await graph.status(repo);
     if (!s) return console.log(`no graph built yet for ${repo} — run: icarus graph build --repo ${repo}`);
-    console.log(`Nodes: ${s.nodes}\nEdges: ${s.edges}\nFiles: ${s.files}\nLanguages: ${s.languages.join(', ')}\nLast updated: ${s.lastUpdated}`);
+    const freshness = s.current
+      ? 'current'
+      : 'stale — supported source changed; run: icarus graph build';
+    console.log(`Nodes: ${s.nodes}\nEdges: ${s.edges}\nFiles: ${s.files}\nLanguages: ${s.languages.join(', ')}\nFreshness: ${freshness}\nLast updated: ${s.lastUpdated}`);
     return;
   }
   if (sub === 'query') {
