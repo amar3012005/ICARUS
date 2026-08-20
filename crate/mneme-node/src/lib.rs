@@ -50,6 +50,19 @@ pub fn harness_init(repo_root: String, agents: Vec<String>) -> Result<String> {
 }
 
 #[napi]
+pub fn harness_migrate(repo_root: String, dry_run: bool, agents: Vec<String>) -> Result<String> {
+    let report = harness::migrate(
+        std::path::Path::new(&repo_root),
+        dry_run,
+        harness::InitOptions { agents },
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(report).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_doctor(repo_root: String) -> Result<String> {
     let report = harness::doctor(std::path::Path::new(&repo_root))
         .map_err(|error| Error::from_reason(error.to_string()))?;

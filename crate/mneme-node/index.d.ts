@@ -8,6 +8,7 @@
  * never owns the persistent policy, task, lock, or event semantics.
  */
 export declare function harnessInit(repoRoot: string, agents: Array<string>): string
+export declare function harnessMigrate(repoRoot: string, dryRun: boolean, agents: Array<string>): string
 export declare function harnessDoctor(repoRoot: string): string
 /**
  * Read and validate the repository policy in the Rust authority. The Node CLI/MCP layer may

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  initHarness, doctor, policyCheck, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
+  initHarness, migrateHarness, doctor, policyCheck, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
   validateAgentArguments, reconcileRun, evaluateSkill, recordActiveSkillOutcome, reviewActiveSkills,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
@@ -23,6 +23,20 @@ test('harness init is a thin native call: Node owns no repository state', () => 
     created: true, manifest: { repo_id: 'repo-0123456789abcdef' }, graph_migrated: false,
   });
   assert.deepEqual(calls, [['/repo', ['codex']]]);
+});
+
+test('harness migration is a thin native call and dry-run state is explicit', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessMigrate(...args) {
+      calls.push(args);
+      return JSON.stringify({ dry_run: true, needed: true, applied: false, actions: ['copy legacy graph'] });
+    },
+  });
+  assert.deepEqual(migrateHarness('/repo', { dryRun: true, agents: ['codex'] }), {
+    dry_run: true, needed: true, applied: false, actions: ['copy legacy graph'],
+  });
+  assert.deepEqual(calls, [['/repo', true, ['codex']]]);
 });
 
 test('doctor remains a native report, preserving the Rust authority boundary', () => {

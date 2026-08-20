@@ -129,6 +129,26 @@ async function cmdHarness(flags) {
   }
 }
 
+function cmdMigrate(flags) {
+  const requested = flags.agent === 'all'
+    ? ['claude', 'codex', 'cursor', 'grok']
+    : (flags.agent ? flags.agent.split(',').map((agent) => agent.trim()).filter(Boolean) : []);
+  const result = require('./harness.js').migrateHarness(flags.repo || process.cwd(), {
+    dryRun: !!flags['dry-run'], agents: requested,
+  });
+  console.log(`\n${heading('ICARUS Harness migration')}\n`);
+  if (!result.needed) {
+    console.log(ok('no harness migration is required.'));
+    return;
+  }
+  for (const action of result.actions) console.log(`  ${c.command(result.dry_run ? '•' : '✓')} ${action}`);
+  if (result.dry_run) {
+    console.log(c.dim('\n  dry run only — no files were created, moved, or rewritten. Re-run without --dry-run to apply.'));
+  } else {
+    console.log(ok('\n  migration applied. Legacy graph data was retained; .amr shards were not touched.'));
+  }
+}
+
 function cmdDoctor(flags) {
   const report = require('./harness.js').doctor(flags.repo || process.cwd());
   console.log(`\n${heading('ICARUS Harness doctor')}\n`);
@@ -1023,6 +1043,7 @@ async function main() {
         break;
       }
       case 'harness': await cmdHarness(flags); break;
+      case 'migrate': cmdMigrate(flags); break;
       case 'doctor': cmdDoctor(flags); break;
       case 'policy': cmdPolicy(flags); break;
       case 'task': cmdTask(flags); break;
@@ -1137,6 +1158,9 @@ async function main() {
                                         initialize the deterministic repository harness: tracked
                                         manifest/policy/schemas plus ignored runtime state. No LLM
                                         calls are made; existing graph data is copied safely.
+  icarus migrate [--dry-run] [--agent claude|codex|cursor|grok|all] [--repo <dir>]
+                                        inspect or explicitly migrate v0.3 harness metadata and
+                                        legacy graph placement. Never rewrites .amr shards.
   icarus doctor [--repo <dir>]          verify the harness manifest, runtime, event integrity,
                                         graph migration state, and available agent adapters.
   icarus policy check [--repo <dir>]    validate the tracked repository policy in the Rust

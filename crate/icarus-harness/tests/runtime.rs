@@ -1,11 +1,11 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
     checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init,
-    load_repository_policy, prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
-    record_graph_receipt, resume_task, retire_skill, review_active_skills, seal_task, start_task,
-    task_status, transition_task, validate_agent_arguments, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
-    TaskContract,
+    load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
+    record_active_skill_outcome, record_graph_receipt, resume_task, retire_skill,
+    review_active_skills, seal_task, start_task, task_status, transition_task,
+    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
+    EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -100,6 +100,33 @@ fn init_safely_retries_a_legacy_graph_copy_after_manifest_creation() {
     assert!(retried.graph_migrated);
     assert!(legacy.exists());
     assert_eq!(fs::read(&runtime).unwrap(), b"legacy graph fixture");
+}
+
+#[test]
+fn migration_dry_run_is_non_mutating_and_apply_preserves_amr_bytes() {
+    let repo = repo();
+    let legacy = repo.path().join(".icarus-graph/graph.db");
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(&legacy, b"legacy graph fixture").unwrap();
+    let shard = repo.path().join(".icarus/data/amar/shard.amr");
+    fs::create_dir_all(shard.parent().unwrap()).unwrap();
+    fs::write(&shard, b"amr bytes must remain opaque").unwrap();
+
+    let preview = migrate(repo.path(), true, InitOptions::default()).unwrap();
+    assert!(preview.dry_run && preview.needed && !preview.applied);
+    assert!(!repo.path().join(".icarus/manifest.yaml").exists());
+    assert!(!repo.path().join(".icarus/runtime/graph/graph.db").exists());
+    assert_eq!(fs::read(&shard).unwrap(), b"amr bytes must remain opaque");
+
+    let applied = migrate(repo.path(), false, InitOptions::default()).unwrap();
+    assert!(applied.needed && applied.applied);
+    assert!(repo.path().join(".icarus/manifest.yaml").exists());
+    assert_eq!(
+        fs::read(repo.path().join(".icarus/runtime/graph/graph.db")).unwrap(),
+        b"legacy graph fixture"
+    );
+    assert!(legacy.exists());
+    assert_eq!(fs::read(&shard).unwrap(), b"amr bytes must remain opaque");
 }
 
 #[test]

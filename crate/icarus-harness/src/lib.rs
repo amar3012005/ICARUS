@@ -98,6 +98,19 @@ pub struct InitResult {
     pub graph_migrated: bool,
 }
 
+/// Non-destructive upgrade plan for a repository created by a pre-harness ICARUS release.
+/// Migration concerns only harness metadata and graph placement; `.amr` files are intentionally
+/// outside this subsystem and are never opened, rewritten, or moved here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationReport {
+    pub schema_version: u32,
+    pub dry_run: bool,
+    pub needed: bool,
+    pub applied: bool,
+    pub actions: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EventInput {
     pub execution_id: String,
@@ -1056,6 +1069,49 @@ fn migrate_legacy_graph(root: &Path) -> Result<bool> {
     fs::create_dir_all(target_parent)?;
     fs::copy(&legacy_graph, &runtime_graph)?;
     Ok(true)
+}
+
+fn missing_schema_names(root: &Path) -> Vec<String> {
+    harness_schema_documents()
+        .into_iter()
+        .filter_map(|(name, _)| {
+            (!root.join(".icarus/schemas").join(name).exists()).then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// Inspect or apply the explicit v0.3-to-harness migration. Calling with `dry_run = true` does
+/// not create any directory or file. Apply delegates to idempotent `init`, which uses only
+/// atomic writes and a copy-only graph migration.
+pub fn migrate(repo_root: &Path, dry_run: bool, options: InitOptions) -> Result<MigrationReport> {
+    let root = canonical_root(repo_root)?;
+    let mut actions = Vec::new();
+    if !manifest_path(&root).exists() {
+        actions.push("create tracked .icarus/manifest.yaml and default policy".into());
+    }
+    let legacy_graph = root.join(".icarus-graph/graph.db");
+    let runtime_graph = runtime_root(&root).join("graph/graph.db");
+    if legacy_graph.exists() && !runtime_graph.exists() {
+        actions.push("copy legacy .icarus-graph/graph.db into .icarus/runtime/graph/graph.db; retain the source".into());
+    }
+    let missing_schemas = missing_schema_names(&root);
+    if !missing_schemas.is_empty() {
+        actions.push(format!(
+            "write {} missing public schema document(s)",
+            missing_schemas.len()
+        ));
+    }
+    let needed = !actions.is_empty();
+    if needed && !dry_run {
+        init(&root, options)?;
+    }
+    Ok(MigrationReport {
+        schema_version: 1,
+        dry_run,
+        needed,
+        applied: needed && !dry_run,
+        actions,
+    })
 }
 
 pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {

@@ -21,6 +21,10 @@ function initHarness(repoRoot, options = {}) {
   return invoke('harnessInit', [repoRoot, options.agents || []]);
 }
 
+function migrateHarness(repoRoot, { dryRun = false, agents = [] } = {}) {
+  return invoke('harnessMigrate', [repoRoot, !!dryRun, agents]);
+}
+
 function doctor(repoRoot) {
   return invoke('harnessDoctor', [repoRoot]);
 }
@@ -108,6 +112,7 @@ function __setNativeHarnessBridgeForTest(fakeBridge) {
 
 module.exports = {
   initHarness,
+  migrateHarness,
   doctor,
   policyCheck,
   startTask,

@@ -573,6 +573,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_migrate',
+    {
+      title: 'Inspect or apply a non-destructive ICARUS Harness migration',
+      description: 'Use dry_run first when upgrading a v0.3 repository. Migration creates tracked harness metadata and copy-migrates the legacy graph while retaining the source. It never opens, moves, or rewrites .amr shards.',
+      inputSchema: { repo: z.string().default(process.cwd()), dry_run: z.boolean().default(true), agents: z.array(z.enum(['claude', 'codex', 'cursor', 'grok'])).default([]) },
+    },
+    async ({ repo, dry_run, agents }) => {
+      try { return textResult(harnessFor().migrateHarness(repo, { dryRun: dry_run, agents })); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_policy_check',
     {
       title: 'Validate the governed repository policy',
