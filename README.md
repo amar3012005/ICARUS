@@ -1,142 +1,175 @@
-<div align="center">
+<p align="center">
+  <img src="assets/icarus-memory-map.svg" alt="ICARUS memory map — semantic, lexical, temporal, and graph retrieval converge on a tenant-owned AMR file" width="100%" />
+</p>
 
-# ICARUS
+<h1 align="center">ICARUS</h1>
 
-**A memory filesystem for AI agents.** One memory-mapped file per tenant. Semantic + entity +
-bi-temporal + graph recall from a single read. 13× faster than a REST vector DB at equal recall,
-7.5× smaller storage, 32× vector compression, zero servers.
+<p align="center">
+  <strong>The memory filesystem for AI agents.</strong><br />
+  One durable, memory-mapped file per tenant. Rich recall without running another service.
+</p>
 
-`Apache-2.0` · Rust core (internal engine name: `mneme`) · Node + Python bindings · drop-in for Qdrant
+<p align="center">
+  <a href="https://www.npmjs.com/package/singulance-amr"><img src="https://img.shields.io/npm/v/singulance-amr?label=Node%20package&color=2d7dff" alt="npm package" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-83b5ff" alt="Apache 2.0 license" /></a>
+  <img src="https://img.shields.io/badge/core-Rust-10192b" alt="Rust core" />
+  <img src="https://img.shields.io/badge/storage-local%20%2B%20mmap-10192b" alt="Local memory-mapped storage" />
+</p>
 
-[![npm](https://img.shields.io/npm/v/singulance-amr?label=npm)](https://www.npmjs.com/package/singulance-amr)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
-
-</div>
+<p align="center">
+  <a href="#start-here">Start here</a> ·
+  <a href="#the-case-for-a-memory-file">Why ICARUS</a> ·
+  <a href="#what-happens-on-recall">Recall</a> ·
+  <a href="#use-it-from-your-agent">Agent CLI</a> ·
+  <a href="#technical-reference">Reference</a>
+</p>
 
 ---
 
-## Zero to agent memory, right now
+## The case for a memory file
+
+Most vector databases are designed for document search. Agent memory has a different shape: a
+question may need semantic similarity, exact terms, historical validity, and relationship hops at
+once. ICARUS keeps that path inside a tenant-owned `.amr` shard instead of spreading it across a
+vector service, a relational store, and a graph database.
+
+> **The idea:** make context a local capability. Open a shard, write memories, ask for the right
+> context, and keep working—without a server, an account, or a network hop in the critical path.
+
+<table>
+  <tr>
+    <td width="33%" align="center"><strong>ONE SHARD</strong><br /><sub>A durable per-org memory file and its sidecars.</sub></td>
+    <td width="33%" align="center"><strong>FOUR SIGNALS</strong><br /><sub>Semantic · lexical · temporal · graph.</sub></td>
+    <td width="33%" align="center"><strong>ZERO SERVICES</strong><br /><sub>Memory-mapped, local-first, ready for an agent loop.</sub></td>
+  </tr>
+</table>
+
+## Start here
+
+### 01 — Install the agent CLI
+
+On macOS Apple Silicon and Linux x64, this downloads one self-contained binary.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
-Optional — auto-registers ICARUS as an MCP server in every coding agent found on this machine
-(Claude Code, Codex, Cursor):
-
 ```bash
+# Optional: register ICARUS as an MCP server for available coding agents.
 icarus mcp install
 ```
 
-Node — real, published on npm, works today:
+### 02 — Run the complete demo
+
+The demo opens a shard, stores memories, then recalls the closest context. No API key.
 
 ```bash
 npm install singulance-amr
-```
-
-Python: **not on PyPI yet** (`pip install mneme-python` doesn't work — checked live, no release
-exists under that name; the automated publish is blocked on an unrelated GitHub Actions billing
-issue, see [`LIMITATIONS.md`](./LIMITATIONS.md)). Build from source with
-[maturin](https://www.maturin.rs/) — real, verified-working, three commands:
-[`crate/mneme-python/README.md`](./crate/mneme-python/README.md#install).
-
-**[`examples/demo-60s.mjs`](./examples/demo-60s.mjs)** — the whole API, zero setup, zero API key,
-runs in under a second:
-
-```bash
 node examples/demo-60s.mjs
 ```
-```
-1. Open a shard — one memory-mapped file, no server, no account.
-2. Ingest a few memories.
-3. Recall by similarity.
-   [0.530] the user prefers dark mode in every app
+
+```text
+[0.530] the user prefers dark mode in every app
 Done in 50ms.
 ```
 
-Real numbers, real methodology, real limitations — not just this README's word for it:
-[`BENCHMARKS.md`](./BENCHMARKS.md) · [`LIMITATIONS.md`](./LIMITATIONS.md) ·
-[`THESIS.md`](./THESIS.md) (full design) · [`SPEC.md`](./SPEC.md) (frozen format RFC)
+## The performance profile
 
-## Why
+Real `bge-m3` embeddings compared with Qdrant 1.18.2. Every number has a reproduction path—see
+[`BENCHMARKS.md`](./BENCHMARKS.md) for machine details, methodology, and limitations.
 
-General-purpose vector databases are built for document search. Agent *memory* needs
-**similarity + entity filter + bi-temporal range + graph hop — in one shot, per tenant, in
-milliseconds.** ICARUS bakes that access pattern into a byte layout (`.amr`) instead of stitching a
-vector DB to a relational DB across a network.
+| Benchmark @ 1M vectors | ICARUS | Qdrant |
+|:--|--:|--:|
+| Recall latency, top 10 | **1.33 ms** | 2.06 ms via REST |
+| Recall quality, recall@5 vs exact | **1.00** | 1.00 |
+| Bi-temporal + two graph hops | **1.93 ms** | Multiple calls |
+| Storage per memory | **~600 B** | ~4,500 B |
+| Vector compression | **32× PQ** | 4× int8 |
+| Operational footprint | **one file** | Cluster |
 
-## Numbers (real `bge-m3` embeddings, vs Qdrant 1.18.2)
+## What happens on recall
 
-| | ICARUS | Qdrant |
-|---|---|---|
-| recall@10 @ 1M | **1.33 ms** | 2.06 ms (REST) |
-| recall quality (recall@5 vs exact) | **1.00** | 1.00 |
-| bi-temporal + 2-hop @ 1M | **1.93 ms** | (multiple calls) |
-| storage / memory | **~600 B** | ~4,500 B |
-| vector compression | **32×** (PQ) | 4× (int8) |
-| infra | one file | cluster |
-
-How these were produced, and how to reproduce them yourself: [`BENCHMARKS.md`](./BENCHMARKS.md).
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
+```text
+your question
+     │
+     ├── semantic candidates     HNSW / product quantization
+     ├── lexical evidence        native BM25
+     ├── time constraints        bi-temporal filters
+     └── relationship context    two-hop adjacency traversal
+                                  │
+                                  ▼
+                         exact f32 rescore
+                                  │
+                                  ▼
+                          context for your agent
 ```
 
-On linux-x64/darwin-arm64 this downloads one self-contained binary — no Node/Rust/npm needed on
-the target machine. Everywhere else it falls back to: checks the toolchain, builds the native
-addon, installs the `icarus` CLI to `~/.icarus`, and (optionally) connects your HIVEMIND account.
-Manual build:
+The engine keeps the pieces needed for that path in the same mapped shard: fixed-width records,
+compressed vectors, LZ4 text, HNSW state, product-quantization codebooks, and graph adjacency.
+See [`SPEC.md`](./SPEC.md) for the frozen format and [`THESIS.md`](./THESIS.md) for the design.
+
+## Use it from your agent
+
+The CLI makes a local memory system available to a coding agent immediately.
 
 ```bash
-git clone https://github.com/amar3012005/ICARUS
-cd ICARUS/crate/mneme-node && npm install && npx napi build --release
+# Build an org's local knowledge from a directory.
+icarus ingest ./project --org acme
+
+# Find context for an agent task.
+icarus recall "Where is authentication decided?" --org acme
+
+# Keep the shard compact and inspect its state.
+icarus compact --org acme
+icarus status
 ```
 
-## Quickstart (Node)
+<details>
+<summary><strong>What the CLI can do</strong></summary>
+
+| Command | Purpose |
+|:--|:--|
+| `icarus ingest <dir> --org <name>` | Extract, embed, and store text, Markdown, JSON, CSV, and log files. |
+| `icarus recall "<question>" --org <name>` | Run ranked local recall. |
+| `icarus mcp install` | Register the MCP server with available coding-agent clients. |
+| `icarus compact --org <name>` | Reclaim storage from deleted memories. |
+| `icarus status` | Show local shard state. |
+
+</details>
+
+## Use it from Node
 
 ```js
-const { MnemeVectorStore } = require('singulance-amr'); // drop-in for QdrantVectorStore
+const { MnemeVectorStore } = require('singulance-amr');
 
 const store = new MnemeVectorStore({ dataRoot: '~/.icarus/data', dim: 1024 });
 await store.upsert('org_acme', [
   { id: 'm1', vector: embed('user prefers dark mode'), payload: { kind: 'preference' } },
 ]);
-const hits = await store.search('org_acme', embed('ui settings'), 5); // [{ id, score, payload }]
+
+const hits = await store.search('org_acme', embed('ui settings'), 5);
+// [{ id, score, payload }]
 ```
 
-Low-level engine:
+ICARUS is a drop-in for the vector layer in Qdrant-style agent stacks. For direct access to the
+engine, open a `MnemeStore`, insert a vector, then call `recall`:
 
 ```js
 const { MnemeStore } = require('singulance-amr');
-const s = MnemeStore.open('~/.icarus/data', 'org_acme', 1024);
-const id = s.insert('user prefers dark mode', new Float32Array(vec), Date.now() * 1e6);
-s.enableHnsw();
-const hits = s.recall(new Float32Array(queryVec), 5); // [{ slotId, score, text }]
-s.compact(); // reclaim deleted memories' bytes
+
+const shard = MnemeStore.open('~/.icarus/data', 'org_acme', 1024);
+shard.insert('user prefers dark mode', new Float32Array(vec), Date.now() * 1e6);
+shard.enableHnsw();
+const hits = shard.recall(new Float32Array(queryVec), 5);
 ```
 
-## CLI
+## Use it from Python
+
+The Python binding uses the same Rust core and on-disk format—not a second implementation.
 
 ```bash
-icarus ingest <dir> --org acme
-icarus recall "your question" --org acme
-icarus compact --org acme
-icarus status
-```
-
-`icarus ingest` extracts, embeds, and stores every text/markdown/json/csv/log file under `<dir>`.
-
-## Quickstart (Python)
-
-Same engine, same on-disk format, same behavior as the Node binding — one Rust core, two
-language bindings, not two implementations.
-
-Not on PyPI yet — build from source ([real, verified steps](./crate/mneme-python/README.md#install)):
-
-```bash
-git clone https://github.com/amar3012005/ICARUS && cd ICARUS/crate/mneme-python
+git clone https://github.com/amar3012005/ICARUS
+cd ICARUS/crate/mneme-python
 pip install maturin && maturin develop --release
 ```
 
@@ -145,121 +178,71 @@ from mneme_python import MnemeStore
 
 store = MnemeStore("/path/to/data", "org_acme", dim=1024)
 store.insert("user prefers dark mode", embed("user prefers dark mode"), valid_from=0)
-hits = store.recall(embed("ui settings"), top_k=5)  # [MnemeHit(slot_id, score, text), ...]
+hits = store.recall(embed("ui settings"), top_k=5)
 ```
 
-Full guide, layered recall, graph edges, and framework integrations:
-[`crate/mneme-python/README.md`](./crate/mneme-python/README.md).
+Python is not published on PyPI yet. The source build above is the supported path; see the
+[Python guide](./crate/mneme-python/README.md#install) and [`LIMITATIONS.md`](./LIMITATIONS.md).
 
-## Native BM25 lexical search
+## Technical reference
 
-The engine's first lexical capability — real document-frequency/IDF statistics (standard Okapi
-BM25), not a substring heuristic. One shared implementation (`mneme-bm25`) used identically by
-both bindings, so scores are not just similar across languages, they are the same number for the
-same corpus and query.
+<table>
+  <tr><th align="left">Layer</th><th align="left">What it owns</th></tr>
+  <tr><td><code>mseg-format</code></td><td>The byte-accurate, spec-locked `.amr` layout.</td></tr>
+  <tr><td><code>mseg</code></td><td>Segments, CRUD, compaction, HNSW overlay, and shard lifecycle.</td></tr>
+  <tr><td><code>mnsw-index</code></td><td>Thin usearch HNSW wrapper.</td></tr>
+  <tr><td><code>mpq</code></td><td>Product quantization, ADC, and drift controls.</td></tr>
+  <tr><td><code>mneme-bm25</code></td><td>Shared native BM25 scoring for Node and Python.</td></tr>
+  <tr><td><code>mneme-node</code></td><td>N-API binding, CLI, MCP server, and Node vector store.</td></tr>
+  <tr><td><code>mneme-python</code></td><td>PyO3 binding plus LangChain and LlamaIndex integrations.</td></tr>
+</table>
+
+<details>
+<summary><strong>Native lexical search</strong></summary>
+
+ICARUS’s lexical layer is real document-frequency/IDF BM25, shared by both bindings—not a
+substring heuristic.
 
 ```js
-// Node
 const hits = store.bm25Search('warranty terms', 10);
 ```
+
 ```python
-# Python
 hits = store.bm25_search("warranty terms", top_k=10)
 ```
 
-Only documents matching at least one query term are returned, ranked best-first. Language-neutral
-tokenization (lowercase, Unicode-alphanumeric split — no stemming, no stopword list, the same
-reasoning the rest of this engine uses to avoid per-language brittle logic). **Known
-limitation**: results are not currently layer-filterable (0=memory/1=evidence/2=cognitive) — the
-underlying `Hit` type doesn't surface a record's layer back out yet. A persistent postings index
-for very large corpora is a natural follow-on, not part of this — this is real IDF-weighted
-ranking over the existing corpus-wide scan.
+Tokenization is language-neutral: lowercase plus a Unicode-alphanumeric split, with no stemming
+or stopword list. BM25 results are not layer-filterable yet; see [`LIMITATIONS.md`](./LIMITATIONS.md).
 
-## Framework integrations (Python)
+</details>
 
-Optional, lazy-imported adapters — neither is a dependency of the core binding.
-
-After building from source above, `pip install langchain-core` / `pip install llama-index-core`
-gets you each adapter — no separate build step, they're lazy-imported extras.
-
-See [`crate/mneme-python/README.md`](./crate/mneme-python/README.md) for both, or run the
-runnable examples directly (all three work with zero API key — see
-[`examples/toy_embed.py`](./examples/toy_embed.py) for why, and `BENCHMARKS.md` for what a real
-embedding model actually measures):
-
-After building `mneme-python` from source above:
-
-```bash
-cd examples
-pip install langchain-core llama-index-core
-python langchain_example.py
-python llamaindex_example.py
-python minimal_agent_loop.py
-```
-
-`langchain_example.py` uses ICARUS as a LangChain `BaseRetriever`, `llamaindex_example.py` as a
-LlamaIndex `VectorStore`, and `minimal_agent_loop.py` needs no framework at all — the smallest
-possible recall-then-store agent loop.
-
-## What it is / isn't
-
-- **Is:** a per-org vector + temporal + graph-adjacency storage engine. Drop-in for the Qdrant
-  vector layer. Local, mmap'd, no server.
-- **Isn't:** a cognition layer. No typed graph edges, entity co-mention, memory versioning,
-  synthesis, or conflict resolution — those live above the storage engine.
-
-## Architecture
-
-```
-recall(query, Filter{entity, created_at, valid_from}, hops, top_k)
-  → HNSW candidates (usearch)
-  → post-filter (entity AND + temporal range + tombstone skip)   [bytes in the slot]
-  → exact f32 rescore (recall parity with float32)
-  → 2-hop adjacency BFS                                           [same mmap]
-```
-
-Per-org shard = one directory: `shard.amr` (64-byte header + 202-byte slots), `shard.vec`
-(rescore source), `shard.txt` (LZ4 text), `shard.mnsw` (HNSW), `shard.mpq` (PQ codebook),
-`shard.lock`.
-
-## Repo layout
-
-```
-SPEC.md              frozen .amr format RFC (the moat)
-THESIS.md            full design + benchmarks + DB comparison
-BENCHMARKS.md         how every number in this README was produced, and how to reproduce it
-LIMITATIONS.md        every real gap, honestly, in one place
-examples/            demo-60s.mjs, langchain/llamaindex/minimal-agent-loop, all runnable
-crate/
-  mseg-format/       pure byte layout (spec-locked, offset_of! asserts)
-  mseg/              storage engine: segment, CRUD, HNSW overlay, compact, shard
-  mnsw-index/        thin usearch HNSW wrapper
-  mpq/               product quantization codebook + ADC + drift
-  mneme-bm25/        pure BM25 scoring -- no Shard, no napi, no pyo3; shared by both bindings
-  mneme-node/        napi Node binding + MnemeVectorStore drop-in + CLI + MCP server
-  mneme-python/      pyo3 Python binding + LangChain/LlamaIndex integrations
-  mneme-probe/       P1 proof-of-physics probe
-bench/               reproducible benchmark harness + Qdrant baselines
-install.sh           curl | bash installer
-```
-
-## Build / test
+<details>
+<summary><strong>Build and verify from source</strong></summary>
 
 ```bash
 cd crate
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 bash ../bench/run_p1.sh
-
-cd mneme-python
-pip install maturin && maturin develop --release
-pip install -e ".[test]" && pytest tests/ -v
 ```
 
-`cargo test --workspace` runs all suites (`mneme-python`'s extension-module target is excluded
-from plain cargo builds by design — see its own README). `bash ../bench/run_p1.sh` reproduces the
-headline benchmark against Qdrant, on your own machine.
+`cargo test --workspace` runs the Rust workspace suites. The Python extension has its own test
+instructions in [`crate/mneme-python/README.md`](./crate/mneme-python/README.md).
 
-## License
+</details>
 
-Apache-2.0. See [`LICENSE`](./LICENSE).
+## Honest boundaries
+
+ICARUS is the local storage and retrieval engine. It is **not** a full cognition layer: typed
+relationship authoring, entity co-mention resolution, memory versioning, synthesis, and conflict
+resolution live above it. That separation is intentional.
+
+For the complete picture, including performance conditions and unfinished work, read
+[`LIMITATIONS.md`](./LIMITATIONS.md) before adopting it in production.
+
+---
+
+<p align="center">
+  <strong>ICARUS</strong> · local memory infrastructure for agents<br />
+  <sub>Built in Rust · exposed through Node, Python, CLI, and MCP · licensed Apache-2.0</sub>
+</p>
