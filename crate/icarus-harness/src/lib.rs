@@ -79,6 +79,18 @@ pub struct Manifest {
     pub agents: Vec<String>,
 }
 
+/// Repository-local governance settings. This deliberately stays small in v1: the Rust core
+/// validates the settings which affect managed execution, while future policy modules can add
+/// their own versioned documents instead of turning this file into an untyped bag of flags.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryPolicy {
+    pub policy_version: u32,
+    pub external_writes: String,
+    pub network: String,
+    pub learning: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct InitResult {
     pub created: bool,
@@ -633,6 +645,52 @@ fn validate_manifest(manifest: Manifest) -> Result<Manifest> {
     Ok(manifest)
 }
 
+fn policy_path(root: &Path) -> PathBuf {
+    root.join(".icarus/policies/default.yaml")
+}
+
+fn validate_repository_policy(
+    policy: RepositoryPolicy,
+    manifest: &Manifest,
+) -> Result<RepositoryPolicy> {
+    if policy.policy_version != manifest.policy_version {
+        return Err(HarnessError::invalid(format!(
+            "repository policy version {} does not match manifest policy version {}",
+            policy.policy_version, manifest.policy_version
+        )));
+    }
+    if !["approval_required", "forbidden"].contains(&policy.external_writes.as_str()) {
+        return Err(HarnessError::invalid(
+            "repository policy external_writes must be `approval_required` or `forbidden`",
+        ));
+    }
+    if !["agent_managed", "disabled"].contains(&policy.network.as_str()) {
+        return Err(HarnessError::invalid(
+            "repository policy network must be `agent_managed` or `disabled`",
+        ));
+    }
+    if !["proposal_only", "disabled"].contains(&policy.learning.as_str()) {
+        return Err(HarnessError::invalid(
+            "repository policy learning must be `proposal_only` or `disabled`",
+        ));
+    }
+    Ok(policy)
+}
+
+/// Load the only v1 execution policy. Callers should use this rather than reading YAML directly:
+/// config must fail closed before a managed agent is allowed to launch.
+pub fn load_repository_policy(repo_root: &Path) -> Result<RepositoryPolicy> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let path = policy_path(&root);
+    if !path.exists() {
+        return Err(HarnessError::invalid(
+            "ICARUS harness policy is missing; run `icarus harness init` or restore .icarus/policies/default.yaml",
+        ));
+    }
+    validate_repository_policy(serde_yaml::from_reader(File::open(path)?)?, &manifest)
+}
+
 fn object_schema(title: &str, required: &[&str], properties: Value) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -696,6 +754,19 @@ fn harness_schema_documents() -> Vec<(&'static str, Value)> {
                     "external_write_policy": {"type":"string","minLength":1},
                     "decision_references": {"type":"array","items":{"type":"string"}},
                     "task_type": {"type":["string","null"]}
+                }),
+            ),
+        ),
+        (
+            "policy.schema.json",
+            object_schema(
+                "ICARUS Harness Repository Policy",
+                &["policy_version", "external_writes", "network", "learning"],
+                json!({
+                    "policy_version": {"type":"integer","minimum":1},
+                    "external_writes": {"enum":["approval_required","forbidden"]},
+                    "network": {"enum":["agent_managed","disabled"]},
+                    "learning": {"enum":["proposal_only","disabled"]}
                 }),
             ),
         ),
@@ -799,6 +870,22 @@ fn harness_schema_documents() -> Vec<(&'static str, Value)> {
     ]
 }
 
+/// Add schemas introduced by a newer harness without rewriting an existing tracked contract.
+/// A user-owned schema edit is visible in review and remains untouched; a missing schema can be
+/// restored safely by re-running init.
+fn ensure_schema_documents(root: &Path) -> Result<()> {
+    for (name, schema) in harness_schema_documents() {
+        let path = root.join(".icarus/schemas").join(name);
+        if !path.exists() {
+            atomic_write(
+                &path,
+                format!("{}\n", serde_json::to_string_pretty(&schema)?).as_bytes(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn is_fingerprint(value: &str, prefix: &str) -> bool {
     let suffix = value.strip_prefix(prefix).unwrap_or("");
     suffix.len() == 16
@@ -859,6 +946,7 @@ pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
     let root = canonical_root(repo_root)?;
     let manifest_file = manifest_path(&root);
     if manifest_file.exists() {
+        ensure_schema_documents(&root)?;
         return Ok(InitResult {
             created: false,
             manifest: load_manifest(&root)?,
@@ -890,13 +978,8 @@ pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
         agents: agents.into_iter().collect(),
     })?;
     atomic_write(&manifest_file, manifest_yaml(&manifest)?.as_bytes())?;
-    atomic_write(&root.join(".icarus/policies/default.yaml"), b"# ICARUS Harness policy v1\npolicy_version: 1\nexternal_writes: approval_required\nnetwork: agent_managed\nlearning: proposal_only\n")?;
-    for (name, schema) in harness_schema_documents() {
-        atomic_write(
-            &root.join(".icarus/schemas").join(name),
-            format!("{}\n", serde_json::to_string_pretty(&schema)?).as_bytes(),
-        )?;
-    }
+    atomic_write(&policy_path(&root), b"# ICARUS Harness policy v1\npolicy_version: 1\nexternal_writes: approval_required\nnetwork: agent_managed\nlearning: proposal_only\n")?;
+    ensure_schema_documents(&root)?;
     atomic_write(&runtime_root(&root).join(".gitignore"), b"*\n!.gitignore\n")?;
     ensure_root_gitignore(&root)?;
 
@@ -1278,6 +1361,9 @@ pub fn prepare_run(
 ) -> Result<RunPreparation> {
     let root = canonical_root(repo_root)?;
     let manifest = load_manifest(&root)?;
+    // Do this before any task or skill state can be mutated. A malformed policy must never
+    // silently downgrade a managed launch into an agent-controlled configuration.
+    load_repository_policy(&root)?;
     if !["claude", "codex", "cursor", "grok"].contains(&agent.as_str()) {
         return Err(HarnessError::invalid("unsupported coding-agent adapter"));
     }
@@ -3532,9 +3618,10 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             serde_json::to_string_pretty(&slice)?,
         ),
     )?;
-    let policy_path = root.join(".icarus/policies/default.yaml");
-    let policy = fs::read_to_string(&policy_path)
-        .map_err(|_| HarnessError::invalid("ICARUS harness policy is missing"))?;
+    // Validate before including it. Context must never present malformed governance YAML as an
+    // authoritative rule set to the coding agent.
+    load_repository_policy(&root)?;
+    let policy = fs::read_to_string(policy_path(&root))?;
     add_context_item(
         &mut pack,
         ContextItem::new(
@@ -3824,8 +3911,8 @@ pub fn build_context_delta(
             format!("digest: {}", sha256(&contract_bytes)),
         ),
     )?;
-    let policy_bytes = fs::read(root.join(".icarus/policies/default.yaml"))
-        .map_err(|_| HarnessError::invalid("ICARUS harness policy is missing"))?;
+    load_repository_policy(&root)?;
+    let policy_bytes = fs::read(policy_path(&root))?;
     add_context_item(
         &mut pack,
         ContextItem::new(
@@ -4230,6 +4317,15 @@ pub fn doctor(repo_root: &Path) -> Result<DoctorReport> {
         status: "pass".into(),
         detail: format!("schema v{}; {}", manifest.schema_version, manifest.repo_id),
     }];
+    let policy_check = load_repository_policy(&root);
+    checks.push(DoctorCheck {
+        id: "policy".into(),
+        status: if policy_check.is_ok() { "pass" } else { "fail" }.into(),
+        detail: policy_check
+            .as_ref()
+            .map(|policy| format!("policy v{}", policy.policy_version))
+            .unwrap_or_else(|error| error.to_string()),
+    });
     let remote = remote_url(&root);
     let fingerprint_source = if remote.is_empty() {
         format!("local:{}", root.display())

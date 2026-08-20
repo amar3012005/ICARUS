@@ -1,10 +1,11 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
-    checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init, prepare_run,
-    read_snapshot, reconcile_run, record_active_skill_outcome, record_graph_receipt, resume_task,
-    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
-    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
-    EventInput, HarnessSkill, InitOptions, TaskContract,
+    checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init,
+    load_repository_policy, prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
+    record_graph_receipt, resume_task, retire_skill, review_active_skills, seal_task, start_task,
+    task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
+    TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -34,6 +35,19 @@ fn init_is_idempotent_and_creates_a_tracked_contract() {
         .path()
         .join(".icarus/schemas/manifest.schema.json")
         .exists());
+    let policy_schema: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".icarus/schemas/policy.schema.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(policy_schema["additionalProperties"], false);
+    assert_eq!(
+        policy_schema["properties"]["external_writes"]["enum"][0],
+        "approval_required"
+    );
+    assert_eq!(
+        load_repository_policy(repo.path()).unwrap().network,
+        "agent_managed"
+    );
     let skill_schema: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(repo.path().join(".icarus/schemas/skill.schema.json")).unwrap(),
     )
@@ -60,6 +74,32 @@ fn init_is_idempotent_and_creates_a_tracked_contract() {
     assert!(!again.created);
     assert_eq!(again.manifest.repo_id, first.manifest.repo_id);
     assert_eq!(again.manifest.agents, vec!["claude", "codex"]);
+
+    fs::remove_file(repo.path().join(".icarus/schemas/policy.schema.json")).unwrap();
+    let upgraded = init(repo.path(), InitOptions::default()).unwrap();
+    assert!(!upgraded.created);
+    assert!(repo
+        .path()
+        .join(".icarus/schemas/policy.schema.json")
+        .exists());
+}
+
+#[test]
+fn malformed_repository_policy_fails_closed_and_doctor_reports_it() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::write(
+        repo.path().join(".icarus/policies/default.yaml"),
+        "policy_version: 1\nexternal_writes: auto\nnetwork: agent_managed\nlearning: proposal_only\n",
+    )
+    .unwrap();
+    assert!(load_repository_policy(repo.path()).is_err());
+    let report = doctor(repo.path()).unwrap();
+    assert!(!report.healthy);
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.id == "policy" && check.status == "fail"));
 }
 
 #[test]
