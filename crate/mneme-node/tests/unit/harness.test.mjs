@@ -47,6 +47,26 @@ test('harness init is idempotent and never changes an established repo identity'
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
+test('manifest loading accepts normal YAML flow syntax rather than an ICARUS-only subset', () => {
+  const repo = tmpRepo();
+  try {
+    const { manifest } = initHarness(repo, { agents: ['claude', 'codex'] });
+    const file = join(repo, '.icarus', 'manifest.yaml');
+    writeFileSync(file, [
+      '# Maintainers may use normal YAML formatting.',
+      'schema_version: 1',
+      'harness_version: 1',
+      `repo_id: ${manifest.repo_id}`,
+      `repo_root: ${JSON.stringify(manifest.repo_root)}`,
+      `git_remote_fingerprint: ${manifest.git_remote_fingerprint}`,
+      'policy_version: 1',
+      'agents: [claude, codex]',
+      '',
+    ].join('\n'));
+    assert.deepEqual(loadManifest(repo).agents, ['claude', 'codex']);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
 test('harness init safely copies an existing graph into runtime without deleting the legacy graph', () => {
   const repo = tmpRepo();
   try {
@@ -73,6 +93,20 @@ test('runtime events form a tamper-evident hash chain', () => {
     const result = verifyEventChain(repo, manifest.repo_id);
     assert.equal(result.valid, false);
     assert.match(result.issues[0], /hash mismatch/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('runtime event-head snapshot detects truncation, not only edited event bytes', () => {
+  const repo = tmpRepo();
+  try {
+    const { manifest } = initHarness(repo);
+    appendRuntimeEvent(repo, { execution_id: 'exec-1', task_id: 'TASK-1', event_type: 'created' });
+    const eventFile = join(repo, '.icarus', 'runtime', 'logs', 'events.jsonl');
+    assert.ok(existsSync(join(repo, '.icarus', 'runtime', 'state', 'event-head.json')));
+    writeFileSync(eventFile, '');
+    const result = verifyEventChain(repo, manifest.repo_id);
+    assert.equal(result.valid, false);
+    assert.match(result.issues[0], /event-head mismatch/);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 

@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { z } = require('zod');
+const YAML = require('yaml');
 
 const MANIFEST_VERSION = 1;
 const RUNTIME_DIR = path.join('.icarus', 'runtime');
@@ -55,6 +56,7 @@ function readGitRemote(repoRoot) {
 
 function manifestPath(repoRoot) { return path.join(repoRoot, '.icarus', 'manifest.yaml'); }
 function eventsPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'logs', 'events.jsonl'); }
+function eventHeadPath(repoRoot) { return path.join(repoRoot, RUNTIME_DIR, 'state', 'event-head.json'); }
 
 function renderManifest(manifest) {
   return [
@@ -65,39 +67,15 @@ function renderManifest(manifest) {
     `repo_root: ${JSON.stringify(manifest.repo_root)}`,
     `git_remote_fingerprint: ${manifest.git_remote_fingerprint}`,
     `policy_version: ${manifest.policy_version}`,
-    'agents:',
-    ...manifest.agents.map((agent) => `  - ${agent}`),
+    ...(manifest.agents.length ? ['agents:', ...manifest.agents.map((agent) => `  - ${agent}`)] : ['agents: []']),
     '',
   ].join('\n');
 }
 
-// A deliberately narrow parser for the manifest we emit.  It rejects rather than silently
-// accepting YAML features that could alter governance semantics; JSON Schema remains the stable
-// external contract and a broader YAML front-end can be added without changing the manifest shape.
 function parseManifest(text) {
-  const values = {};
-  const agents = [];
-  let inAgents = false;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    if (line === 'agents:') { inAgents = true; continue; }
-    if (inAgents && line.startsWith('- ')) { agents.push(line.slice(2).trim()); continue; }
-    inAgents = false;
-    const match = /^([a-z_]+):\s*(.+)$/.exec(line);
-    if (!match) throw new Error(`invalid manifest line: ${raw}`);
-    const [, key, rawValue] = match;
-    values[key] = rawValue.startsWith('"') ? JSON.parse(rawValue) : rawValue;
-  }
-  return MANIFEST_SCHEMA.parse({
-    schema_version: Number(values.schema_version),
-    harness_version: Number(values.harness_version),
-    repo_id: values.repo_id,
-    repo_root: values.repo_root,
-    git_remote_fingerprint: values.git_remote_fingerprint,
-    policy_version: Number(values.policy_version),
-    agents,
-  });
+  const document = YAML.parseDocument(text, { prettyErrors: false, strict: true });
+  if (document.errors.length) throw new Error(`invalid manifest YAML: ${document.errors.map((error) => error.message).join('; ')}`);
+  return MANIFEST_SCHEMA.parse(document.toJS());
 }
 
 function loadManifest(repoRoot) {
@@ -174,6 +152,12 @@ function appendRuntimeEvent(repoRoot, input) {
   event.event_hash = sha256(stableJson(event));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+  atomicWrite(eventHeadPath(repoRoot), `${JSON.stringify({
+    schema_version: 1,
+    repo_id: manifest.repo_id,
+    sequence: event.sequence,
+    event_hash: event.event_hash,
+  })}\n`);
   return event;
 }
 
@@ -194,6 +178,20 @@ function verifyEventChain(repoRoot, expectedRepoId) {
     if (sha256(stableJson(event)) !== eventHash) issues.push(`event ${index + 1}: event hash mismatch`);
     previousHash = eventHash;
   });
+  const headFile = eventHeadPath(repoRoot);
+  if (fs.existsSync(headFile)) {
+    try {
+      const head = JSON.parse(fs.readFileSync(headFile, 'utf8'));
+      const tail = lines.length ? JSON.parse(lines[lines.length - 1]) : null;
+      if (!tail || head.repo_id !== expectedRepoId || head.sequence !== lines.length || head.event_hash !== tail.event_hash) {
+        issues.push('event-head mismatch: runtime log was truncated or its tail no longer matches the durable snapshot');
+      }
+    } catch {
+      issues.push('event-head mismatch: durable event-head snapshot is invalid JSON');
+    }
+  } else if (lines.length) {
+    issues.push('event-head mismatch: event log has no durable head snapshot');
+  }
   return { valid: issues.length === 0, events: lines.length, issues };
 }
 
