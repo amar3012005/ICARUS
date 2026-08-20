@@ -573,6 +573,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_policy_check',
+    {
+      title: 'Validate the governed repository policy',
+      description: 'Read and validate .icarus/policies/default.yaml in the Rust authority. Call before a managed session when policy state is uncertain. Invalid or unknown policy settings fail closed and cannot be overridden by agent instructions.',
+      inputSchema: { repo: z.string().default(process.cwd()) },
+    },
+    async ({ repo }) => {
+      try { return textResult(harnessFor().policyCheck(repo)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_checkpoint',
     {
       title: 'Checkpoint governed task progress',

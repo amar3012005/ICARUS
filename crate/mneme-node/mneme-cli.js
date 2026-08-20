@@ -139,6 +139,17 @@ function cmdDoctor(flags) {
   if (!report.healthy) throw new Error(`harness doctor found ${report.issues.length} blocking issue(s)`);
 }
 
+function cmdPolicy(flags) {
+  const subcommand = flags._[0];
+  if (subcommand !== 'check') throw new Error('usage: icarus policy check [--repo <dir>]');
+  const policy = require('./harness.js').policyCheck(flags.repo || process.cwd());
+  console.log(`\n${heading('ICARUS Harness policy')}\n`);
+  console.log(`  ${c.success('✓')} ${c.bold('validated'.padEnd(18))} policy v${policy.policy_version}`);
+  console.log(`  ${c.dim('external writes'.padEnd(20))}${policy.external_writes}`);
+  console.log(`  ${c.dim('network'.padEnd(20))}${policy.network}`);
+  console.log(`  ${c.dim('learning'.padEnd(20))}${policy.learning}`);
+}
+
 // Task lifecycle is deliberately a presentation layer over the native Rust harness. Contracts
 // are explicit files, never ad-hoc model output hidden in a command invocation.
 function cmdTask(flags) {
@@ -1013,6 +1024,7 @@ async function main() {
       }
       case 'harness': await cmdHarness(flags); break;
       case 'doctor': cmdDoctor(flags); break;
+      case 'policy': cmdPolicy(flags); break;
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
       case 'run': cmdRun(flags); break;
@@ -1127,6 +1139,8 @@ async function main() {
                                         calls are made; existing graph data is copied safely.
   icarus doctor [--repo <dir>]          verify the harness manifest, runtime, event integrity,
                                         graph migration state, and available agent adapters.
+  icarus policy check [--repo <dir>]    validate the tracked repository policy in the Rust
+                                        authority; malformed policy blocks managed runs.
   icarus task start --objective <text> --contract <contract.json> [--repo <dir>]
                                         create a Rust-governed task with an immutable v1 contract.
   icarus task <status|resume> <TASK-ID> [--repo <dir>]

@@ -25,6 +25,10 @@ function doctor(repoRoot) {
   return invoke('harnessDoctor', [repoRoot]);
 }
 
+function policyCheck(repoRoot) {
+  return invoke('harnessPolicyCheck', [repoRoot]);
+}
+
 function startTask(repoRoot, { objective, contract }) {
   return invoke('harnessStartTask', [repoRoot, objective, JSON.stringify(contract)]);
 }
@@ -105,6 +109,7 @@ function __setNativeHarnessBridgeForTest(fakeBridge) {
 module.exports = {
   initHarness,
   doctor,
+  policyCheck,
   startTask,
   taskStatus,
   transitionTask,

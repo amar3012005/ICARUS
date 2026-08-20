@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
+  initHarness, doctor, policyCheck, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
   validateAgentArguments, reconcileRun, evaluateSkill, recordActiveSkillOutcome, reviewActiveSkills,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
@@ -33,6 +33,16 @@ test('doctor remains a native report, preserving the Rust authority boundary', (
     },
   });
   assert.equal(doctor('/repo').healthy, true);
+});
+
+test('policy validation remains a native report, never a JavaScript YAML parser', () => {
+  __setNativeHarnessBridgeForTest({
+    harnessPolicyCheck(repo) {
+      assert.equal(repo, '/repo');
+      return JSON.stringify({ policy_version: 1, external_writes: 'approval_required', network: 'agent_managed', learning: 'proposal_only' });
+    },
+  });
+  assert.equal(policyCheck('/repo').external_writes, 'approval_required');
 });
 
 test('skill governance remains a thin Rust transport, including attributable retirement', () => {

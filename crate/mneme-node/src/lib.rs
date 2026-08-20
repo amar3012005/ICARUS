@@ -61,6 +61,17 @@ pub fn harness_doctor(repo_root: String) -> Result<String> {
     }))
 }
 
+/// Read and validate the repository policy in the Rust authority. The Node CLI/MCP layer may
+/// display the result, but cannot parse YAML or decide whether an invalid policy is acceptable.
+#[napi]
+pub fn harness_policy_check(repo_root: String) -> Result<String> {
+    let policy = harness::load_repository_policy(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(policy).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 #[napi]
 pub fn harness_start_task(
     repo_root: String,
