@@ -1291,9 +1291,6 @@ pub fn prepare_run(
             "workspace mode must be `isolated` or `current`",
         ));
     }
-    // A managed launch is also the natural enforcement point for automatic demotions. It runs
-    // before the context is compiled, so a stale or failed procedure cannot influence this run.
-    review_active_skills(&root)?;
     let task = task_status(&root, task_id)?;
     if task.status != "planned" {
         return Err(HarnessError::invalid(format!(
@@ -1301,6 +1298,11 @@ pub fn prepare_run(
             task.status
         )));
     }
+    // A managed launch is also the natural enforcement point for automatic demotions. It runs
+    // before the context is compiled, so a stale or failed procedure cannot influence this run.
+    // The task state has already been validated, so an invalid launch request cannot mutate
+    // unrelated skill state.
+    review_active_skills(&root)?;
     let base_git_sha = git_output(&root, &["rev-parse", "HEAD"]);
     let base_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
     let base_dirty_state_fingerprint = sha256(base_status.as_bytes());
