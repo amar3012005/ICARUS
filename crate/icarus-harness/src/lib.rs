@@ -1949,6 +1949,72 @@ fn required_criteria(task: &TaskRecord) -> Vec<Value> {
         .collect()
 }
 
+fn task_is_high_risk(task: &TaskRecord) -> bool {
+    let risk = task.contract.risk.to_ascii_lowercase();
+    [
+        "high",
+        "critical",
+        "security",
+        "deploy",
+        "credential",
+        "migration",
+        "destructive",
+        "external",
+    ]
+    .iter()
+    .any(|word| risk.contains(word))
+}
+
+fn checkpoint_contains_high_risk(value: &Value) -> bool {
+    value.as_array().into_iter().flatten().any(|risk| {
+        risk.get("high_risk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || risk
+                .get("severity")
+                .and_then(Value::as_str)
+                .is_some_and(|severity| {
+                    matches!(severity.to_ascii_lowercase().as_str(), "high" | "critical")
+                })
+    })
+}
+
+/// A checkpoint is the task's latest declared operating state. A later checkpoint with an empty
+/// `open_risks` list explicitly clears prior risks; old prose does not keep a task blocked
+/// forever. High-risk contracts treat every open risk as seal-blocking, while lower-risk tasks
+/// must mark a risk high/critical explicitly.
+fn current_unresolved_high_risks(root: &Path, task: &TaskRecord) -> Result<Vec<String>> {
+    let Some(checkpoint) = read_checkpoints(root, &task.task_id)?.last().cloned() else {
+        return Ok(Vec::new());
+    };
+    let risks = checkpoint
+        .open_risks
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if risks.is_empty()
+        || (!task_is_high_risk(task) && !checkpoint_contains_high_risk(&checkpoint.open_risks))
+    {
+        return Ok(Vec::new());
+    }
+    Ok(risks
+        .iter()
+        .enumerate()
+        .map(|(index, risk)| {
+            let label = risk
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| risk.as_str())
+                .unwrap_or("unnamed risk");
+            format!(
+                "checkpoint {} unresolved high-risk issue {}: {label}",
+                checkpoint.sequence,
+                index + 1
+            )
+        })
+        .collect())
+}
+
 /// Seal only with current, machine-produced passing evidence. Any source-state change after a
 /// verification receipt invalidates it; ICARUS intentionally chooses safe over convenient.
 pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
@@ -2021,6 +2087,7 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
     if !chain.valid {
         issues.push(format!("event chain invalid: {}", chain.issues.join("; ")));
     }
+    issues.extend(current_unresolved_high_risks(&root, &task)?);
     if !unmet.is_empty() || !issues.is_empty() {
         return Ok(SealResult {
             task_id: task.task_id,

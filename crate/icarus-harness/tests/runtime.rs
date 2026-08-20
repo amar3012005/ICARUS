@@ -995,6 +995,51 @@ fn seal_rejects_a_receipt_after_a_real_worktree_edit() {
 }
 
 #[test]
+fn seal_rejects_an_unresolved_high_risk_until_a_later_checkpoint_clears_it() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut high_risk_contract = contract();
+    high_risk_contract.risk = "high security change".into();
+    high_risk_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'pass\\n'","required":true}
+    ]);
+    let task = start_task(repo.path(), "guard a high-risk change", high_risk_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    assert_eq!(
+        verify_task_criterion(repo.path(), &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "pass"
+    );
+    checkpoint_task(
+        repo.path(),
+        &task.task_id,
+        "risk_review",
+        serde_json::json!({"open_risks":[{"id":"RISK-1","severity":"high"}]}),
+    )
+    .unwrap();
+    let blocked = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(!blocked.sealed);
+    assert!(blocked.issues.iter().any(|issue| issue.contains("RISK-1")));
+    checkpoint_task(
+        repo.path(),
+        &task.task_id,
+        "risk_resolved",
+        serde_json::json!({"open_risks":[]}),
+    )
+    .unwrap();
+    assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
+}
+
+#[test]
 fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
