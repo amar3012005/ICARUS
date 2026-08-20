@@ -154,7 +154,7 @@ function cmdTask(flags) {
     console.log(ok(`started ${c.path(task.task_id)} · ${task.status} · contract v${task.contract_version}`));
     return;
   }
-  if (!taskId) throw new Error('usage: icarus task <status|resume|transition|authorize> <TASK-ID> [state] [--repo <dir>]');
+  if (!taskId) throw new Error('usage: icarus task <status|resume|transition|reconcile|authorize> <TASK-ID> [state] [--repo <dir>]');
   if (subcommand === 'status') {
     const task = harness.taskStatus(repo, taskId);
     console.log(`${c.bold(task.task_id)}  ${c.system(task.status)}  contract v${task.contract_version}`);
@@ -171,6 +171,12 @@ function cmdTask(flags) {
     if (!target) throw new Error('usage: icarus task transition <TASK-ID> <state> [--repo <dir>]');
     const task = harness.transitionTask(repo, taskId, target);
     console.log(ok(`${c.path(task.task_id)} → ${task.status}`));
+    return;
+  }
+  if (subcommand === 'reconcile') {
+    const result = harness.reconcileRun(repo, taskId);
+    if (result.reconciled) console.log(ok(`${c.path(taskId)} reconciled ${result.changed_files.length} file(s) from the isolated worktree`));
+    else console.log(c.dim(`${c.path(taskId)} has no isolated worktree delta to reconcile`));
     return;
   }
   if (subcommand === 'amend') {
@@ -231,7 +237,7 @@ function cmdTask(flags) {
     console.log(ok(`${c.path(taskId)} sealed · ${result.final_receipt_path}`));
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|amend|checkpoint|block|authorize|verify|seal>');
+  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|amend|checkpoint|block|authorize|verify|seal>');
 }
 
 function cmdContext(flags) {
@@ -267,8 +273,9 @@ function cmdRun(flags) {
   const harness = require('./harness.js');
   const userArgs = flags.agentArgs || [];
   harness.validateAgentArguments(agent, userArgs);
+  const repo = flags.repo || process.cwd();
   const preparation = harness.prepareRun(
-    flags.repo || process.cwd(), taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
+    repo, taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
   );
   const label = preparation.compatibility_mode
     ? 'compatibility mode: isolated workspace and lifecycle records are active; hard interception is not yet proven'
@@ -278,11 +285,20 @@ function cmdRun(flags) {
   console.log(c.dim(`  launch context: ${preparation.context_pack_path}`));
   console.log(c.dim(`  task ${preparation.task_id} remains the governing contract; refresh via icarus_context_get after material changes.`));
   if (flags['dry-run']) return;
-  const task = harness.transitionTask(flags.repo || process.cwd(), taskId, 'executing');
+  const task = harness.transitionTask(repo, taskId, 'executing');
   const result = spawnSync(command, [...(preparation.launch_arguments || []), ...userArgs], { cwd: preparation.workspace_path, stdio: 'inherit' });
   if (result.error) throw new Error(`failed to launch ${agent}: ${result.error.message}`);
   if (result.status === 0) {
-    harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'verifying');
+    try {
+      const reconciliation = harness.reconcileRun(repo, task.task_id);
+      if (reconciliation.reconciled) console.log(ok(`reconciled ${reconciliation.changed_files.length} contract-scoped file(s) from the isolated worktree.`));
+    } catch (error) {
+      harness.transitionTask(repo, task.task_id, 'blocked');
+      console.log(err(`${c.path(task.task_id)} blocked: isolated worktree was not reconciled safely — ${error.message}`));
+      process.exitCode = 3;
+      return;
+    }
+    harness.transitionTask(repo, task.task_id, 'verifying');
     console.log(ok(`${c.path(task.task_id)} → verifying; run icarus task verify before sealing.`));
   } else {
     harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'blocked');
@@ -1083,6 +1099,7 @@ async function main() {
                                         create a Rust-governed task with an immutable v1 contract.
   icarus task <status|resume> <TASK-ID> [--repo <dir>]
   icarus task transition <TASK-ID> <state> [--repo <dir>]
+  icarus task reconcile <TASK-ID> [--repo <dir>]
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]

@@ -14,6 +14,7 @@ export declare function harnessTaskStatus(repoRoot: string, taskId: string): str
 export declare function harnessTransitionTask(repoRoot: string, taskId: string, target: string): string
 export declare function harnessResumeTask(repoRoot: string, taskId: string): string
 export declare function harnessPrepareRun(repoRoot: string, taskId: string, agent: string, workspaceMode: string, acknowledgeDirtyCurrent: boolean): string
+export declare function harnessReconcileRun(repoRoot: string, taskId: string): string
 export declare function harnessValidateAgentArguments(agent: string, argumentsJson: string): void
 export declare function harnessVerifyTaskCriterion(repoRoot: string, taskId: string, criterionId: string): string
 export declare function harnessAttestTaskCriterion(repoRoot: string, taskId: string, criterionId: string, approvalId: string, approver: string, expiresAt?: string | undefined | null): string

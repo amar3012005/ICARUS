@@ -53,6 +53,10 @@ function validateAgentArguments(agent, agentArgs) {
   native.harnessValidateAgentArguments(agent, JSON.stringify(agentArgs || []));
 }
 
+function reconcileRun(repoRoot, taskId) {
+  return invoke('harnessReconcileRun', [repoRoot, taskId]);
+}
+
 function verifyTaskCriterion(repoRoot, taskId, criterionId) {
   return invoke('harnessVerifyTaskCriterion', [repoRoot, taskId, criterionId]);
 }
@@ -103,6 +107,7 @@ module.exports = {
   transitionTask,
   resumeTask,
   prepareRun,
+  reconcileRun,
   validateAgentArguments,
   verifyTaskCriterion,
   attestTaskCriterion,

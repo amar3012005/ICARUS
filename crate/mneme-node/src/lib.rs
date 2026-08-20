@@ -121,6 +121,15 @@ pub fn harness_prepare_run(
 }
 
 #[napi]
+pub fn harness_reconcile_run(repo_root: String, task_id: String) -> Result<String> {
+    let result = harness::reconcile_run(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(result).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_validate_agent_arguments(agent: String, arguments_json: String) -> Result<()> {
     let arguments: Vec<String> = serde_json::from_str(&arguments_json)
         .map_err(|error| Error::from_reason(format!("invalid agent argument list: {error}")))?;

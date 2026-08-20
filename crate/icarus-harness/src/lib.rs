@@ -197,6 +197,8 @@ pub struct RunPreparation {
     pub workspace_mode: String,
     pub worktree_id: String,
     pub workspace_path: String,
+    pub base_git_sha: Option<String>,
+    pub base_dirty_state_fingerprint: String,
     /// A launch-time copy of the Rust-generated pack placed inside the launch workspace. Its
     /// digest is recorded in the authority runtime so later verification can detect divergence.
     pub context_pack_path: String,
@@ -209,6 +211,20 @@ pub struct RunPreparation {
     /// launch them, but may not weaken the safety posture or invent an adapter profile.
     pub launch_arguments: Vec<String>,
     pub compatibility_mode: bool,
+}
+
+/// Result of importing an isolated, governed worktree into the authoritative repository. A
+/// reconciliation is deliberately explicit evidence: a launcher may not treat changes made in a
+/// detached worktree as verified until this operation has checked and applied them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReconciliationResult {
+    pub task_id: String,
+    pub execution_id: String,
+    pub workspace_mode: String,
+    pub reconciled: bool,
+    pub changed_files: Vec<String>,
+    pub patch_digest: Option<String>,
 }
 
 /// Capability declaration emitted by the Rust authority, never inferred from an agent name.
@@ -1077,9 +1093,10 @@ pub fn prepare_run(
             task.status
         )));
     }
-    let dirty = !git_output(&root, &["status", "--porcelain=v1"])
-        .unwrap_or_default()
-        .is_empty();
+    let base_git_sha = git_output(&root, &["rev-parse", "HEAD"]);
+    let base_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let base_dirty_state_fingerprint = sha256(base_status.as_bytes());
+    let dirty = !base_status.is_empty();
     let (workspace_path, worktree_id) = if workspace_mode == "current" {
         if dirty && !acknowledge_dirty_current {
             return Err(HarnessError::invalid(
@@ -1088,6 +1105,11 @@ pub fn prepare_run(
         }
         (root.clone(), "current".into())
     } else {
+        if dirty {
+            return Err(HarnessError::invalid(
+                "isolated managed runs require a clean authoritative worktree; commit/stash the current changes or explicitly use --workspace current with acknowledgment",
+            ));
+        }
         if !git_repository(&root) {
             return Err(HarnessError::invalid(
                 "isolated managed runs require a Git repository",
@@ -1141,6 +1163,8 @@ pub fn prepare_run(
         workspace_mode,
         worktree_id: worktree_id.clone(),
         workspace_path: workspace_path.display().to_string(),
+        base_git_sha,
+        base_dirty_state_fingerprint,
         context_pack_path: context_pack_path.display().to_string(),
         context_pack_hash,
         certification: certification.into(),
@@ -1170,6 +1194,240 @@ pub fn prepare_run(
         },
     )?;
     Ok(preparation)
+}
+
+fn git_checked_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(HarnessError::from)?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(HarnessError::invalid(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+fn git_apply_patch(root: &Path, patch: &[u8]) -> Result<()> {
+    if patch.is_empty() {
+        return Ok(());
+    }
+    for check in [true, false] {
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(root)
+            .args(["apply", "--binary", "--whitespace=nowarn"]);
+        if check {
+            command.arg("--check");
+        }
+        let mut child = command
+            .arg("-")
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(HarnessError::from)?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| HarnessError::invalid("could not open git apply stdin"))?
+            .write_all(patch)?;
+        let output = child.wait_with_output().map_err(HarnessError::from)?;
+        if !output.status.success() {
+            return Err(HarnessError::invalid(format!(
+                "isolated worktree patch cannot be applied safely: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            String::from_utf8(entry.to_vec())
+                .map_err(|_| HarnessError::invalid("Git returned a non-UTF-8 path"))
+        })
+        .collect()
+}
+
+fn checked_repo_relative_path(path: &str) -> Result<PathBuf> {
+    let candidate = Path::new(path);
+    if candidate.as_os_str().is_empty()
+        || candidate.is_absolute()
+        || candidate
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(HarnessError::invalid(format!(
+            "isolated worktree produced an unsafe path `{path}`"
+        )));
+    }
+    Ok(candidate.to_path_buf())
+}
+
+fn write_reconciled_untracked_file(source: &Path, target: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(HarnessError::invalid(format!(
+            "isolated worktree untracked path `{}` is not a regular file",
+            source.display()
+        )));
+    }
+    if target.exists() {
+        return Err(HarnessError::invalid(format!(
+            "authoritative worktree changed while reconciling `{}`",
+            target.display()
+        )));
+    }
+    atomic_write(target, &fs::read(source)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            target,
+            fs::Permissions::from_mode(metadata.permissions().mode()),
+        )?;
+    }
+    Ok(())
+}
+
+/// Apply the contract-authorized delta from a detached managed worktree to the authoritative
+/// worktree. It refuses dirty/drifted bases, commits made inside the detached worktree, unsafe
+/// paths, symlinks, and any out-of-contract change before writing a single source file.
+pub fn reconcile_run(repo_root: &Path, task_id: &str) -> Result<ReconciliationResult> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "reconciliation requires an executing task",
+        ));
+    }
+    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id {
+        return Err(HarnessError::invalid(
+            "managed run preparation does not match the active task execution",
+        ));
+    }
+    if run.workspace_mode == "current" {
+        return Ok(ReconciliationResult {
+            task_id: task.task_id,
+            execution_id: task.execution_id,
+            workspace_mode: run.workspace_mode,
+            reconciled: false,
+            changed_files: Vec::new(),
+            patch_digest: None,
+        });
+    }
+    let expected = managed_worktree_path(&root, &manifest.repo_id, task_id);
+    let workspace = PathBuf::from(&run.workspace_path)
+        .canonicalize()
+        .map_err(|_| HarnessError::invalid("managed isolated worktree no longer exists"))?;
+    if workspace != expected.canonicalize().map_err(HarnessError::from)? {
+        return Err(HarnessError::invalid(
+            "managed run workspace does not match the deterministic task worktree",
+        ));
+    }
+    let base_sha = run
+        .base_git_sha
+        .as_deref()
+        .ok_or_else(|| HarnessError::invalid("isolated run has no base Git SHA"))?;
+    if git_output(&root, &["rev-parse", "HEAD"]).as_deref() != Some(base_sha) {
+        return Err(HarnessError::invalid(
+            "authoritative HEAD changed since isolated run preparation; refusing reconciliation",
+        ));
+    }
+    let root_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    if sha256(root_status.as_bytes()) != run.base_dirty_state_fingerprint {
+        return Err(HarnessError::invalid(
+            "authoritative worktree changed since isolated run preparation; refusing reconciliation",
+        ));
+    }
+    if !root_status.is_empty() {
+        return Err(HarnessError::invalid(
+            "isolated run reconciliation requires a clean authoritative worktree",
+        ));
+    }
+    if git_output(&workspace, &["rev-parse", "HEAD"]).as_deref() != Some(base_sha) {
+        return Err(HarnessError::invalid(
+            "agent changed the isolated worktree commit; export a reviewable patch instead",
+        ));
+    }
+    let tracked_paths = nul_paths(&git_checked_bytes(
+        &workspace,
+        &["diff", "--name-only", "-z", "HEAD", "--"],
+    )?)?;
+    let untracked_paths = nul_paths(&git_checked_bytes(
+        &workspace,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?)?;
+    let mut changed: BTreeSet<String> = tracked_paths.into_iter().collect();
+    changed.extend(untracked_paths.iter().cloned());
+    let allowed = build_globset(&task.contract.allowed_paths)?;
+    let forbidden = build_globset(&task.contract.forbidden_paths)?;
+    for path in &changed {
+        checked_repo_relative_path(path)?;
+        if !allowed.is_match(path) || forbidden.is_match(path) {
+            return Err(HarnessError::invalid(format!(
+                "isolated worktree change is outside the task contract: {path}"
+            )));
+        }
+    }
+    let patch = git_checked_bytes(
+        &workspace,
+        &["diff", "--binary", "--full-index", "HEAD", "--"],
+    )?;
+    let mut digest = Sha256::new();
+    digest.update(&patch);
+    for path in &untracked_paths {
+        let relative = checked_repo_relative_path(path)?;
+        let source = workspace.join(&relative);
+        let contents = fs::read(&source)?;
+        digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(&contents);
+        digest.update([0]);
+    }
+    // `git apply --check` runs before its write pass. This stays before untracked file writes,
+    // therefore a tracked patch conflict leaves the authoritative worktree untouched.
+    git_apply_patch(&root, &patch)?;
+    for path in &untracked_paths {
+        let relative = checked_repo_relative_path(path)?;
+        write_reconciled_untracked_file(&workspace.join(&relative), &root.join(relative))?;
+    }
+    let result = ReconciliationResult {
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        workspace_mode: run.workspace_mode,
+        reconciled: !changed.is_empty(),
+        changed_files: changed.into_iter().collect(),
+        patch_digest: (!patch.is_empty() || !untracked_paths.is_empty())
+            .then(|| format!("{:x}", digest.finalize())),
+    };
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "workspace_reconciled".into(),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: serde_json::to_value(&result)?,
+        },
+    )?;
+    Ok(result)
 }
 
 /// Creates a new immutable contract version. Once a task has begun executing, a configured

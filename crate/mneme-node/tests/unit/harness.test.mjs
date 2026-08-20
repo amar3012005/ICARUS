@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
-  validateAgentArguments,
+  validateAgentArguments, reconcileRun,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -63,4 +63,16 @@ test('agent launch arguments are validated by Rust before Node can spawn a CLI',
   });
   validateAgentArguments('codex', ['--model', 'gpt-5']);
   assert.deepEqual(calls, [['codex', '["--model","gpt-5"]']]);
+});
+
+test('isolated-worktree reconciliation remains a thin native transport', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessReconcileRun(...args) {
+      calls.push(args);
+      return JSON.stringify({ task_id: 'TASK-1', reconciled: true, changed_files: ['src/lib.rs'] });
+    },
+  });
+  assert.equal(reconcileRun('/repo', 'TASK-1').reconciled, true);
+  assert.deepEqual(calls, [['/repo', 'TASK-1']]);
 });

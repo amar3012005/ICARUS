@@ -1,9 +1,10 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
     checkpoint_task, doctor, graph_source_fingerprint, init, prepare_run, read_snapshot,
-    record_graph_receipt, resume_task, retire_skill, seal_task, start_task, task_status,
-    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
+    reconcile_run, record_graph_receipt, resume_task, retire_skill, seal_task, start_task,
+    task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
+    TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -523,10 +524,23 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         },
     )
     .unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "initialize harness"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
     let task = start_task(repo.path(), "managed run", contract()).unwrap();
     for state in ["orienting", "contracted", "planned"] {
         transition_task(repo.path(), &task.task_id, state).unwrap();
     }
+    fs::write(repo.path().join("README.md"), "dirty fixture\n").unwrap();
     assert!(prepare_run(
         repo.path(),
         &task.task_id,
@@ -535,6 +549,7 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         false
     )
     .is_err());
+    fs::write(repo.path().join("README.md"), "fixture\n").unwrap();
     let prepared = prepare_run(
         repo.path(),
         &task.task_id,
@@ -577,6 +592,101 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
             .unwrap()
             .is_some()
+    );
+    assert!(Command::new("git")
+        .args(["worktree", "remove", "--force", &prepared.workspace_path])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn isolated_run_reconciliation_imports_only_contract_scoped_regular_files() {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "pub fn before() {}\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "fixture"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["codex".into()],
+        },
+    )
+    .unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "initialize harness"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let task = start_task(repo.path(), "change the library safely", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let prepared = prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "isolated".into(),
+        false,
+    )
+    .unwrap();
+    let workspace = std::path::Path::new(&prepared.workspace_path);
+    fs::write(workspace.join("src/lib.rs"), "pub fn after() {}\n").unwrap();
+    fs::write(workspace.join("src/new.rs"), "pub fn new_file() {}\n").unwrap();
+    fs::write(workspace.join("README.md"), "out of contract\n").unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+
+    assert!(reconcile_run(repo.path(), &task.task_id).is_err());
+    assert_eq!(
+        fs::read_to_string(repo.path().join("src/lib.rs")).unwrap(),
+        "pub fn before() {}\n"
+    );
+    assert!(!repo.path().join("src/new.rs").exists());
+    fs::remove_file(workspace.join("README.md")).unwrap();
+
+    let result = reconcile_run(repo.path(), &task.task_id).unwrap();
+    assert!(result.reconciled);
+    assert_eq!(result.changed_files, vec!["src/lib.rs", "src/new.rs"]);
+    assert!(result.patch_digest.is_some());
+    assert_eq!(
+        fs::read_to_string(repo.path().join("src/lib.rs")).unwrap(),
+        "pub fn after() {}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("src/new.rs")).unwrap(),
+        "pub fn new_file() {}\n"
     );
     assert!(Command::new("git")
         .args(["worktree", "remove", "--force", &prepared.workspace_path])
