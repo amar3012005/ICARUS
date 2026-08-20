@@ -767,8 +767,18 @@ function scanIngestable(dir, extSet = INGESTABLE_EXTS) {
 async function pickFolderNative(promptText) {
   const { execFile } = require('child_process');
   const run = (cmd, args) => new Promise((resolve) => {
-    execFile(cmd, args, { encoding: 'utf8' }, (error, stdout) => {
-      resolve(error ? null : stdout.trim() || null);
+    execFile(cmd, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
+      if (error) {
+        // Never swallow this silently — a bare "no file or folder selected" for what's actually
+        // a missing-binary/permission/os error is undiagnosable. stderr from osascript itself
+        // (a real macOS syntax/runtime error, distinct from a plain user cancel, which prints
+        // nothing and exits 0) goes to stderr so it doesn't corrupt the TUI's own redraw, but is
+        // still visible to anyone running with ICARUS_DEBUG=1 or piping stderr.
+        if (process.env.ICARUS_DEBUG) process.stderr.write(`[picker] ${cmd} failed: ${error.message}${stderr ? ` — ${stderr.trim()}` : ''}\n`);
+        resolve(null);
+        return;
+      }
+      resolve(stdout.trim() || null);
     });
   });
   const prompt = promptText || 'Select a file or folder to ingest';
@@ -780,13 +790,27 @@ async function pickFolderNative(promptText) {
     // dialog is JXA (osascript -l JavaScript) driving NSOpenPanel directly with
     // canChooseFiles/canChooseDirectories both true — verified live: a real panel opens with
     // both enabled, and returns a clean POSIX path on OK / null on cancel.
+    //
+    // Real bug found by running this exact script twice in a row: NSOpenPanel.runModal is only
+    // RELIABLE when the calling process has actually activated itself as a foreground app first.
+    // Without that, osascript has no window-server activation/run-loop priority of its own, so
+    // runModal's behavior races — sometimes it blocks and shows the panel correctly, sometimes it
+    // returns instantly with a non-OK response and the panel never visibly appears at all (which
+    // is exactly the "no file or folder selected" — worked for 2.8s — symptom reported: the whole
+    // round-trip completing in under 3 seconds is way too fast for a human to have seen a dialog,
+    // let alone dismissed one). setActivationPolicy(Regular) + activateIgnoringOtherApps(true)
+    // before creating/running the panel makes the activation deterministic instead of a race.
     const script = [
       'ObjC.import("AppKit");',
+      'const app = $.NSApplication.sharedApplication;',
+      'app.setActivationPolicy($.NSApplicationActivationPolicyRegular);',
+      'app.activateIgnoringOtherApps(true);',
       'const p = $.NSOpenPanel.openPanel;',
       'p.canChooseFiles = true;',
       'p.canChooseDirectories = true;',
       'p.allowsMultipleSelection = false;',
       `p.prompt = ${JSON.stringify(prompt)};`,
+      'p.level = $.NSModalPanelWindowLevel;', // stay above the terminal's own alt-screen window
       'if (p.runModal === $.NSModalResponseOK) { console.log(ObjC.unwrap(p.URLs.objectAtIndex(0).path)); }',
     ].join('\n');
     return run('osascript', ['-l', 'JavaScript', '-e', script]);
@@ -1788,7 +1812,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.28';
+const ICARUS_VERSION = '0.3.29';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
