@@ -334,12 +334,66 @@ function verifyAuditChain(cfg, org) {
   return { entries: entries.length, chainValid, brokenAt, checkpoint };
 }
 
+// Real, per-repo isolation: a `.icarus/` folder living IN the repo itself (like `.git`), holding
+// that repo's own shard(s) — separate from the global `~/.icarus` folder's cross-project data.
+// Walks up from cwd looking for `.icarus`, but never past the repo's own root (stops at the
+// first `.git` it crosses) — an unrelated ancestor directory's `.icarus` folder outside this
+// repo must never silently apply. Returns null (global dataRoot stays in effect) if none found.
+function findRepoIcarusDataRoot(startDir) {
+  let dir = path.resolve(startDir || process.cwd());
+  const fsRoot = path.parse(dir).root;
+  for (let i = 0; i < 40 && dir !== fsRoot; i++) {
+    const candidate = path.join(dir, '.icarus');
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+      return path.join(candidate, 'data');
+    }
+    if (fs.existsSync(path.join(dir, '.git'))) break; // repo root reached, don't search past it
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/** Stable org name derived from a repo/session folder — the SAME derivation every agent's
+ * project instruction file (CLAUDE.md/AGENTS.md/.cursor rule) references, so Claude Code, Codex,
+ * and Cursor working in the same repo all read/write the identical shard: one shared, real,
+ * cross-agent memory per project rather than three isolated silos. */
+function repoOrgName(repo) {
+  const base = path.basename(path.resolve(repo || process.cwd()));
+  const cleaned = base.replace(/[^a-zA-Z0-9_-]+/g, '-').toLowerCase().replace(/^-+|-+$/g, '');
+  return cleaned || 'default';
+}
+
+/** Physically creates a repo-local shard NOW (setup time), not lazily on first save — matches
+ * the real ask: running setup should leave a real, existing org slot behind, not just a name
+ * referenced in some instruction text with nothing backing it yet. Idempotent: opening an
+ * already-existing shard is just a normal open, not a reset. Appends `.icarus/` to the repo's
+ * own .gitignore (creating one if absent) so real, possibly-sensitive memory content never lands
+ * in git history by default — a real safety default, not an incidental side effect. */
+function initRepoShard(repo, orgName, dim = 1024) {
+  const dataRoot = path.join(path.resolve(repo), '.icarus', 'data');
+  fs.mkdirSync(dataRoot, { recursive: true });
+  const store = openStore({ dataRoot, dim }, orgName);
+  store.flush();
+  const gitignorePath = path.join(path.resolve(repo), '.gitignore');
+  const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
+  if (!/^\.icarus\/?\s*$/m.test(existing)) {
+    const sep = existing && !existing.endsWith('\n') ? '\n' : '';
+    fs.writeFileSync(gitignorePath, existing + sep + '.icarus/\n');
+  }
+  return { dataRoot, org: orgName };
+}
+
 function loadCfg() {
+  const repoDataRoot = findRepoIcarusDataRoot();
   try {
-    return JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+    if (repoDataRoot) cfg.dataRoot = repoDataRoot; // per-repo shard takes priority over the global one
+    return cfg;
   } catch (_) {
     return {
-      dataRoot: path.join(HOME, 'data'),
+      dataRoot: repoDataRoot || path.join(HOME, 'data'),
       dim: 1024,
       // No `enabled` flag to flip — presence of a key (env var OR stored) is what turns on
       // vector recall, `.env`-style (export OPENROUTER_API_KEY and it just works, no interactive
@@ -1734,7 +1788,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.23';
+const ICARUS_VERSION = '0.3.24';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -1818,5 +1872,5 @@ module.exports = {
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
-  richOrgStats,
+  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard,
 };

@@ -696,7 +696,10 @@ async function cmdMcpServe(_flags, _cfg) {
 }
 
 async function cmdMcpInstall(flags, _cfg) {
-  await require('./mcp-install.js').run(flags);
+  // flags._[0] is still "install" here (mneme-cli's own `mcp` case reads it as `sub` but never
+  // consumes it from the array) -- run()'s own agent-name arg needs it shifted off, or
+  // `icarus mcp install claude` would read "install" itself as the agent name, not "claude".
+  await require('./mcp-install.js').run({ ...flags, _: flags._.slice(1) });
 }
 
 async function cmdDaemon(flags, _cfg) {
@@ -836,6 +839,14 @@ async function main() {
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too
+  icarus mcp install <claude|codex|cursor>
+                                        run from a project's own folder: registers just that
+                                        agent, writes its project instruction file (CLAUDE.md/
+                                        AGENTS.md/.cursor rule) with THIS repo's own derived org
+                                        name, and physically creates a real .icarus/data/<org>
+                                        shard right there in the repo (added to .gitignore) --
+                                        every agent working in this repo shares that one org, so
+                                        Claude Code/Codex/Cursor all read/write the same memory
   icarus mcp serve                     run the MCP server directly (stdio) — what the agents
                                         installed above actually launch
   icarus daemon start [--port 8137]    run ICARUS as a persistent local HTTP service (a shared

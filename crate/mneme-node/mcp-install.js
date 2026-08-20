@@ -9,6 +9,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Lazy: mcp-install.js is loaded by `icarus status`/other shard-less commands too — pulling
+// cli-lib.js in eagerly would force the native addon to load just for those.
+function repoOrgName(repo) { return require('./cli-lib.js').repoOrgName(repo); }
+function initRepoShard(repo, orgName) { return require('./cli-lib.js').initRepoShard(repo, orgName); }
 
 const HOME = os.homedir();
 // install.sh's own default (ICARUS_HOME) — if the real wrapper exists there, prefer its
@@ -277,44 +281,160 @@ ${STANDING_MARK_END}`;
 
 function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
 
-function detectStandingInstructions() {
-  const p = globalClaudeMdPath();
-  if (!fs.existsSync(p)) return { found: false, path: p };
-  return { found: fs.readFileSync(p, 'utf8').includes(STANDING_MARK_START), path: p };
-}
-
-function installStandingInstructions() {
-  const p = globalClaudeMdPath();
-  const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
-  if (existing.includes(STANDING_MARK_START)) return { installed: false, reason: 'already installed', path: p };
-  fs.mkdirSync(path.dirname(p), { recursive: true });
+// Generic marker-wrapped block writer/remover — the same idempotent-append, surgical-remove
+// pattern used for the global CLAUDE.md standing instructions, generalized so every per-project
+// instruction file (Claude Code's project CLAUDE.md, Codex's AGENTS.md, Cursor's .mdc rule) can
+// reuse ONE real, tested mechanism instead of three near-duplicate copies that could drift.
+function writeMarkedBlock(filePath, markStart, markEnd, block) {
+  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+  if (existing.includes(markStart)) return { installed: false, reason: 'already installed', path: filePath };
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const sep = existing && !existing.endsWith('\n\n') ? (existing.endsWith('\n') ? '\n' : '\n\n') : '';
-  fs.writeFileSync(p, existing + sep + STANDING_BLOCK + '\n');
-  return { installed: true, path: p };
+  fs.writeFileSync(filePath, existing + sep + block + '\n');
+  return { installed: true, path: filePath };
 }
-
-// Surgical block removal — same start/end marker delete pattern as removeCodex's TOML section
-// removal, adapted for markdown: drop every line from the start marker to the end marker
-// (inclusive), leave everything else in the file untouched.
-function removeStandingInstructions() {
-  const p = globalClaudeMdPath();
-  if (!fs.existsSync(p)) return { removed: false };
-  const lines = fs.readFileSync(p, 'utf8').split('\n');
-  const startIdx = lines.findIndex((l) => l.includes(STANDING_MARK_START));
-  if (startIdx === -1) return { removed: false, path: p };
-  let endIdx = lines.findIndex((l, i) => i > startIdx && l.includes(STANDING_MARK_END));
+function detectMarkedBlock(filePath, markStart) {
+  if (!fs.existsSync(filePath)) return { found: false, path: filePath };
+  return { found: fs.readFileSync(filePath, 'utf8').includes(markStart), path: filePath };
+}
+// Surgical block removal — drop every line from the start marker to the end marker (inclusive),
+// leave everything else in the file untouched. Same shape as removeCodex's TOML section removal.
+function removeMarkedBlock(filePath, markStart, markEnd) {
+  if (!fs.existsSync(filePath)) return { removed: false };
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+  const startIdx = lines.findIndex((l) => l.includes(markStart));
+  if (startIdx === -1) return { removed: false, path: filePath };
+  let endIdx = lines.findIndex((l, i) => i > startIdx && l.includes(markEnd));
   if (endIdx === -1) endIdx = lines.length - 1;
   lines.splice(startIdx, endIdx - startIdx + 1);
   const text = lines.join('\n').replace(/\n{3,}/g, '\n\n');
-  fs.writeFileSync(p, text);
-  return { removed: true, path: p };
+  fs.writeFileSync(filePath, text);
+  return { removed: true, path: filePath };
 }
+
+function detectStandingInstructions() { return detectMarkedBlock(globalClaudeMdPath(), STANDING_MARK_START); }
+function installStandingInstructions() { return writeMarkedBlock(globalClaudeMdPath(), STANDING_MARK_START, STANDING_MARK_END, STANDING_BLOCK); }
+function removeStandingInstructions() { return removeMarkedBlock(globalClaudeMdPath(), STANDING_MARK_START, STANDING_MARK_END); }
+
+// ── Project-level instructions (per-repo, not machine-wide) ─────────────────────────────────
+//
+// Real gap this closes: every icarus call defaults to org "default" regardless of which repo
+// you're in, so without this, all projects on a machine silently share ONE memory pool unless
+// the user remembers --org every time. A stable, repo-derived org name written into the
+// project's own instruction file gives the agent a concrete default to reach for instead of
+// "default" — solved once per repo, not left to the user to type each session.
+//
+// Claude Code and Codex both genuinely load a project-level file the same way they load a
+// global one (Claude Code: <cwd>/CLAUDE.md, real and confirmed — loaded alongside, not instead
+// of, ~/.claude/CLAUDE.md; Codex: <cwd>/AGENTS.md, the real, now-common cross-tool convention).
+// Cursor has no equivalent global file, but DOES have a real, current project convention:
+// .cursor/rules/*.mdc — YAML-frontmattered rule files, `alwaysApply: true` making one load on
+// every request the same way CLAUDE.md/AGENTS.md do.
+
+function projectBlockBody(orgName) {
+  return `## ICARUS memory (this project)
+
+This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.`;
+}
+
+const PROJECT_MARK_START = '<!-- icarus:project-instructions -->';
+const PROJECT_MARK_END = '<!-- /icarus:project-instructions -->';
+
+function projectClaudeMdPath(repo) { return path.join(repo || process.cwd(), 'CLAUDE.md'); }
+function projectAgentsMdPath(repo) { return path.join(repo || process.cwd(), 'AGENTS.md'); }
+function projectCursorRulePath(repo) { return path.join(repo || process.cwd(), '.cursor', 'rules', 'icarus.mdc'); }
+
+function installProjectClaude(repo) {
+  const orgName = repoOrgName(repo);
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  return { agent: 'claude-code (project)', orgName, ...writeMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
+}
+function installProjectAgents(repo) {
+  const orgName = repoOrgName(repo);
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  return { agent: 'codex (AGENTS.md)', orgName, ...writeMarkedBlock(projectAgentsMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
+}
+function installProjectCursor(repo) {
+  const orgName = repoOrgName(repo);
+  // .mdc frontmatter: alwaysApply makes Cursor load this rule on every request, the same "always
+  // present, no opt-in needed" behavior CLAUDE.md/AGENTS.md get for free.
+  const block = `${PROJECT_MARK_START}\n---\ndescription: ICARUS memory — this project's org\nalwaysApply: true\n---\n\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  return { agent: 'cursor (.mdc rule)', orgName, ...writeMarkedBlock(projectCursorRulePath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
+}
+function detectProjectClaude(repo) { return detectMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START); }
+function detectProjectAgents(repo) { return detectMarkedBlock(projectAgentsMdPath(repo), PROJECT_MARK_START); }
+function detectProjectCursor(repo) { return detectMarkedBlock(projectCursorRulePath(repo), PROJECT_MARK_START); }
+function removeProjectClaude(repo) { return removeMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END); }
+function removeProjectAgents(repo) { return removeMarkedBlock(projectAgentsMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END); }
+function removeProjectCursor(repo) { return removeMarkedBlock(projectCursorRulePath(repo), PROJECT_MARK_START, PROJECT_MARK_END); }
+
+// Per-agent installer registry — the real primitive behind `icarus mcp install <agent>` (scope
+// to just one agent) as well as the existing all-agents default. Each entry's `global`/`project`
+// installer may be null when that layer has no real, confirmed convention for that agent (e.g.
+// Cursor has no global file) — callers skip a null layer rather than guessing at one.
+const AGENT_INSTALLERS = {
+  claude: { mcp: installClaudeCode, global: installStandingInstructions, project: installProjectClaude },
+  codex: { mcp: installCodex, global: null, project: installProjectAgents },
+  cursor: { mcp: installCursor, global: null, project: installProjectCursor },
+};
 
 function detectRemovable() { return [detectClaudeCode(), detectCodex(), detectCursor()]; }
 function removeAll() { return [removeClaudeCode(), removeCodex(), removeCursor(), removeStandingInstructions()]; }
 
-async function run(_flags) {
+function printToolSummary() {
+  console.log('\nTools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_save, icarus_train_pq, icarus_compact,');
+  console.log('  memory: icarus_save_memory, icarus_get_memory, icarus_list_memories, icarus_update_memory,');
+  console.log('          icarus_delete_memory, icarus_save_conversation, icarus_traverse_graph');
+  console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
+  console.log('          icarus_test_coverage, icarus_why_code');
+  console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
+}
+
+async function run(flags) {
   const command = resolveIcarusCommand();
+  // A named agent (icarus mcp install claude|codex|cursor) is a deliberate, scoped ask — "set
+  // icarus up for THIS project, for THIS agent" — matching how the feature was actually
+  // requested (run from the project's own folder root). That's the one case that also writes a
+  // PROJECT-level instruction file (CLAUDE.md/AGENTS.md/.mdc rule) with this repo's own derived
+  // org name, not just the global MCP registration. The bare, no-argument form keeps its
+  // existing, narrower behavior on purpose — registering every detected agent globally should
+  // never silently start writing real, git-tracked files into whatever repo happens to be cwd.
+  const agentArg = (flags?._?.[0] || '').toLowerCase();
+  if (agentArg && !AGENT_INSTALLERS[agentArg]) {
+    console.log(`unknown agent "${agentArg}" — one of: ${Object.keys(AGENT_INSTALLERS).join(', ')} (or omit to register every agent found, globally only)`);
+    return;
+  }
+  if (agentArg) {
+    const { mcp, global, project } = AGENT_INSTALLERS[agentArg];
+    console.log(`icarus mcp install ${agentArg} — registering as command: ${command}\n`);
+    const mcpResult = mcp(command);
+    if (mcpResult.installed) console.log(`  ✓ ${mcpResult.agent}: registered in ${mcpResult.path}`);
+    else console.log(`  · ${mcpResult.agent}: skipped (${mcpResult.reason})`);
+    if (global) {
+      const g = global();
+      if (g.installed) console.log(`  ✓ standing instructions: added to ${g.path}`);
+      else if (g.reason === 'already installed') console.log(`  · standing instructions: already in ${g.path}`);
+    }
+    const p = project(process.cwd());
+    if (p.installed) console.log(`  ✓ project instructions: added to ${p.path} (org: "${p.orgName}")`);
+    else if (p.reason === 'already installed') console.log(`  · project instructions: already in ${p.path} (org: "${p.orgName}")`);
+    // Physically create the repo-local shard NOW, not lazily on first save — a real, existing
+    // .icarus/data/<org> slot right after setup, matching the actual ask ("create a new .amr
+    // slot... inside its .icarus folder"), not just an org name referenced in text with nothing
+    // backing it. Same org name every agent's instruction file above references, so Claude Code/
+    // Codex/Cursor working in this repo all share the identical shard — one real cross-agent
+    // memory per project, not three isolated silos.
+    try {
+      const shard = initRepoShard(process.cwd(), p.orgName);
+      console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (added .icarus/ to .gitignore)`);
+    } catch (e) {
+      console.log(`  · shard creation skipped: ${e.message}`);
+    }
+    console.log(`\nRestart ${agentArg} to pick up the MCP server. This project's icarus org is "${p.orgName}" — pass org: "${p.orgName}" on tool calls here.`);
+    printToolSummary();
+    return;
+  }
+
   const results = [installClaudeCode(command), installCodex(command), installCursor(command)];
   console.log(`icarus mcp install — registering as command: ${command}\n`);
   let any = false;
@@ -342,18 +462,19 @@ async function run(_flags) {
   } else {
     console.log('\nNothing to do — either no supported agent was found, or icarus is already registered everywhere it was.');
   }
-  console.log('\nTools exposed: icarus_status, icarus_ingest, icarus_recall, icarus_save, icarus_train_pq, icarus_compact,');
-  console.log('  memory: icarus_save_memory, icarus_get_memory, icarus_list_memories, icarus_update_memory,');
-  console.log('          icarus_delete_memory, icarus_save_conversation, icarus_traverse_graph');
-  console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
-  console.log('          icarus_test_coverage, icarus_why_code');
-  console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
+  printToolSummary();
   console.log('\nCodex/Cursor: no equally-confirmed global standing-instruction file for those agents yet —');
   console.log('consider adding a similar "recall before you answer, save what\'s durable" line to their own config by hand.');
+  console.log(`\nRun from a specific project: icarus mcp install <claude|codex|cursor> — also writes that project's own`);
+  console.log('CLAUDE.md/AGENTS.md/.cursor rule with a stable, repo-derived org name so this project\'s memories stay separate.');
 }
 
 module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
   detectRemovable, removeAll, detectHook, installHook, removeHook,
   detectStandingInstructions, installStandingInstructions, removeStandingInstructions,
+  AGENT_INSTALLERS, repoOrgName,
+  installProjectClaude, installProjectAgents, installProjectCursor,
+  detectProjectClaude, detectProjectAgents, detectProjectCursor,
+  removeProjectClaude, removeProjectAgents, removeProjectCursor,
 };
