@@ -196,7 +196,41 @@ pub struct RunPreparation {
     pub workspace_mode: String,
     pub worktree_id: String,
     pub workspace_path: String,
+    /// `certified` is reserved for adapters that have passed the complete enforcement contract.
+    /// No current adapter may self-assert it from JavaScript launch code.
+    pub certification: String,
+    pub capabilities: AdapterCapabilities,
     pub compatibility_mode: bool,
+}
+
+/// Capability declaration emitted by the Rust authority, never inferred from an agent name.
+/// A missing pre-action or completion interception is enough to keep an adapter in compatibility
+/// mode even when ICARUS can still prepare an isolated workspace and record lifecycle state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterCapabilities {
+    pub workspace_isolation: bool,
+    pub task_scoped_context: bool,
+    pub pre_action_authorization: bool,
+    pub post_action_event_capture: bool,
+    pub completion_interception: bool,
+    pub external_write_interception: bool,
+    pub stable_session_identity: bool,
+}
+
+fn adapter_capabilities(_agent: &str) -> AdapterCapabilities {
+    // The launcher currently starts the user-installed CLI and can only prove these two
+    // properties. Do not promote Claude/Codex by reputation: certification needs hook/event
+    // conformance evidence, which has not been implemented yet.
+    AdapterCapabilities {
+        workspace_isolation: true,
+        task_scoped_context: true,
+        pre_action_authorization: false,
+        post_action_event_capture: false,
+        completion_interception: false,
+        external_write_interception: false,
+        stable_session_identity: false,
+    }
 }
 
 /// Evidence produced by ICARUS itself for one contract criterion. Agent prose is deliberately
@@ -964,6 +998,18 @@ pub fn prepare_run(
         }
         (path, format!("isolated-{task_id}"))
     };
+    let capabilities = adapter_capabilities(&agent);
+    let certification = if capabilities.pre_action_authorization
+        && capabilities.post_action_event_capture
+        && capabilities.completion_interception
+        && capabilities.external_write_interception
+        && capabilities.stable_session_identity
+        && capabilities.workspace_isolation
+    {
+        "certified"
+    } else {
+        "compatibility"
+    };
     let preparation = RunPreparation {
         task_id: task.task_id.clone(),
         execution_id: task.execution_id.clone(),
@@ -971,7 +1017,9 @@ pub fn prepare_run(
         workspace_mode,
         worktree_id: worktree_id.clone(),
         workspace_path: workspace_path.display().to_string(),
-        compatibility_mode: matches!(agent.as_str(), "cursor" | "grok"),
+        certification: certification.into(),
+        compatibility_mode: certification != "certified",
+        capabilities,
     };
     write_snapshot(
         &root,

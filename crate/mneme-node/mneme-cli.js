@@ -264,7 +264,9 @@ function cmdRun(flags) {
   const preparation = harness.prepareRun(
     flags.repo || process.cwd(), taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
   );
-  const label = preparation.compatibility_mode ? 'compatibility mode: policy guidance, no hard interception' : 'managed mode: task context and lifecycle gates active';
+  const label = preparation.compatibility_mode
+    ? 'compatibility mode: isolated workspace and lifecycle records are active; hard interception is not yet proven'
+    : 'certified managed mode: enforcement contract passed';
   console.log(ok(`prepared ${c.path(preparation.task_id)} in ${c.path(preparation.workspace_path)}`));
   console.log(c.dim(`  ${agent} · ${label}`));
   console.log(c.dim(`  agent must call icarus_context_get before planning; task ${preparation.task_id} remains the governing contract.`));

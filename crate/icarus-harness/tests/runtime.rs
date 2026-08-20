@@ -544,6 +544,9 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     )
     .unwrap();
     assert_eq!(prepared.workspace_mode, "isolated");
+    assert_eq!(prepared.certification, "compatibility");
+    assert!(prepared.compatibility_mode);
+    assert!(!prepared.capabilities.pre_action_authorization);
     assert!(std::path::Path::new(&prepared.workspace_path)
         .join("README.md")
         .exists());
