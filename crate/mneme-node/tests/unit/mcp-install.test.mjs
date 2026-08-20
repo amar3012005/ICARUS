@@ -50,6 +50,15 @@ test('the written block names the derived org for this repo', () => {
   });
 });
 
+test('the project block directs governed agents to compile context before planning', () => {
+  withRepo((repo) => {
+    mi.installProjectAgents(repo);
+    const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
+    assert.ok(text.includes('icarus_context_get'));
+    assert.ok(text.includes('icarus_task_verify'));
+  });
+});
+
 test('installProjectClaude PRESERVES pre-existing user content', () => {
   withRepo((repo) => {
     const original = '# My Project\n\nHand-written rules that must survive.\n';
