@@ -35,7 +35,7 @@ const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./t
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
   openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel, selectOpenRouterModels, chatWithOpenRouter,
-  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
   hivemindSaveMemory, saveLocalMemory, initRepoShard, listOrgsWithMeta, deleteOrgShard,
@@ -822,7 +822,7 @@ async function dispatch(line, state, cfg) {
       if (viaHivemind) {
         out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
         if (result.pending) notes.push(`${result.pending} still processing`);

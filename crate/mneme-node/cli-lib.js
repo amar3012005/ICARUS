@@ -1348,7 +1348,7 @@ async function hivemindUploadFile(filePath, org, cfg, { force = false } = {}) {
   return JSON.parse(bodyText); // { job_id, status, storage_mode, ... }
 }
 
-async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60 } = {}) {
+async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60, onStatus } = {}) {
   const base = hivemindApiBase(cfg);
   for (let i = 0; i < maxAttempts; i++) {
     const res = await fetch(`${base}/api/knowledge/status?job_id=${jobId}`, {
@@ -1356,10 +1356,31 @@ async function hivemindPollJob(jobId, cfg, { intervalMs = 1000, maxAttempts = 60
     });
     if (!res.ok) throw new Error(`HIVEMIND status ${res.status}: ${await res.text()}`);
     const body = await res.json();
+    if (onStatus) onStatus(body);
     if (body.status === 'ready' || body.status === 'failed') return body;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`HIVEMIND job ${jobId} did not finish within ${(maxAttempts * intervalMs) / 1000}s — check later with the job_id above`);
+}
+
+// A terminal-safe tqdm-like line. Its phase and counts come only from observed server-job
+// responses or named local stages; the bar itself measures completed files, never guessed work.
+function formatHivemindProgress(event = {}, spinner = '') {
+  const total = Math.max(0, Number(event.total) || 0);
+  const completed = Math.max(0, Math.min(total, Number(event.completed) || 0));
+  const width = 22;
+  const filled = total ? Math.floor((completed / total) * width) : 0;
+  const active = completed < total;
+  const bar = `${'█'.repeat(filled)}${active ? '▌' : ''}${'░'.repeat(Math.max(0, width - filled - (active ? 1 : 0)))}`;
+  const phase = ({ queued: 'queued', processing: 'extracting', uploading: 'uploading', mirroring: 'mirroring locally', purging: 'verifying & purging', duplicate: 'already ingested', pending: 'still processing', failed: 'failed', complete: 'complete', ready: 'ready' })[event.phase] || event.phase || 'working';
+  const counts = event.counts || {};
+  const details = [
+    counts.pages != null && `${counts.pages} pages`,
+    counts.segments != null && `${counts.segments} segments`,
+    counts.memories != null && `${counts.memories} memories`,
+  ].filter(Boolean).join(' · ');
+  const file = event.file ? `  ${event.file}` : '';
+  return `\r  ${spinner} [${bar}] ${completed}/${total}  ${phase}${details ? ` · ${details}` : ''}${file}`;
 }
 
 /** Purges a HIVEMIND-side document icarus itself just created — DELETE /api/knowledge/document,
@@ -1819,6 +1840,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   let purged = 0; // cloud documents (this ingest itself created) deleted after mirroring
   const purgeCloud = opts.purgeCloud !== false; // default ON — see purgeHivemindDocument's doc comment
   let n = 0;
+  let completedFiles = 0; // terminal outcomes only; a timed-out remote job is explicitly not done
   // The WHOLE per-file body is wrapped, not just the poll — a real bug, same class as the
   // 409-duplicate one this function already guards against but caught SEPARATELY, live: a
   // transient 502 from hivemindUploadFile on file #9 of a real 55-file batch was left
@@ -1826,21 +1848,27 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
   // failure — upload error, poll timeout, transient 5xx — kill the rest of the batch; that's
   // the whole point of iterating a folder instead of hand-calling upload once per file.
   for (const f of files) {
+    const emit = (event = {}) => {
+      if (onProgress) onProgress({ total: files.length, completed: completedFiles, current: n + 1, file: path.basename(f), ...event });
+    };
     try {
+      emit({ phase: 'uploading' });
       const job = await hivemindUploadFile(f, org, cfg, opts);
       if (job.duplicate) {
         duplicates++; // already ingested server-side — a skip, not a failure
+        emit({ phase: 'duplicate' });
         // Still worth mirroring locally: "already in your knowledge base" describes the SERVER,
         // not this machine — the exact real gap this feature exists to close (a file dedup'd
         // from an earlier session/machine, but this shard has never seen it).
         if (mirrorLocal && job.existingDocumentId) {
-          try { mirrored += await mirrorHivemindDocumentLocally(job.existingDocumentId, path.basename(f), org, cfg); }
+          try { emit({ phase: 'mirroring' }); mirrored += await mirrorHivemindDocumentLocally(job.existingDocumentId, path.basename(f), org, cfg); }
           catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
         }
       } else {
         let result;
         try {
-          result = await hivemindPollJob(job.job_id, cfg);
+          emit({ phase: job.status || 'queued', jobId: job.job_id, counts: job.counts });
+          result = await hivemindPollJob(job.job_id, cfg, { onStatus: (status) => emit({ phase: status.status, jobId: job.job_id, counts: status.counts }) });
         } catch (e) {
           // Poll window (60s default) elapsed — a real, legitimate outcome for OCR/vision
           // extraction on a large PDF/PPTX, not an error. The upload already succeeded
@@ -1848,18 +1876,19 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
           console.error(`icarus: ${path.basename(f)} still processing past the wait window — ${e.message}`);
           pending++;
           n++;
-          if (onProgress) onProgress(n);
+          emit({ phase: 'pending', current: n, jobId: job.job_id });
           continue;
         }
         if (result.status === 'failed') {
           console.error(`icarus: HIVEMIND ingest failed for ${f} — ${result.error || 'unknown error'}`);
           failed++;
+          emit({ phase: 'failed', jobId: job.job_id, counts: result.counts });
         } else {
           totalMemories += result.counts?.memories || 0;
           totalSegments += result.counts?.segments || 0;
           let mirrorOk = false;
           if (mirrorLocal && result.document_id) {
-            try {
+            try { emit({ phase: 'mirroring', jobId: job.job_id, counts: result.counts });
               mirrored += await mirrorHivemindDocumentLocally(result.document_id, path.basename(f), org, cfg);
               mirrorOk = true;
             } catch (e) { console.error(`icarus: local mirror failed for ${path.basename(f)} — ${e.message}`); }
@@ -1869,7 +1898,7 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
           // elsewhere). Only after a successful local mirror — purging before confirming the
           // extracted text actually landed locally would lose it outright on a mirror failure.
           if (purgeCloud && mirrorOk && result.document_id) {
-            try { await purgeHivemindDocument(result.document_id, cfg); purged++; }
+            try { emit({ phase: 'purging', jobId: job.job_id, counts: result.counts }); await purgeHivemindDocument(result.document_id, cfg); purged++; }
             catch (e) { console.error(`icarus: cloud purge failed for ${path.basename(f)} — ${e.message} (mirrored locally either way, but a server-side copy remains)`); }
           }
         }
@@ -1877,9 +1906,11 @@ async function hivemindIngestDir(dir, org, cfg, onProgress, opts = {}) {
     } catch (e) {
       console.error(`icarus: ${path.basename(f)} — ${e.message}`);
       failed++;
+      emit({ phase: 'failed' });
     }
     n++;
-    if (onProgress) onProgress(n);
+    completedFiles++;
+    emit({ phase: 'complete', current: n });
   }
   return {
     files: files.length, chunks: totalSegments || totalMemories, live: totalMemories,
@@ -2010,7 +2041,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.36';
+const ICARUS_VERSION = '0.3.37';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2089,7 +2120,7 @@ module.exports = {
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory,

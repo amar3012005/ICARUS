@@ -19,7 +19,7 @@ const {
   HOME, CFG_PATH, loadCfg, saveCfg, statusReport, ingestDir, recallQuery, embeddingsConfigured,
   llmConfigured, skillSave, skillList, parseClaudeTranscript,
   signingEnabled, verifySlot, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, attemptHivemindOAuth,
+  hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
   hivemindSaveMemory, saveLocalMemory,
@@ -83,7 +83,7 @@ async function cmdIngest(flags, cfg) {
   if (viaHivemind) {
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"${flags['no-mirror'] ? '' : c.dim(' (mirroring segments into the local shard too)')}`)));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} files`), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
+    const result = await hivemindIngestDir(dir, org, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'] });
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
     if (result.pending) notes.push(`${result.pending} still processing (check icarus status/HIVEMIND later)`);
