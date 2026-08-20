@@ -686,6 +686,30 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_skill_outcome',
+    {
+      title: 'Record a terminal native outcome for an active harness procedure',
+      description: 'Use only after the task ends sealed, blocked, or failed and has checkpointed the active skill id. ICARUS derives pass/fail from the task lifecycle; the agent cannot provide an arbitrary result. Three applicable failures or one safety violation demote the skill on the next governed review.',
+      inputSchema: { repo: z.string().default(process.cwd()), skill_id: z.string(), task_id: z.string() },
+    },
+    async ({ repo, skill_id, task_id }) => {
+      try { return textResult(harnessFor().recordActiveSkillOutcome(repo, skill_id, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_harness_skill_review',
+    {
+      title: 'Apply deterministic active-skill health policy',
+      description: 'Demotes only unsafe or stale active procedures: three attributable native failures, a recorded safety violation, incompatible policy/schema, or proof expiry beyond the 30-day grace window. It never promotes a skill.',
+      inputSchema: { repo: z.string().default(process.cwd()) },
+    },
+    async ({ repo }) => {
+      try { return textResult(harnessFor().reviewActiveSkills(repo)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_retire',
     {
       title: 'Retire a governed harness procedure with an audit trail',

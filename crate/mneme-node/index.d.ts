@@ -21,6 +21,8 @@ export declare function harnessAttestTaskCriterion(repoRoot: string, taskId: str
 export declare function harnessSealTask(repoRoot: string, taskId: string): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
 export declare function harnessEvaluateSkill(repoRoot: string, skillId: string, replayTaskId: string): string
+export declare function harnessRecordActiveSkillOutcome(repoRoot: string, skillId: string, taskId: string): string
+export declare function harnessReviewActiveSkills(repoRoot: string): string
 export declare function harnessPromoteSkill(repoRoot: string, skillId: string, ownerApproval?: string | undefined | null): string
 export declare function harnessRetireSkill(repoRoot: string, skillId: string, reason: string, ownerApproval?: string | undefined | null): string
 export declare function harnessAmendTaskContract(repoRoot: string, taskId: string, contractJson: string, reason: string, approvalId?: string | undefined | null): string

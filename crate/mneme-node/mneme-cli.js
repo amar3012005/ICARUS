@@ -330,12 +330,27 @@ function cmdHarnessSkill(flags) {
     if (evaluation.status !== 'pass') process.exitCode = 3;
     return;
   }
+  if (subcommand === 'outcome') {
+    if (!skillId || !flags.task) throw new Error('usage: icarus harness-skill outcome <skill-id> --task <TASK-ID> [--repo <dir>]');
+    const outcome = harness.recordActiveSkillOutcome(repo, skillId, flags.task);
+    console.log(outcome.status === 'pass' ? ok(`recorded native skill outcome for ${c.path(skillId)}`) : err(`recorded failed native skill outcome for ${c.path(skillId)}`));
+    for (const issue of outcome.issues || []) console.log(c.dim(`  · ${issue}`));
+    if (outcome.status !== 'pass') process.exitCode = 3;
+    return;
+  }
+  if (subcommand === 'review') {
+    const review = harness.reviewActiveSkills(repo);
+    if (review.demoted_skill_ids.length) console.log(err(`demoted ${review.demoted_skill_ids.length} unsafe or stale harness skill(s): ${review.demoted_skill_ids.join(', ')}`));
+    else console.log(ok(`reviewed ${review.scanned_skill_ids.length} active harness skill(s); no demotions`));
+    for (const issue of review.issues || []) console.log(c.dim(`  · ${issue}`));
+    return;
+  }
   if (subcommand === 'retire') {
     if (!skillId || !flags.reason) throw new Error('usage: icarus harness-skill retire <skill-id> --reason <reason> --approval <id> [--repo <dir>]');
     console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
     return;
   }
-  throw new Error('usage: icarus harness-skill <propose|evaluate|promote|retire>');
+  throw new Error('usage: icarus harness-skill <propose|evaluate|outcome|review|promote|retire>');
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1064,6 +1079,12 @@ async function main() {
   icarus harness-skill evaluate <id> --replay-task <TASK-ID> [--repo <dir>]
                                         record a native evaluation of an independently sealed
                                         replay task that checkpointed the proposed skill id.
+  icarus harness-skill outcome <id> --task <TASK-ID> [--repo <dir>]
+                                        record the native terminal outcome of a task that
+                                        checkpointed an active skill; outcome is never agent prose.
+  icarus harness-skill review [--repo <dir>]
+                                        demote active skills with 3 native failures, a safety
+                                        violation, incompatible policy/schema, or stale proof.
   icarus harness-skill promote <id> [--approval <id>] [--repo <dir>]
                                         activate a replay-verified procedure. High-risk skills
                                         require an attributable owner approval.

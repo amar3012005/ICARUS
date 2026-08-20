@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
-  validateAgentArguments, reconcileRun, evaluateSkill,
+  validateAgentArguments, reconcileRun, evaluateSkill, recordActiveSkillOutcome, reviewActiveSkills,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -87,4 +87,24 @@ test('skill replay evaluation remains a native receipt operation', () => {
   });
   assert.equal(evaluateSkill('/repo', 'review', 'TASK-9').status, 'pass');
   assert.deepEqual(calls, [['/repo', 'review', 'TASK-9']]);
+});
+
+test('active skill outcomes and demotion reviews remain native receipt operations', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessRecordActiveSkillOutcome(...args) {
+      calls.push(['outcome', args]);
+      return JSON.stringify({ skill_id: 'review', replay_task_id: 'TASK-9', status: 'fail' });
+    },
+    harnessReviewActiveSkills(...args) {
+      calls.push(['review', args]);
+      return JSON.stringify({ scanned_skill_ids: ['review'], demoted_skill_ids: ['review'], issues: [] });
+    },
+  });
+  assert.equal(recordActiveSkillOutcome('/repo', 'review', 'TASK-9').status, 'fail');
+  assert.deepEqual(reviewActiveSkills('/repo').demoted_skill_ids, ['review']);
+  assert.deepEqual(calls, [
+    ['outcome', ['/repo', 'review', 'TASK-9']],
+    ['review', ['/repo']],
+  ]);
 });

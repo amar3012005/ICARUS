@@ -209,6 +209,29 @@ pub fn harness_evaluate_skill(
 }
 
 #[napi]
+pub fn harness_record_active_skill_outcome(
+    repo_root: String,
+    skill_id: String,
+    task_id: String,
+) -> Result<String> {
+    let outcome =
+        harness::record_active_skill_outcome(std::path::Path::new(&repo_root), &skill_id, &task_id)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(outcome).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_review_active_skills(repo_root: String) -> Result<String> {
+    let review = harness::review_active_skills(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(review).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_promote_skill(
     repo_root: String,
     skill_id: String,

@@ -471,6 +471,18 @@ pub struct SkillEvaluation {
     pub issues: Vec<String>,
 }
 
+/// Result of the deterministic active-skill health pass. A demotion changes the tracked active
+/// record and writes a runtime audit archive; it never erases the procedure or its evidence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillHealthReview {
+    pub schema_version: u32,
+    pub reviewed_at: String,
+    pub scanned_skill_ids: Vec<String>,
+    pub demoted_skill_ids: Vec<String>,
+    pub issues: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -1116,6 +1128,9 @@ pub fn prepare_run(
             "workspace mode must be `isolated` or `current`",
         ));
     }
+    // A managed launch is also the natural enforcement point for automatic demotions. It runs
+    // before the context is compiled, so a stale or failed procedure cannot influence this run.
+    review_active_skills(&root)?;
     let task = task_status(&root, task_id)?;
     if task.status != "planned" {
         return Err(HarnessError::invalid(format!(
@@ -2202,6 +2217,38 @@ fn skill_evaluation_path(root: &Path, skill_id: &str, replay_task_id: &str) -> P
         .join(format!("{replay_task_id}.json"))
 }
 
+fn active_skill_path(root: &Path, skill_id: &str) -> PathBuf {
+    root.join(".icarus/skills/active")
+        .join(format!("{skill_id}.json"))
+}
+
+fn skill_outcome_path(root: &Path, skill_id: &str, task_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("skills/outcomes")
+        .join(skill_id)
+        .join(format!("{task_id}.json"))
+}
+
+fn native_skill_outcomes(root: &Path, skill: &HarnessSkill) -> Result<Vec<SkillEvaluation>> {
+    let directory = runtime_root(root).join("skills/outcomes").join(&skill.id);
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut outcomes = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let outcome: SkillEvaluation = serde_json::from_reader(File::open(entry.path())?)?;
+        if outcome.schema_version == 1 && outcome.skill_id == skill.id {
+            outcomes.push(outcome);
+        }
+    }
+    outcomes.sort_by(|left, right| left.replay_task_id.cmp(&right.replay_task_id));
+    Ok(outcomes)
+}
+
 fn skill_candidate_digest(skill: &HarnessSkill) -> Result<String> {
     Ok(sha256(serde_json::to_vec(skill)?.as_slice()))
 }
@@ -2298,6 +2345,229 @@ pub fn evaluate_skill(
         format!("{}\n", serde_json::to_string_pretty(&evaluation)?).as_bytes(),
     )?;
     Ok(evaluation)
+}
+
+/// Record the observed terminal outcome of an active procedure. The task itself establishes the
+/// result: only a sealed task is a pass, while a blocked or failed task is a failure. A caller
+/// cannot submit an arbitrary success/failure bit.
+pub fn record_active_skill_outcome(
+    repo_root: &Path,
+    skill_id: &str,
+    task_id: &str,
+) -> Result<SkillEvaluation> {
+    let root = canonical_root(repo_root)?;
+    let path = active_skill_path(&root, skill_id);
+    let skill: HarnessSkill = serde_json::from_reader(
+        File::open(&path).map_err(|_| HarnessError::invalid("active skill does not exist"))?,
+    )?;
+    if skill.state != "active"
+        || skill.verification.get("status").and_then(Value::as_str) != Some("verified")
+    {
+        return Err(HarnessError::invalid(
+            "only an active verified skill can receive an outcome",
+        ));
+    }
+    let task = task_status(&root, task_id)?;
+    if !matches!(task.status.as_str(), "sealed" | "blocked" | "failed") {
+        return Err(HarnessError::invalid(
+            "skill outcome requires a sealed, blocked, or failed task",
+        ));
+    }
+    let checkpoints = read_checkpoints(&root, task_id)?;
+    if !checkpoints.iter().any(|checkpoint| {
+        checkpoint
+            .input
+            .get("applied_skill_id")
+            .and_then(Value::as_str)
+            == Some(skill_id)
+    }) {
+        return Err(HarnessError::invalid(
+            "task has no checkpoint binding it to this active skill",
+        ));
+    }
+    let safety_violation = checkpoints.iter().any(|checkpoint| {
+        checkpoint
+            .input
+            .get("safety_violation")
+            .and_then(Value::as_bool)
+            == Some(true)
+            || checkpoint
+                .input
+                .get("safety_violations")
+                .and_then(Value::as_array)
+                .is_some_and(|violations| !violations.is_empty())
+    });
+    let final_path = runtime_root(&root)
+        .join("tasks")
+        .join(task_id)
+        .join("final-result.json");
+    let final_receipt = fs::read(&final_path).unwrap_or_default();
+    let mut issues = Vec::new();
+    if task.status != "sealed" {
+        issues.push(format!("task ended {0}", task.status));
+    }
+    if safety_violation {
+        issues.push("task checkpoint recorded a safety violation".into());
+    }
+    let outcome = SkillEvaluation {
+        schema_version: 1,
+        skill_id: skill.id.clone(),
+        candidate_digest: skill_candidate_digest(&skill)?,
+        replay_task_id: task.task_id.clone(),
+        replay_execution_id: task.execution_id,
+        status: if task.status == "sealed" && !safety_violation {
+            "pass"
+        } else {
+            "fail"
+        }
+        .into(),
+        source_task_ids: skill.source_tasks.clone(),
+        final_receipt_digest: sha256(&final_receipt),
+        observed_at: now_rfc3339(),
+        issues,
+    };
+    atomic_write(
+        &skill_outcome_path(&root, skill_id, task_id),
+        format!("{}\n", serde_json::to_string_pretty(&outcome)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: outcome.replay_execution_id.clone(),
+            task_id: outcome.replay_task_id.clone(),
+            event_type: "skill_outcome_recorded".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::to_value(&outcome)?,
+        },
+    )?;
+    Ok(outcome)
+}
+
+fn skill_demotion_reasons(
+    root: &Path,
+    skill: &HarnessSkill,
+    policy_version: u32,
+    now: time::OffsetDateTime,
+) -> Result<Vec<String>> {
+    let mut reasons = Vec::new();
+    if skill.schema_version != 1 {
+        reasons.push("skill schema is incompatible with the current harness".into());
+    }
+    if skill
+        .verification
+        .get("promotion")
+        .and_then(|promotion| promotion.get("policy_version"))
+        .and_then(Value::as_u64)
+        != Some(u64::from(policy_version))
+    {
+        reasons.push("skill was promoted under an incompatible policy version".into());
+    }
+    match skill.proof_expires_at.as_deref().and_then(|value| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+    }) {
+        Some(expiry) if expiry + time::Duration::days(30) < now => {
+            reasons.push("skill proof window expired more than 30 days ago".into());
+        }
+        None => reasons.push("skill proof expiry is missing or invalid".into()),
+        _ => {}
+    }
+    let outcomes = native_skill_outcomes(root, skill)?;
+    let failures = outcomes
+        .iter()
+        .filter(|outcome| outcome.status == "fail")
+        .count();
+    if failures >= 3 {
+        reasons.push(format!("skill has {failures} applicable native failures"));
+    }
+    if outcomes.iter().any(|outcome| {
+        outcome.status == "fail"
+            && outcome
+                .issues
+                .iter()
+                .any(|issue| issue.contains("safety violation"))
+    }) {
+        reasons.push("a native outcome recorded a safety violation".into());
+    }
+    Ok(reasons)
+}
+
+/// Apply the deterministic skill-health policy. This is the only automatic authority change in
+/// the skill lifecycle: it can demote an unsafe/stale procedure, never promote one.
+pub fn review_active_skills(repo_root: &Path) -> Result<SkillHealthReview> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let reviewed_at = now_rfc3339();
+    let now = time::OffsetDateTime::now_utc();
+    let directory = root.join(".icarus/skills/active");
+    let mut paths: Vec<_> = fs::read_dir(&directory)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())))
+        .filter(|path| {
+            path.is_file()
+                && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        })
+        .collect();
+    paths.sort();
+    let mut scanned_skill_ids = Vec::new();
+    let mut demoted_skill_ids = Vec::new();
+    let mut issues = Vec::new();
+    for path in paths {
+        let mut skill: HarnessSkill = match serde_json::from_reader(File::open(&path)?) {
+            Ok(skill) => skill,
+            Err(error) => {
+                issues.push(format!("could not inspect {}: {error}", path.display()));
+                continue;
+            }
+        };
+        if skill.state != "active" {
+            continue;
+        }
+        scanned_skill_ids.push(skill.id.clone());
+        let reasons = skill_demotion_reasons(&root, &skill, manifest.policy_version, now)?;
+        if reasons.is_empty() {
+            continue;
+        }
+        let prior_verification = skill.verification.clone();
+        skill.state = "demoted".into();
+        skill.verification = json!({
+            "status": "demoted",
+            "reason": reasons,
+            "demoted_at": reviewed_at,
+            "previous_verification": prior_verification,
+        });
+        let archive = runtime_root(&root)
+            .join("skills/demoted")
+            .join(format!("{}-v{}.json", skill.id, skill.version));
+        atomic_write(
+            &archive,
+            format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+        )?;
+        atomic_write(
+            &path,
+            format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+        )?;
+        append_event(
+            &root,
+            EventInput {
+                execution_id: "skill-health".into(),
+                task_id: format!("skill:{}", skill.id),
+                event_type: "skill_demoted".into(),
+                worktree_id: "main".into(),
+                timestamp: Some(reviewed_at.clone()),
+                payload: json!({"skill_id": skill.id, "reasons": skill.verification["reason"]}),
+            },
+        )?;
+        demoted_skill_ids.push(skill.id);
+    }
+    Ok(SkillHealthReview {
+        schema_version: 1,
+        reviewed_at,
+        scanned_skill_ids,
+        demoted_skill_ids,
+        issues,
+    })
 }
 
 pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<HarnessSkill> {
@@ -2399,6 +2669,7 @@ pub fn promote_skill(
         "status": "verified",
         "promotion": {
             "approval_id": owner_approval,
+            "policy_version": load_manifest(&root)?.policy_version,
             "source_task_count": skill.source_tasks.len(),
             "successful_native_replay_count": successful_replays.len(),
             "proof_expires_at": skill.proof_expires_at,

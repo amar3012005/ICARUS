@@ -1,10 +1,10 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
     checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init, prepare_run,
-    read_snapshot, reconcile_run, record_graph_receipt, resume_task, retire_skill, seal_task,
-    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
-    TaskContract,
+    read_snapshot, reconcile_run, record_active_skill_outcome, record_graph_receipt, resume_task,
+    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
+    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
+    EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -1125,6 +1125,27 @@ fn sealed_replay_task(repo: &std::path::Path, objective: &str, skill_id: &str) -
     task.task_id
 }
 
+fn blocked_skill_task(
+    repo: &std::path::Path,
+    objective: &str,
+    skill_id: &str,
+    safety_violation: bool,
+) -> String {
+    let task = start_task(repo, objective, contract()).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo, &task.task_id, state).unwrap();
+    }
+    checkpoint_task(
+        repo,
+        &task.task_id,
+        "skill_outcome",
+        serde_json::json!({"applied_skill_id": skill_id, "safety_violation": safety_violation}),
+    )
+    .unwrap();
+    transition_task(repo, &task.task_id, "blocked").unwrap();
+    task.task_id
+}
+
 #[test]
 fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_claims() {
     let repo = repo();
@@ -1179,6 +1200,31 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
         active.verification["promotion"]["successful_native_replay_count"],
         2
     );
+    for index in 0..3 {
+        let failed = blocked_skill_task(
+            repo.path(),
+            &format!("failed replay {index}"),
+            "safe-review",
+            false,
+        );
+        assert_eq!(
+            record_active_skill_outcome(repo.path(), "safe-review", &failed)
+                .unwrap()
+                .status,
+            "fail"
+        );
+    }
+    let review = review_active_skills(repo.path()).unwrap();
+    assert_eq!(review.demoted_skill_ids, vec!["safe-review"]);
+    let demoted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".icarus/skills/active/safe-review.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(demoted["state"], "demoted");
+    assert!(repo
+        .path()
+        .join(".icarus/runtime/skills/demoted/safe-review-v1.json")
+        .exists());
 }
 
 #[test]

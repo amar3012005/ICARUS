@@ -71,6 +71,8 @@ function sealTask(repoRoot, taskId) {
 
 function proposeSkill(repoRoot, skill) { return invoke('harnessProposeSkill', [repoRoot, JSON.stringify(skill)]); }
 function evaluateSkill(repoRoot, skillId, replayTaskId) { return invoke('harnessEvaluateSkill', [repoRoot, skillId, replayTaskId]); }
+function recordActiveSkillOutcome(repoRoot, skillId, taskId) { return invoke('harnessRecordActiveSkillOutcome', [repoRoot, skillId, taskId]); }
+function reviewActiveSkills(repoRoot) { return invoke('harnessReviewActiveSkills', [repoRoot]); }
 function promoteSkill(repoRoot, skillId, ownerApproval) { return invoke('harnessPromoteSkill', [repoRoot, skillId, ownerApproval]); }
 function retireSkill(repoRoot, skillId, reason, ownerApproval) { return invoke('harnessRetireSkill', [repoRoot, skillId, reason, ownerApproval]); }
 
@@ -115,6 +117,8 @@ module.exports = {
   sealTask,
   proposeSkill,
   evaluateSkill,
+  recordActiveSkillOutcome,
+  reviewActiveSkills,
   promoteSkill,
   retireSkill,
   amendTaskContract,
