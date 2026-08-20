@@ -108,6 +108,22 @@ async function cmdIngest(flags, cfg) {
   console.log(`\n${ok(`ingested ${c.bold(result.chunks)} chunks from ${result.files} files into ${c.path(org)} (${result.live} live, mode=${result.mode})`)}`);
 }
 
+async function cmdHarness(flags) {
+  const subcommand = flags._[0];
+  if (subcommand !== 'init') throw new Error('usage: icarus harness init [--agent claude|codex|cursor|grok|all] [--repo <dir>]');
+  const requested = flags.agent === 'all'
+    ? ['claude', 'codex', 'cursor', 'grok']
+    : (flags.agent ? flags.agent.split(',').map((agent) => agent.trim()).filter(Boolean) : []);
+  const result = require('./harness.js').initHarness(flags.repo || process.cwd(), { agents: requested });
+  if (result.created) {
+    console.log(ok(`initialized ICARUS Harness (${result.manifest.repo_id})`));
+    console.log(c.dim(`  tracked contract: .icarus/manifest.yaml  ·  runtime: .icarus/runtime/`));
+    if (result.graph_migrated) console.log(c.dim('  copied existing .icarus-graph/graph.db into the runtime graph store (legacy graph retained)'));
+  } else {
+    console.log(ok(`ICARUS Harness already initialized (${result.manifest.repo_id})`));
+  }
+}
+
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
 // connection state. Real reason, not a style choice: an actual test session against a real
 // HIVEMIND org saw completely unrelated OTHER users'/orgs' private content come back for this
@@ -766,6 +782,7 @@ async function main() {
         else throw new Error('usage: icarus hook session-end   (reads Claude Code\'s SessionEnd JSON payload from stdin)');
         break;
       }
+      case 'harness': await cmdHarness(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -852,6 +869,10 @@ async function main() {
                                         SQLite storage) — JS/TS + Rust for now, no Python/uvx dep
   icarus graph status --repo <dir>     node/edge/file counts for the built graph
   icarus graph query --kind <callers_of|callees_of|imports_of|find> --name <symbol> [--repo <dir>]
+  icarus harness init [--agent claude|codex|cursor|grok|all] [--repo <dir>]
+                                        initialize the deterministic repository harness: tracked
+                                        manifest/policy/schemas plus ignored runtime state. No LLM
+                                        calls are made; existing graph data is copied safely.
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too
