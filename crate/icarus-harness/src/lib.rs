@@ -441,6 +441,24 @@ pub struct HarnessSkill {
     pub verification: Value,
 }
 
+/// A native record of an independently sealed task used to evaluate a proposed procedure.
+/// Candidate-provided `replay_results` remain retained for backwards-compatible display only;
+/// they never grant promotion authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillEvaluation {
+    pub schema_version: u32,
+    pub skill_id: String,
+    pub candidate_digest: String,
+    pub replay_task_id: String,
+    pub replay_execution_id: String,
+    pub status: String,
+    pub source_task_ids: Vec<String>,
+    pub final_receipt_digest: String,
+    pub observed_at: String,
+    pub issues: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -2147,6 +2165,118 @@ fn skill_contains_secret(skill: &HarnessSkill) -> bool {
     .iter()
     .any(|needle| material.contains(needle))
 }
+
+fn proposed_skill_path(root: &Path, skill_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("skills/proposed")
+        .join(format!("{skill_id}.json"))
+}
+
+fn skill_evaluation_path(root: &Path, skill_id: &str, replay_task_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("skills/evaluations")
+        .join(skill_id)
+        .join(format!("{replay_task_id}.json"))
+}
+
+fn skill_candidate_digest(skill: &HarnessSkill) -> Result<String> {
+    Ok(sha256(serde_json::to_vec(skill)?.as_slice()))
+}
+
+fn native_skill_evaluations(root: &Path, skill: &HarnessSkill) -> Result<Vec<SkillEvaluation>> {
+    let directory = runtime_root(root)
+        .join("skills/evaluations")
+        .join(&skill.id);
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let digest = skill_candidate_digest(skill)?;
+    let mut evaluations = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let evaluation: SkillEvaluation = serde_json::from_reader(File::open(entry.path())?)?;
+        if evaluation.schema_version == 1
+            && evaluation.skill_id == skill.id
+            && evaluation.candidate_digest == digest
+        {
+            evaluations.push(evaluation);
+        }
+    }
+    evaluations.sort_by(|left, right| left.replay_task_id.cmp(&right.replay_task_id));
+    Ok(evaluations)
+}
+
+/// Evaluate a proposed procedure against a separate, sealed replay task. ICARUS does not call a
+/// model here: the coding agent performs the replay, then this native gate proves that its task
+/// sealed with ICARUS receipts and explicitly checkpointed the candidate it applied.
+pub fn evaluate_skill(
+    repo_root: &Path,
+    skill_id: &str,
+    replay_task_id: &str,
+) -> Result<SkillEvaluation> {
+    let root = canonical_root(repo_root)?;
+    let skill: HarnessSkill = serde_json::from_reader(
+        File::open(proposed_skill_path(&root, skill_id))
+            .map_err(|_| HarnessError::invalid("proposed skill does not exist"))?,
+    )?;
+    if skill_contains_secret(&skill) {
+        return Err(HarnessError::invalid(
+            "skill candidate appears to contain a secret",
+        ));
+    }
+    let replay_task = task_status(&root, replay_task_id)?;
+    let mut issues = Vec::new();
+    if skill
+        .source_tasks
+        .iter()
+        .any(|source| source == replay_task_id)
+    {
+        issues.push("replay task must be independent of the candidate source tasks".into());
+    }
+    if replay_task.status != "sealed" {
+        issues.push("replay task is not sealed".into());
+    }
+    let checkpoints = read_checkpoints(&root, replay_task_id)?;
+    let applied = checkpoints.iter().any(|checkpoint| {
+        checkpoint
+            .input
+            .get("applied_skill_id")
+            .and_then(Value::as_str)
+            == Some(skill_id)
+    });
+    if !applied {
+        issues.push("replay task has no checkpoint binding it to this proposed skill".into());
+    }
+    let final_path = runtime_root(&root)
+        .join("tasks")
+        .join(replay_task_id)
+        .join("final-result.json");
+    let final_receipt = fs::read(&final_path).unwrap_or_default();
+    if final_receipt.is_empty() {
+        issues.push("replay task final receipt is missing".into());
+    }
+    let evaluation = SkillEvaluation {
+        schema_version: 1,
+        skill_id: skill.id.clone(),
+        candidate_digest: skill_candidate_digest(&skill)?,
+        replay_task_id: replay_task.task_id.clone(),
+        replay_execution_id: replay_task.execution_id,
+        status: if issues.is_empty() { "pass" } else { "fail" }.into(),
+        source_task_ids: skill.source_tasks.clone(),
+        final_receipt_digest: sha256(&final_receipt),
+        observed_at: now_rfc3339(),
+        issues,
+    };
+    atomic_write(
+        &skill_evaluation_path(&root, skill_id, replay_task_id),
+        format!("{}\n", serde_json::to_string_pretty(&evaluation)?).as_bytes(),
+    )?;
+    Ok(evaluation)
+}
+
 pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<HarnessSkill> {
     let root = canonical_root(repo_root)?;
     load_manifest(&root)?;
@@ -2173,9 +2303,7 @@ pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<Harnes
     skill.schema_version = 1;
     skill.state = "proposed".into();
     skill.version = skill.version.max(1);
-    let path = runtime_root(&root)
-        .join("skills/proposed")
-        .join(format!("{}.json", skill.id));
+    let path = proposed_skill_path(&root, &skill.id);
     atomic_write(
         &path,
         format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
@@ -2188,9 +2316,7 @@ pub fn promote_skill(
     owner_approval: Option<String>,
 ) -> Result<HarnessSkill> {
     let root = canonical_root(repo_root)?;
-    let proposed = runtime_root(&root)
-        .join("skills/proposed")
-        .join(format!("{skill_id}.json"));
+    let proposed = proposed_skill_path(&root, skill_id);
     let mut skill: HarnessSkill = serde_json::from_reader(
         File::open(&proposed)
             .map_err(|_| HarnessError::invalid("proposed skill does not exist"))?,
@@ -2215,17 +2341,21 @@ pub fn promote_skill(
             "high-risk skill promotion requires owner approval",
         ));
     }
-    if !high_risk
-        && (skill.source_tasks.len() < 3
-            || skill
-                .replay_results
-                .iter()
-                .filter(|result| result.get("success").and_then(Value::as_bool) == Some(true))
-                .count()
-                < 2
-            || skill.confidence <= 0.0)
-    {
-        return Err(HarnessError::invalid("low-risk promotion requires 3 sealed sources, 2 successful replays, and measurable confidence"));
+    let evaluations = native_skill_evaluations(&root, &skill)?;
+    let successful_replays: BTreeSet<_> = evaluations
+        .iter()
+        .filter(|evaluation| evaluation.status == "pass")
+        .map(|evaluation| evaluation.replay_task_id.clone())
+        .collect();
+    if high_risk && successful_replays.is_empty() {
+        return Err(HarnessError::invalid(
+            "high-risk promotion requires at least one successful native replay evaluation",
+        ));
+    }
+    if !high_risk && (skill.source_tasks.len() < 3 || successful_replays.len() < 2) {
+        return Err(HarnessError::invalid(
+            "low-risk promotion requires 3 sealed sources and 2 successful native replay evaluations",
+        ));
     }
     for task_id in &skill.source_tasks {
         if task_status(&root, task_id)?.status != "sealed" {
@@ -2240,7 +2370,8 @@ pub fn promote_skill(
         "promotion": {
             "approval_id": owner_approval,
             "source_task_count": skill.source_tasks.len(),
-            "successful_replay_count": skill.replay_results.iter().filter(|result| result.get("success").and_then(Value::as_bool) == Some(true)).count(),
+            "successful_native_replay_count": successful_replays.len(),
+            "evaluation_receipts": evaluations.iter().filter(|evaluation| evaluation.status == "pass").map(|evaluation| format!(".icarus/runtime/skills/evaluations/{}/{}.json", skill.id, evaluation.replay_task_id)).collect::<Vec<_>>(),
         }
     });
     let active = root

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   initHarness, doctor, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
-  validateAgentArguments, reconcileRun,
+  validateAgentArguments, reconcileRun, evaluateSkill,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -75,4 +75,16 @@ test('isolated-worktree reconciliation remains a thin native transport', () => {
   });
   assert.equal(reconcileRun('/repo', 'TASK-1').reconciled, true);
   assert.deepEqual(calls, [['/repo', 'TASK-1']]);
+});
+
+test('skill replay evaluation remains a native receipt operation', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessEvaluateSkill(...args) {
+      calls.push(args);
+      return JSON.stringify({ skill_id: 'review', replay_task_id: 'TASK-9', status: 'pass' });
+    },
+  });
+  assert.equal(evaluateSkill('/repo', 'review', 'TASK-9').status, 'pass');
+  assert.deepEqual(calls, [['/repo', 'review', 'TASK-9']]);
 });

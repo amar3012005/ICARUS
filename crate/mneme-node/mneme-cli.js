@@ -322,12 +322,20 @@ function cmdHarnessSkill(flags) {
     console.log(ok(`activated harness skill ${harness.promoteSkill(repo, skillId, flags.approval).id}`));
     return;
   }
+  if (subcommand === 'evaluate') {
+    if (!skillId || !flags['replay-task']) throw new Error('usage: icarus harness-skill evaluate <skill-id> --replay-task <TASK-ID> [--repo <dir>]');
+    const evaluation = harness.evaluateSkill(repo, skillId, flags['replay-task']);
+    console.log(evaluation.status === 'pass' ? ok(`recorded native replay evaluation for ${c.path(skillId)}`) : err(`replay evaluation failed for ${c.path(skillId)}`));
+    for (const issue of evaluation.issues || []) console.log(c.dim(`  · ${issue}`));
+    if (evaluation.status !== 'pass') process.exitCode = 3;
+    return;
+  }
   if (subcommand === 'retire') {
     if (!skillId || !flags.reason) throw new Error('usage: icarus harness-skill retire <skill-id> --reason <reason> --approval <id> [--repo <dir>]');
     console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
     return;
   }
-  throw new Error('usage: icarus harness-skill <propose|promote|retire>');
+  throw new Error('usage: icarus harness-skill <propose|evaluate|promote|retire>');
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1053,6 +1061,9 @@ async function main() {
   icarus harness-skill propose --file <skill.json> [--repo <dir>]
                                         submit a reusable, untrusted coding procedure backed by
                                         sealed governed tasks; it cannot enter agent context yet.
+  icarus harness-skill evaluate <id> --replay-task <TASK-ID> [--repo <dir>]
+                                        record a native evaluation of an independently sealed
+                                        replay task that checkpointed the proposed skill id.
   icarus harness-skill promote <id> [--approval <id>] [--repo <dir>]
                                         activate a replay-verified procedure. High-risk skills
                                         require an attributable owner approval.

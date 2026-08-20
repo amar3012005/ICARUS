@@ -662,10 +662,22 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_skill_evaluate',
+    {
+      title: 'Record a native governed-skill replay evaluation',
+      description: 'Bind a proposed procedure to an independent sealed replay task. The task must checkpoint the applied skill id and have an ICARUS final receipt. Candidate-supplied replay claims never count toward promotion.',
+      inputSchema: { repo: z.string().default(process.cwd()), skill_id: z.string(), replay_task_id: z.string() },
+    },
+    async ({ repo, skill_id, replay_task_id }) => {
+      try { return textResult(harnessFor().evaluateSkill(repo, skill_id, replay_task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_promote',
     {
       title: 'Promote a replay-verified harness procedure',
-      description: 'Promotes only a previously proposed procedure. Low-risk procedures require three sealed source tasks, two successful replays, and confidence; high-risk procedures require an attributable owner approval. The Rust core writes verification state.',
+      description: 'Promotes only a previously proposed procedure. Low-risk procedures require three sealed source tasks and two successful native replay evaluations; candidate-supplied replay claims are ignored. High-risk procedures require an attributable owner approval. The Rust core writes verification state.',
       inputSchema: { repo: z.string().default(process.cwd()), skill_id: z.string(), owner_approval: z.string().optional() },
     },
     async ({ repo, skill_id, owner_approval }) => {

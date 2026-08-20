@@ -1,8 +1,8 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
-    checkpoint_task, doctor, graph_source_fingerprint, init, prepare_run, read_snapshot,
-    reconcile_run, record_graph_receipt, resume_task, retire_skill, seal_task, start_task,
-    task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init, prepare_run,
+    read_snapshot, reconcile_run, record_graph_receipt, resume_task, retire_skill, seal_task,
+    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
     verify_task_criterion, write_snapshot, Action, EventInput, HarnessSkill, InitOptions,
     TaskContract,
 };
@@ -1090,6 +1090,86 @@ fn sealed_source_task(repo: &std::path::Path, objective: &str) -> String {
     task.task_id
 }
 
+fn sealed_replay_task(repo: &std::path::Path, objective: &str, skill_id: &str) -> String {
+    let mut replay_contract = contract();
+    replay_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'skill replay pass\\n'","required":true}
+    ]);
+    let task = start_task(repo, objective, replay_contract).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo, &task.task_id, state).unwrap();
+    }
+    checkpoint_task(
+        repo,
+        &task.task_id,
+        "skill_replay",
+        serde_json::json!({"applied_skill_id": skill_id, "open_risks": []}),
+    )
+    .unwrap();
+    transition_task(repo, &task.task_id, "verifying").unwrap();
+    assert_eq!(
+        verify_task_criterion(repo, &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "pass"
+    );
+    assert!(seal_task(repo, &task.task_id).unwrap().sealed);
+    task.task_id
+}
+
+#[test]
+fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_claims() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let sources = vec![
+        sealed_source_task(repo.path(), "source one"),
+        sealed_source_task(repo.path(), "source two"),
+        sealed_source_task(repo.path(), "source three"),
+    ];
+    let skill = HarnessSkill {
+        schema_version: 0,
+        id: "safe-review".into(),
+        state: "active".into(),
+        triggers: vec!["review".into()],
+        instructions: "Run scoped checks and inspect their receipts.".into(),
+        allowed_tools: vec!["shell".into()],
+        policy_requirements: vec![],
+        verification_steps: vec!["test".into()],
+        source_tasks: sources,
+        decision_references: vec![],
+        risk: "low".into(),
+        owner: "owner".into(),
+        version: 0,
+        confidence: 1.0,
+        replay_results: vec![
+            serde_json::json!({"success":true}),
+            serde_json::json!({"success":true}),
+        ],
+        verification: serde_json::Value::Null,
+    };
+    icarus_harness::propose_skill(repo.path(), skill).unwrap();
+    assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
+    let replay_one = sealed_replay_task(repo.path(), "replay one", "safe-review");
+    let replay_two = sealed_replay_task(repo.path(), "replay two", "safe-review");
+    assert_eq!(
+        evaluate_skill(repo.path(), "safe-review", &replay_one)
+            .unwrap()
+            .status,
+        "pass"
+    );
+    assert_eq!(
+        evaluate_skill(repo.path(), "safe-review", &replay_two)
+            .unwrap()
+            .status,
+        "pass"
+    );
+    let active = icarus_harness::promote_skill(repo.path(), "safe-review", None).unwrap();
+    assert_eq!(
+        active.verification["promotion"]["successful_native_replay_count"],
+        2
+    );
+}
+
 #[test]
 fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trail() {
     let repo = repo();
@@ -1115,6 +1195,13 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
     };
     icarus_harness::propose_skill(repo.path(), skill).unwrap();
     assert!(icarus_harness::promote_skill(repo.path(), "deploy-review", None).is_err());
+    let replay = sealed_replay_task(repo.path(), "replay deployment review", "deploy-review");
+    assert_eq!(
+        icarus_harness::evaluate_skill(repo.path(), "deploy-review", &replay)
+            .unwrap()
+            .status,
+        "pass"
+    );
     let active =
         icarus_harness::promote_skill(repo.path(), "deploy-review", Some("APR-42".into())).unwrap();
     assert_eq!(active.verification["status"], "verified");
