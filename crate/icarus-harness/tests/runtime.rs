@@ -2,8 +2,8 @@ use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
     checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init,
     load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
-    record_active_skill_outcome, record_graph_receipt, resume_task, retire_skill,
-    review_active_skills, seal_task, start_task, task_status, transition_task,
+    record_active_skill_outcome, record_adapter_lifecycle, record_graph_receipt, resume_task,
+    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
     validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
     EventInput, HarnessSkill, InitOptions, TaskContract,
 };
@@ -398,6 +398,47 @@ fn resume_refuses_worktree_divergence_since_the_last_checkpoint() {
     fs::write(repo.path().join("src/changed.rs"), "changed\n").unwrap();
     let error = resume_task(repo.path(), &task.task_id).unwrap_err();
     assert!(error.to_string().contains("worktree divergence"));
+}
+
+#[test]
+fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
+    let repo = repo();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "observe adapter lifecycle", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    assert!(
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_started", None,)
+            .is_err()
+    );
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+    let started =
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_started", None)
+            .unwrap();
+    assert_eq!(started.agent, "codex");
+    assert_eq!(started.worktree_id, "current");
+    let ended =
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_ended", Some(0))
+            .unwrap();
+    assert!(ended.event_sequence > started.event_sequence);
+    assert!(
+        record_adapter_lifecycle(repo.path(), &task.task_id, "untrusted_agent_event", None,)
+            .is_err()
+    );
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
 }
 
 #[test]

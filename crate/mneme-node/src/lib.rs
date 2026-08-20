@@ -391,6 +391,28 @@ pub fn harness_authorize_action(
     )
 }
 
+/// Record a typed adapter process boundary observed by the local managed launcher. This bridge
+/// exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
+/// chain, so a presentation client cannot turn model prose into trusted execution evidence.
+#[napi]
+pub fn harness_record_adapter_lifecycle(
+    repo_root: String,
+    task_id: String,
+    event_type: String,
+    exit_code: Option<i32>,
+) -> Result<String> {
+    let receipt = harness::record_adapter_lifecycle(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &event_type,
+        exit_code,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// One recall hit returned to JS.
 #[napi(object)]
 pub struct MnemeHit {

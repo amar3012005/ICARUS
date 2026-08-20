@@ -106,6 +106,12 @@ function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
 
+// A bounded receipt created by the local launcher, not a model-reported event. Rust restricts
+// the event vocabulary and binds it to the prepared execution before appending it to the chain.
+function recordAdapterLifecycle(repoRoot, taskId, eventType, exitCode) {
+  return invoke('harnessRecordAdapterLifecycle', [repoRoot, taskId, eventType, exitCode]);
+}
+
 function __setNativeHarnessBridgeForTest(fakeBridge) {
   testBridge = fakeBridge;
 }
@@ -136,5 +142,6 @@ module.exports = {
   buildContext,
   recordGraphReceipt,
   authorizeAction,
+  recordAdapterLifecycle,
   __setNativeHarnessBridgeForTest,
 };

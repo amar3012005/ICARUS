@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 // Lazy: `mcp install`/`status`/`connect` never touch a shard, so they must not be forced to
 // load the native addon just because this file was required.
 function getMnemeStore() { return require('./index.js').MnemeStore; }
@@ -293,7 +293,57 @@ function commandOnPath(command) {
 
 // The launcher does not configure, proxy, or pay for a model. It prepares a Rust-governed
 // workspace, then starts the user's already-installed coding CLI in that directory.
-function cmdRun(flags) {
+function observeManagedAdapter(command, args, cwd, harness, repo, taskId) {
+  return new Promise((resolve, reject) => {
+    let spawned = false;
+    let lifecycleError = null;
+    let child;
+    try {
+      child = spawn(command, args, { cwd, stdio: 'inherit' });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    child.once('spawn', () => {
+      spawned = true;
+      try {
+        harness.recordAdapterLifecycle(repo, taskId, 'adapter_session_started');
+      } catch (error) {
+        // Do not permit an unobserved managed session to continue. The task remains durable and
+        // will be blocked by the caller after the child has terminated.
+        lifecycleError = error;
+        child.kill('SIGTERM');
+      }
+    });
+    child.once('error', (error) => {
+      if (!spawned) reject(error);
+    });
+    child.once('close', (code, signal) => {
+      if (!spawned) {
+        reject(new Error(`${command} exited before ICARUS observed a process start${signal ? ` (${signal})` : ''}`));
+        return;
+      }
+      if (lifecycleError) {
+        reject(lifecycleError);
+        return;
+      }
+      try {
+        harness.recordAdapterLifecycle(
+          repo,
+          taskId,
+          'adapter_session_ended',
+          Number.isInteger(code) ? code : undefined,
+        );
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      resolve({ status: code, signal });
+    });
+  });
+}
+
+async function cmdRun(flags) {
   const taskId = flags.task || flags._[0];
   const agent = flags.agent;
   if (!taskId || !agent) throw new Error('usage: icarus run --task <TASK-ID> --agent <claude|codex|cursor|grok> [--workspace isolated|current] [--acknowledge-dirty-current] [--dry-run] [--repo <dir>]');
@@ -309,7 +359,7 @@ function cmdRun(flags) {
     repo, taskId, agent, flags.workspace || 'isolated', !!flags['acknowledge-dirty-current'],
   );
   const label = preparation.compatibility_mode
-    ? 'compatibility mode: isolated workspace and lifecycle records are active; hard interception is not yet proven'
+    ? `compatibility mode: ${preparation.workspace_mode} workspace and lifecycle records are active; hard interception is not yet proven`
     : 'certified managed mode: enforcement contract passed';
   console.log(ok(`prepared ${c.path(preparation.task_id)} in ${c.path(preparation.workspace_path)}`));
   console.log(c.dim(`  ${agent} · ${label}`));
@@ -317,8 +367,20 @@ function cmdRun(flags) {
   console.log(c.dim(`  task ${preparation.task_id} remains the governing contract; refresh via icarus_context_get after material changes.`));
   if (flags['dry-run']) return;
   const task = harness.transitionTask(repo, taskId, 'executing');
-  const result = spawnSync(command, [...(preparation.launch_arguments || []), ...userArgs], { cwd: preparation.workspace_path, stdio: 'inherit' });
-  if (result.error) throw new Error(`failed to launch ${agent}: ${result.error.message}`);
+  let result;
+  try {
+    result = await observeManagedAdapter(
+      command,
+      [...(preparation.launch_arguments || []), ...userArgs],
+      preparation.workspace_path,
+      harness,
+      repo,
+      task.task_id,
+    );
+  } catch (error) {
+    harness.transitionTask(repo, task.task_id, 'blocked');
+    throw new Error(`managed ${agent} launch blocked: ${error.message}`);
+  }
   if (result.status === 0) {
     try {
       const reconciliation = harness.reconcileRun(repo, task.task_id);
@@ -332,7 +394,7 @@ function cmdRun(flags) {
     harness.transitionTask(repo, task.task_id, 'verifying');
     console.log(ok(`${c.path(task.task_id)} → verifying; run icarus task verify before sealing.`));
   } else {
-    harness.transitionTask(flags.repo || process.cwd(), task.task_id, 'blocked');
+    harness.transitionTask(repo, task.task_id, 'blocked');
     console.log(err(`${c.path(task.task_id)} blocked after ${agent} exited ${result.status ?? 'by signal'}`));
     process.exitCode = result.status || 1;
   }
@@ -1048,7 +1110,7 @@ async function main() {
       case 'policy': cmdPolicy(flags); break;
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
-      case 'run': cmdRun(flags); break;
+      case 'run': await cmdRun(flags); break;
       case 'harness-skill': cmdHarnessSkill(flags); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;

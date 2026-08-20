@@ -37,6 +37,12 @@ export declare function harnessBuildContext(repoRoot: string, taskId: string, bu
 export declare function harnessBuildContextDelta(repoRoot: string, taskId: string, checkpointSequence: number, budgetTokens: number): string
 export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFingerprint: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
+/**
+ * Record a typed adapter process boundary observed by the local managed launcher. This bridge
+ * exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
+ * chain, so a presentation client cannot turn model prose into trusted execution evidence.
+ */
+export declare function harnessRecordAdapterLifecycle(repoRoot: string, taskId: string, eventType: string, exitCode?: number | undefined | null): string
 /** One recall hit returned to JS. */
 export interface MnemeHit {
   slotId: number

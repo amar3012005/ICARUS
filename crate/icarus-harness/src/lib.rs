@@ -609,6 +609,23 @@ pub struct Authorization {
     pub reason: String,
 }
 
+/// A bounded, launcher-observed lifecycle receipt. This deliberately records only facts the
+/// ICARUS launcher can observe (a process was started or exited); it is not an agent assertion
+/// and does not stand in for pre-tool interception. Keeping the payload typed prevents a client
+/// from smuggling unreviewed model prose into the authoritative event chain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterLifecycleReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub event_type: String,
+    pub worktree_id: String,
+    pub exit_code: Option<i32>,
+    pub event_sequence: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
@@ -4295,6 +4312,75 @@ pub fn authorize_action(repo_root: &Path, task_id: &str, action: Action) -> Resu
     Ok(Authorization {
         allowed: true,
         reason: "write is authorized by the executing task contract".into(),
+    })
+}
+
+/// Record an adapter process lifecycle fact observed by the managed launcher.
+///
+/// This is intentionally narrow. `adapter_session_started` and `adapter_session_ended` prove
+/// only that the launcher observed a local adapter process boundary for the prepared execution.
+/// They do *not* grant an adapter pre-action authorization, tool-event capture, or seal
+/// interception capability. Those claims remain false until an adapter has an independently
+/// verified hook/event integration.
+pub fn record_adapter_lifecycle(
+    repo_root: &Path,
+    task_id: &str,
+    event_type: &str,
+    exit_code: Option<i32>,
+) -> Result<AdapterLifecycleReceipt> {
+    if !matches!(
+        event_type,
+        "adapter_session_started" | "adapter_session_ended"
+    ) {
+        return Err(HarnessError::invalid(
+            "adapter lifecycle event must be adapter_session_started or adapter_session_ended",
+        ));
+    }
+    if event_type == "adapter_session_started" && exit_code.is_some() {
+        return Err(HarnessError::invalid(
+            "adapter_session_started cannot contain an exit code",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "adapter lifecycle receipts require an executing task",
+        ));
+    }
+    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id {
+        return Err(HarnessError::invalid(
+            "managed run preparation does not match the active task execution",
+        ));
+    }
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: event_type.into(),
+            worktree_id: run.worktree_id.clone(),
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "observation": "launcher_observed",
+                "agent": run.agent.clone(),
+                "exit_code": exit_code,
+            }),
+        },
+    )?;
+    Ok(AdapterLifecycleReceipt {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        agent: run.agent,
+        event_type: event_type.into(),
+        worktree_id: run.worktree_id,
+        exit_code,
+        event_sequence: event.sequence,
     })
 }
 
