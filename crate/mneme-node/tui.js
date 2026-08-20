@@ -247,7 +247,7 @@ function printHelp(state) {
   out(state, `  ${c.command('/help')}                                             this list`);
   out(state, `  ${c.command('/quit')} / ${c.command('ctrl+d')}                                   exit`);
   out(state, '');
-  out(state, 'Anything not starting with "/" is treated as ' + c.command('/recall <text>') + ' against the current org.');
+  out(state, 'Anything not starting with "/" is treated as ' + c.command('/chat <text>') + ' against the current org (streamed, grounded synthesis).');
 }
 
 function parseArgs(argStr) {
@@ -550,7 +550,7 @@ function redraw(state) {
   for (const d of dropdown) frame.push(`  ${m.bright(d.cmd)} ${m.faint(d.hint)}`);
   frame.push(state.scrollOffset > 0
     ? m.faint(`↑ scrolled up ${state.scrollOffset} lines — PgDn or scroll down to return to live output`)
-    : m.faint('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history, PgUp/wheel scrolls back.'));
+    : m.faint('Type a command, or plain text to chat. Tab completes, ↑/↓ browse history, PgUp/wheel scrolls back.'));
   const { lines: inputLines, cursorCol } = inputBoxFrame(state, cols);
   frame.push(...inputLines);
 
@@ -750,7 +750,7 @@ async function run() {
 }
 
 async function dispatch(line, state, cfg) {
-  if (!line.startsWith('/')) return dispatch(`/recall ${line}`, state, cfg);
+  if (!line.startsWith('/')) return dispatch(`/chat ${line}`, state, cfg);
   const spaceIdx = line.indexOf(' ');
   const cmd = (spaceIdx === -1 ? line.slice(1) : line.slice(1, spaceIdx)).toLowerCase();
   const argStr = spaceIdx === -1 ? '' : line.slice(spaceIdx + 1);
@@ -788,8 +788,10 @@ async function dispatch(line, state, cfg) {
       const query = argStr.replace(/\s--org\s+[^\s]+/, '').trim();
       if (!query) { out(state, err('usage: /chat <query> [--org name]')); break; }
       out(state, c.running('  recalling local evidence and synthesizing...'));
-      const result = await chatWithOpenRouter(query, org, cfg);
-      out(state, `\n${heading(`chat · ${result.model}`)}\n\n${result.answer}`);
+      out(state, `\n${heading(`chat · ${resolveSynthesisModel(cfg)}`)}\n`);
+      const result = await chatWithOpenRouter(query, org, cfg, { onToken: (token) => writeToTranscript(state, token) });
+      // Flush the final partial token buffer before printing the grounding footer.
+      out(state, '');
       out(state, c.dim(`\n  grounded in ${result.hits.length} local recall result(s); source markers [n] refer to that recalled evidence.`));
       break;
     }

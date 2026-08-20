@@ -1,7 +1,7 @@
 'use strict';
 // Regression coverage for the user-facing OpenRouter model/chat layer.
 const assert = require('assert');
-const { DEFAULT_OPENROUTER_SYNTHESIS_MODEL, resolveSynthesisModel, selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel } = require('./cli-lib.js');
+const { DEFAULT_OPENROUTER_SYNTHESIS_MODEL, resolveSynthesisModel, selectOpenRouterModels, buildGroundedChatRequest, reasoningForModel, consumeOpenRouterSse } = require('./cli-lib.js');
 
 const models = [
   { id: 'acme/vision', name: 'Vision', architecture: { output_modalities: ['image'] }, supported_parameters: [] },
@@ -23,9 +23,17 @@ const request = buildGroundedChatRequest('Who is Kruti?', [
   { score: 0.7, text: 'Kruti works on memory systems.' },
 ], { model: 'deepseek/flash', temperature: 0.2, maxTokens: 300, thinking: 'high' }, models[1]);
 assert.strictEqual(request.model, 'deepseek/flash');
+assert.strictEqual(request.stream, true);
 assert.strictEqual(request.temperature, 0.2);
 assert.deepStrictEqual(request.reasoning, { effort: 'high', exclude: true });
 assert.match(request.messages[0].content, /insufficient evidence/i);
 assert.match(request.messages[1].content, /\[1\] Kruti is a researcher\./);
 assert.match(request.messages[1].content, /Who is Kruti\?/);
+
+const streamed = [];
+let remainder = consumeOpenRouterSse('data: {"choices":[{"delta":{"content":"Hel', (token) => streamed.push(token));
+assert.match(remainder, /Hel$/);
+remainder = consumeOpenRouterSse(remainder + 'lo"}}]}\r\n\r\ndata: {"choices":[{"delta":{"content":" world"}}]}\r\ndata: [DONE]\r\n', (token) => streamed.push(token));
+assert.strictEqual(remainder, '');
+assert.deepStrictEqual(streamed, ['Hello', ' world']);
 console.log('LLM_CHAT_OK');

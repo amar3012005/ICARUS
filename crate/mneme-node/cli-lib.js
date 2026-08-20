@@ -549,12 +549,31 @@ function buildGroundedChatRequest(question, hits, settings, modelMeta) {
     { role: 'system', content: 'You are ICARUS, a grounded memory synthesizer. Answer only from the supplied recalled memories. Cite every factual statement with its source number, such as [1]. If the memories do not establish the answer, say "I have insufficient evidence in local memory." Do not invent people, relationships, or facts.' },
     { role: 'user', content: `Recalled memories:\n${sources || '(none)'}\n\nQuestion: ${question}` },
   ];
-  const request = { model: settings.model, messages, temperature: settings.temperature ?? 0.2, max_tokens: settings.maxTokens ?? 800 };
+  // Streaming is deliberately not optional for ICARUS synthesis: rendering the first token as
+  // soon as it arrives is materially faster than waiting for a complete RAG answer.
+  const request = { model: settings.model, messages, temperature: settings.temperature ?? 0.2, max_tokens: settings.maxTokens ?? 800, stream: true };
   const reasoning = reasoningForModel(modelMeta, settings.thinking);
   if (reasoning) request.reasoning = reasoning;
   return request;
 }
-async function chatWithOpenRouter(question, org, cfg, { topK = 8 } = {}) {
+function consumeOpenRouterSse(buffer, onToken) {
+  const lines = buffer.split(/\r?\n/);
+  const remainder = lines.pop();
+  for (const line of lines) {
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const token = JSON.parse(payload)?.choices?.[0]?.delta?.content;
+      if (typeof token === 'string' && token) onToken(token);
+    } catch (_) {
+      // A malformed provider event must not make a grounded answer disappear. The next valid
+      // event still renders; incomplete events remain in `remainder` until their newline arrives.
+    }
+  }
+  return remainder;
+}
+async function chatWithOpenRouter(question, org, cfg, { topK = 8, onToken = () => {} } = {}) {
   if (!openRouterApiKey(cfg)) throw new Error('no LLM API key set — use /llm-api <openrouter-api-key> and then try again');
   if (cfg.llm?.provider && cfg.llm.provider !== 'openrouter') throw new Error('chat requires an OpenRouter key — use /llm-api <openrouter-api-key>');
   const hits = await recallQuery(question, org, cfg, topK);
@@ -566,8 +585,15 @@ async function chatWithOpenRouter(question, org, cfg, { topK = 8 } = {}) {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${openRouterApiKey(cfg)}` }, body: JSON.stringify(request),
   });
   if (!res.ok) throw new Error(`OpenRouter chat ${res.status}: ${await res.text()}`);
-  const body = await res.json();
-  const answer = body.choices?.[0]?.message?.content?.trim();
+  if (!res.body) throw new Error('OpenRouter did not return a streaming response body');
+  const decoder = new TextDecoder();
+  let remainder = '';
+  let answer = '';
+  const emit = (token) => { answer += token; onToken(token); };
+  for await (const chunk of res.body) {
+    remainder = consumeOpenRouterSse(remainder + decoder.decode(chunk, { stream: true }), emit);
+  }
+  remainder = consumeOpenRouterSse(remainder + decoder.decode(), emit);
   if (!answer) throw new Error('OpenRouter returned no chat content');
   return { answer, hits, model };
 }
@@ -1984,7 +2010,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.35';
+const ICARUS_VERSION = '0.3.36';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2059,7 +2085,7 @@ module.exports = {
   ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   OPENROUTER_KEYCHAIN_SERVICE, DEFAULT_OPENROUTER_SYNTHESIS_MODEL, openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel,
-  selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, chatWithOpenRouter,
+  selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, consumeOpenRouterSse, chatWithOpenRouter,
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
