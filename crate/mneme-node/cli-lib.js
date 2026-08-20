@@ -1058,22 +1058,6 @@ function rrfMerge(listA, listB, k = 60) {
   return [...merged.values()].sort((a, b) => b.rrfScore - a.rrfScore);
 }
 
-// A cross-encoder is a useful second opinion, never authority to erase an exact local lexical
-// match. This protects named entities (for example `solvis`) from a remote reranker that returns
-// a plausible-but-unrelated passage. Only terms of four+ characters qualify, and only records
-// already returned by local BM25 can be anchored.
-function preserveLexicalAnchors(query, reranked, lexicalHits, topK) {
-  const terms = [...new Set(String(query).toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) || [])];
-  if (!terms.length) return reranked.slice(0, topK);
-  const anchor = lexicalHits.find((hit) => {
-    const text = String(hit.text || '').toLowerCase();
-    return terms.some((term) => text.includes(term));
-  });
-  if (!anchor) return reranked.slice(0, topK);
-  const anchored = { ...anchor, lexicalAnchor: true, mode: 'hybrid-reranked' };
-  return [anchored, ...reranked.filter((hit) => hit.text !== anchor.text)].slice(0, topK);
-}
-
 /** Recall `topK` memories for `query` in `org` — REAL parallel hybrid retrieval, always: dense
  * (HNSW, when a query vector is available) and lexical (BM25) run CONCURRENTLY against the same
  * wide candidate window, then merge via Reciprocal Rank Fusion (rrfMerge above) — this is the
@@ -1175,8 +1159,7 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
     }));
   }
   // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
-  const reranked = await rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK);
-  return preserveLexicalAnchors(query, reranked, lexicalHits, topK);
+  return rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK);
 }
 
 // "ICARUS v3" boundary starts here: v2 is the local `.amr` filesystem engine above (its own
@@ -2140,7 +2123,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.39';
+const ICARUS_VERSION = '0.3.38';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2212,7 +2195,7 @@ module.exports = {
   HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, walkHivemindIngestable,
   INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, HIVEMIND_UPLOAD_EXTS, IMAGE_EXTS, scanIngestable, noIngestableFilesReason,
   pickFolderNative,
-  ingestDir, recallQuery, statusReport, preserveLexicalAnchors,
+  ingestDir, recallQuery, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   OPENROUTER_KEYCHAIN_SERVICE, DEFAULT_OPENROUTER_SYNTHESIS_MODEL, openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel,
   selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, consumeOpenRouterSse, chatWithOpenRouter,
