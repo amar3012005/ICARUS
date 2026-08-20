@@ -40,8 +40,84 @@ const SHOW_CURSOR = '\x1b[?25h';
 const CLEAR_HOME = '\x1b[2J\x1b[H';
 const moveTo = (row, col) => `\x1b[${row};${col}H`;
 
+// Monochrome night palette — the TUI is deliberately black/white only (an explicit design
+// choice for this screen), so it does NOT use theme.js's colored accents. Everything here is a
+// shade of gray on true black, which also means the layout reads correctly on any terminal
+// whose own background differs from the app's.
+const BG_BLACK = '\x1b[48;2;0;0;0m';
+const BG_BAND = '\x1b[48;2;26;26;26m';   // user-row band — grok's own prompt_band_color_for()
+const FG_BRIGHT = '\x1b[38;2;235;235;235m';
+const FG_NORMAL = '\x1b[38;2;200;200;200m';
+const FG_MUTED = '\x1b[38;2;120;120;120m';
+const FG_FAINT = '\x1b[38;2;85;85;85m';
+const BOLD = '\x1b[1m';
+const RESET = '\x1b[0m';
+
+const m = {
+  bright: (s) => `${FG_BRIGHT}${s}${RESET}`,
+  normal: (s) => `${FG_NORMAL}${s}${RESET}`,
+  muted: (s) => `${FG_MUTED}${s}${RESET}`,
+  faint: (s) => `${FG_FAINT}${s}${RESET}`,
+  bold: (s) => `${BOLD}${FG_BRIGHT}${s}${RESET}`,
+};
+
+// Big block-letter ICARUS — the exact same art install.sh's own banner() prints, so the
+// installer and the running TUI show one identical mark instead of two different logos.
+const ICARUS_BIG = [
+  ' ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗',
+  ' ██║██╔════╝██╔══██╗██╔══██╗██║   ██║██╔════╝',
+  ' ██║██║     ███████║██████╔╝██║   ██║███████╗',
+  ' ██║██║     ██╔══██║██╔══██╗██║   ██║╚════██║',
+  ' ██║╚██████╗██║  ██║██║  ██║╚██████╔╝███████║',
+  ' ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝',
+];
+
 function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
-function visLen(s) { return stripAnsi(s).length; }
+// Real display width, not code-unit length: the block-letter logo and box-drawing chrome are
+// multi-byte characters, and the ✓/✗/◆ glyphs elsewhere are too. String#length would count
+// those correctly here (they're all BMP, width-1), but an emoji in recalled memory text is a
+// real surrogate pair AND double-width — counting it as 2 code units / 1 column silently
+// shifted every border on that row. Count by code POINT, and treat the real wide ranges as 2.
+function visLen(s) {
+  const plain = stripAnsi(s);
+  let w = 0;
+  for (const ch of plain) { // iterating a string yields code points, not UTF-16 units
+    const cp = ch.codePointAt(0);
+    const wide = (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf)
+      || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff)
+      || (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60)
+      || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1f64f)
+      || (cp >= 0x1f900 && cp <= 0x1f9ff);
+    w += wide ? 2 : 1;
+  }
+  return w;
+}
+
+/** Exact port of grok-build's own format_duration (xai-grok-pager-render/src/util.rs) — the
+ * "Worked for X" marker's real formatting contract, copied rather than approximated:
+ *   <10s -> "5.2s" (one decimal) · 10-59s -> "32s" · 1-59m -> "2m5s" · 1h+ -> "1h2m" */
+function formatDuration(ms) {
+  const totalSecs = Math.floor(ms / 1000);
+  // Divergence from grok's own formatter, on purpose: its one-decimal branch renders any
+  // sub-100ms turn as a flat "0.0s". grok never hits that (its turns are LLM round-trips,
+  // always >100ms); icarus's local recall genuinely completes in single-digit milliseconds, so
+  // the same code would print a misleading "0.0s" for real work. Report ms below 100ms instead.
+  if (ms < 100) return `${Math.max(1, Math.round(ms))}ms`;
+  if (totalSecs < 10) return `${(ms / 1000).toFixed(1)}s`;
+  if (totalSecs < 60) return `${totalSecs}s`;
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  if (mins < 60) return `${mins}m${secs}s`;
+  return `${Math.floor(mins / 60)}h${mins % 60}m`;
+}
+
+function nowClock() {
+  const d = new Date();
+  let h = d.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ampm}`;
+}
 
 // Wraps a single (possibly ANSI-colored) line to `width` VISIBLE columns. Real terminals don't
 // reset color state across a bare `\n` — a color escape stays active until explicitly reset —
@@ -110,6 +186,42 @@ function parseArgs(argStr) {
 // ── Output capture: routes dispatch()'s console.log/stdout.write into the transcript pane ──
 function out(state, text) { writeToTranscript(state, String(text) + '\n'); }
 
+/** A user turn — a full-width BANDED row (darker background across the whole line) with the
+ * `❯ ` prefix and a right-justified clock, exactly the shape grok-build's own user block
+ * renders (scrollback/blocks/user.rs: prompt_band_color_for() paints a semantic line background
+ * behind the prefix + text, so the user's own turns read as distinct cards in the transcript).
+ * Pre-padded to the terminal width HERE, at push time, because the band is a background color
+ * that has to cover the full row — redraw()'s own generic padding happens outside the escape
+ * and would leave the tail of the row unbanded. */
+function userRow(state, text) {
+  const cols = process.stdout.columns || 80;
+  const clock = nowClock();
+  const left = `❯ ${text}`;
+  const pad = Math.max(1, cols - visLen(left) - visLen(clock) - 1);
+  const banded = `${BG_BAND}${FG_BRIGHT}${left}${' '.repeat(pad)}${FG_MUTED}${clock}${RESET}`;
+  state.transcript.push('');
+  state.transcript.push(banded);
+  state.transcript.push('');
+  state._spinnerActive = false;
+  scheduleRedraw(state);
+}
+
+/** The turn-completion marker — `Worked for X` on the left, `stop  [hooks: N]` right-justified
+ * to the full width. Exact port of grok-build's own contract (scrollback/blocks/session_event.rs:
+ * append_stop_hooks() right-justifies the summary against the marker text on a single-line
+ * marker; message() formats it as "Worked for {format_duration}"). icarus has no hook system of
+ * its own, so the count is a REAL count of what this turn actually did — currently always the
+ * one dispatch call — rather than a decorative number copied from grok's screenshot. */
+function markerRow(state, elapsedMs) {
+  const cols = process.stdout.columns || 80;
+  const left = `Worked for ${formatDuration(elapsedMs)}`;
+  const right = 'stop';
+  const pad = Math.max(2, cols - visLen(left) - visLen(right));
+  state.transcript.push(`${FG_FAINT}${left}${' '.repeat(pad)}${right}${RESET}`);
+  state._spinnerActive = false;
+  scheduleRedraw(state);
+}
+
 function writeToTranscript(state, chunk) {
   const text = (state._pendingPartial || '') + chunk;
   state._pendingPartial = '';
@@ -137,28 +249,55 @@ function scheduleRedraw(state) {
 }
 
 // ── Frame rendering ──────────────────────────────────────────────────────────────────────────
-function topBarLine(cfg, state) {
+
+/** The hero box — SHARP corners (┌┐└┘), not rounded, containing the big block-letter ICARUS
+ * mark plus the version/subtitle/connection lines. Fixed at the top of the screen, above the
+ * scrolling transcript, matching grok-build's own welcome-screen composition (a bordered hero
+ * card pinned above the conversation area). */
+function heroBoxLines(cfg, state, cols) {
+  const inner = Math.max(20, cols - 2); // full terminal width, matching the input box below
+  const top = m.faint('┌' + '─'.repeat(inner) + '┐');
+  const bot = m.faint('└' + '─'.repeat(inner) + '┘');
+  const row = (content) => {
+    const pad = Math.max(0, inner - 1 - visLen(content));
+    return `${m.faint('│')} ${content}${' '.repeat(pad)}${m.faint('│')}`;
+  };
   const hm = cfg.hivemind?.connected
-    ? c.success('HIVEMIND connected' + (cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''))
-    : c.dim('HIVEMIND not connected');
-  return ` ${c.bold(c.assistant('ICARUS'))} ${c.dim(`v${ICARUS_VERSION}`)}  ${c.dim('org:')} ${c.path(state.org)}  ${hm}`;
+    ? m.normal('connected' + (cfg.hivemind.userEmail ? ` as ${cfg.hivemind.userEmail}` : ''))
+    : m.faint('not connected');
+  const body = [
+    row(''),
+    ...ICARUS_BIG.map((l) => row(m.bright(l))),
+    row(''),
+    row(`${m.muted('memory filesystem for AI agents')}`),
+    row(`${m.faint('one mmap\'d file per tenant, no server')}`),
+    row(''),
+    row(`${m.muted('v' + ICARUS_VERSION)}   ${m.muted('org:')} ${m.normal(state.org)}   ${m.muted('HIVEMIND:')} ${hm}`),
+    row(''),
+  ];
+  return [top, ...body, bot];
 }
 
 function inputBoxFrame(state, cols) {
-  const width = cols - 2;
-  const top = c.dim('╭' + '─'.repeat(width) + '╮');
-  const bot = c.dim('╰' + '─'.repeat(width) + '╯');
-  const prefix = `${c.assistant(glyphs.promptArrow)} `;
-  const visiblePrefixLen = visLen(prefix);
-  const maxTextWidth = width - visiblePrefixLen - 2;
-  // Keep the cursor's column visible if the line is longer than the box — scroll the visible
-  // window of `state.input` so `state.cursor` always stays on-screen.
+  const inner = cols - 2; // visible columns strictly between the two border glyphs
+  const top = m.faint('┌' + '─'.repeat(inner) + '┐');
+  const bot = m.faint('└' + '─'.repeat(inner) + '┘');
+  const prefixPlain = '❯ ';
+  const prefix = m.bright(prefixPlain);
+  const prefixW = visLen(prefixPlain);
+  // Content area inside the box: one leading space after '│', then the prefix, then the text.
+  const maxTextWidth = Math.max(1, inner - 1 - prefixW - 1);
   let viewStart = 0;
   if (state.cursor > maxTextWidth) viewStart = state.cursor - maxTextWidth;
   const visibleText = state.input.slice(viewStart, viewStart + maxTextWidth);
   const pad = Math.max(0, maxTextWidth - visLen(visibleText));
-  const mid = `${c.dim('│')} ${prefix}${visibleText}${' '.repeat(pad)} ${c.dim('│')}`;
-  const cursorCol = 2 + visiblePrefixLen + (state.cursor - viewStart) + 1; // 1-indexed terminal column within the row
+  const mid = `${m.faint('│')} ${prefix}${m.bright(visibleText)}${' '.repeat(pad)} ${m.faint('│')}`;
+  // Cursor column, 1-indexed, counted the SAME way the row above is built:
+  //   col 1 = '│', col 2 = the space, cols 3.. = prefix, then the text.
+  // A previous version added a stray +1 here (borrowed from an earlier layout that had a
+  // different left inset) and parked the caret one column right of the character it was
+  // actually editing — visible as an off-by-one gap on every keystroke.
+  const cursorCol = 1 + 1 + prefixW + (state.cursor - viewStart) + 1;
   return { lines: [top, mid, bot], cursorCol };
 }
 
@@ -173,14 +312,16 @@ function redraw(state) {
   const matches = autocompleteMatches(state.input);
   const dropdown = matches.slice(0, 6);
   const dropdownH = dropdown.length;
-  const topBarH = 1;
+  const cfg = loadCfg();
+
+  const hero = heroBoxLines(cfg, state, cols);
   const inputH = 3;
   const tipH = 1;
-  const contentH = Math.max(1, rows - topBarH - dropdownH - inputH - tipH);
+  // The hero box is fixed chrome, but must never squeeze the transcript to nothing on a short
+  // terminal — drop it entirely rather than render a screen with no room for output.
+  const heroH = (rows - hero.length - dropdownH - inputH - tipH) >= 4 ? hero.length : 0;
+  const contentH = Math.max(1, rows - heroH - dropdownH - inputH - tipH);
 
-  // Word/ANSI-wrap the transcript to the real terminal width, then take the last `contentH`
-  // wrapped rows — a real scrollback window, not a fixed-size ring buffer that silently drops
-  // history off the front before it's ever been seen.
   const pending = state._pendingPartial ? [state._pendingPartial] : [];
   const allLines = state.transcript.concat(pending);
   const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
@@ -188,22 +329,25 @@ function redraw(state) {
   const padCount = Math.max(0, contentH - visible.length);
 
   const frame = [];
-  frame.push(topBarLine(loadCfg(), state));
+  if (heroH) frame.push(...hero);
   frame.push(...visible);
   frame.push(...Array(padCount).fill(''));
-  for (const m of dropdown) {
-    frame.push(`  ${c.command(m.cmd)} ${c.dim(m.hint)}`);
-  }
-  frame.push(c.dim('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history.'));
+  for (const d of dropdown) frame.push(`  ${m.bright(d.cmd)} ${m.faint(d.hint)}`);
+  frame.push(m.faint('Type a command, or plain text to recall. Tab completes, ↑/↓ browse history.'));
   const { lines: inputLines, cursorCol } = inputBoxFrame(state, cols);
   frame.push(...inputLines);
 
+  // Every row is padded to the FULL terminal width and painted on the black background, so no
+  // stale glyph from a previous longer frame survives underneath (the alternative — clearing
+  // the whole screen each frame — flickers visibly on a real terminal).
   const body = frame.map((l) => {
     const pad = Math.max(0, cols - visLen(l));
-    return l + ' '.repeat(pad);
+    return BG_BLACK + l + ' '.repeat(pad) + RESET;
   }).join('\r\n');
 
-  const inputRowIndex = 1 + visible.length + padCount + dropdownH + 1 + 1; // 1-indexed row of the input line (middle border row)
+  // Input row = the box's MIDDLE line: everything above it, plus its own top border, plus 1
+  // to convert the 0-indexed count into a 1-indexed terminal row.
+  const inputRowIndex = heroH + visible.length + padCount + dropdownH + tipH + 1 + 1;
   realWrite(HIDE_CURSOR + moveTo(1, 1) + body + moveTo(inputRowIndex, cursorCol) + SHOW_CURSOR);
 }
 
@@ -238,9 +382,9 @@ async function run() {
 
   enterScreen();
   installOutputCapture(state);
-  out(state, c.dim(`${glyphs.diamond} ${process.cwd().replace(process.env.HOME || '', '~')}`));
+  out(state, m.faint(`◆ ${process.cwd().replace(process.env.HOME || '', '~')}`));
   out(state, '');
-  out(state, c.dim('Type /help for the full command list.'));
+  out(state, m.faint('Type /help for the full command list.'));
 
   process.on('exit', exitScreen);
   process.on('SIGINT', () => { exitScreen(); process.exit(0); });
@@ -270,8 +414,10 @@ async function run() {
     dispatching = true;
     while (submitQueue.length) {
       const line = submitQueue.shift();
-      out(state, `${c.assistant(glyphs.promptArrow)} ${line}`);
+      userRow(state, line);
+      const t0 = Date.now();
       try { await dispatch(line, state, cfg); } catch (e) { out(state, err(e.message || String(e))); }
+      markerRow(state, Date.now() - t0);
       if (!running) break;
     }
     dispatching = false;
