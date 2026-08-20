@@ -22,7 +22,7 @@ const {
   hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory,
+  hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
@@ -149,14 +149,12 @@ async function cmdSave(flags, cfg) {
   // permanent memory in HIVEMIND's cloud box on their own. --cloud opts back in explicitly when
   // a real, permanent, smart-routed HIVEMIND memory is actually wanted (still mirrored locally
   // too, same as before, so /recall keeps working either way).
-  if (hivemindConfigured(cfg) && flags.cloud) {
-    const r = await hivemindSaveMemory(text, org, cfg);
-    await saveLocalMemory(text, org, cfg, { viaCloud: true });
-    console.log(ok(`saved as a real memory (id ${c.path(r.memoryId || r.memoryIds?.[0] || '?')}) in ${c.path(org)} — full embedding + smart-router, mirrored locally, recallable via icarus recall.`));
+  const saved = await saveIntelligentMemory(text, org, cfg, { cloud: !!flags.cloud });
+  if (saved.mode === 'structured') {
+    console.log(ok(`saved with save_memory schema (id ${c.path(saved.id)}) in ${c.path(org)} — ${saved.draft.entities.length} entities, ${saved.draft.tags.length} tags${saved.edge ? `, ${saved.edge.type} relationship` : ''}${saved.remote ? ', cloud canonical save' : ''}.`));
     return;
   }
-  await saveLocalMemory(text, org, cfg);
-  console.log(ok(`saved as a local memory in ${c.path(org)}'s shard${embeddingsConfigured(cfg) ? '' : c.dim(' (lexical-only — no embedding provider configured)')}.`));
+  console.log(ok(`saved as a local memory in ${c.path(org)}'s shard${embeddingsConfigured(cfg) ? '' : c.dim(' (lexical-only — no LLM metadata available)')}.`));
 }
 
 function cmdStatus(_flags, cfg) {

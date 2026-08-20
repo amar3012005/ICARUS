@@ -38,7 +38,7 @@ const {
   hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory, initRepoShard, listOrgsWithMeta, deleteOrgShard,
+  hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, initRepoShard, listOrgsWithMeta, deleteOrgShard,
 } = require('./cli-lib.js');
 
 // ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
@@ -203,6 +203,18 @@ function wrapLine(line, width) {
   return out;
 }
 
+function transcriptViewport(transcript, { contentH, cols, scrollOffset = 0, pending = [] }) {
+  // Keep redraw cheap at the live tail, but extend the source window as the user scrolls up.
+  // The old fixed 800-line slice made scrollOffset faithfully move only inside its tail window;
+  // beyond that it clamped and looked like the viewport was stuck on the latest user card.
+  const retainedRawLines = Math.max(contentH * 4, 800, scrollOffset + contentH * 4);
+  const wrapped = transcript.slice(-retainedRawLines).concat(pending).flatMap((line) => wrapLine(line, cols));
+  const maxScroll = Math.max(0, wrapped.length - contentH);
+  const offset = Math.min(Math.max(0, scrollOffset), maxScroll);
+  const start = Math.max(0, wrapped.length - contentH - offset);
+  return { visible: wrapped.slice(start, start + contentH), maxScroll, offset };
+}
+
 // ── Slash-command catalog (autocomplete source) ─────────────────────────────────────────────
 const SLASH_COMMANDS = [
   { cmd: '/ingest', hint: '<dir> [--org name] [--local] [--force] [--keep-cloud]' },
@@ -230,7 +242,7 @@ function printHelp(state) {
   out(state, heading('Commands'));
   out(state, `  ${c.command('/ingest')} [dir|file] [--org name] [--local] [--force] [--keep-cloud]  ingest a folder or a single file — leave the path off to open a native file/folder picker. HIVEMIND (when connected) is a stateless extraction pipeline only — segments mirror locally, then the cloud document icarus itself created is deleted (--keep-cloud to leave it there).`);
   out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
-  out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              LOCAL ONLY by default — real embedding, never touches HIVEMIND's cloud memory box on its own. --cloud opts in to a real, permanent, smart-routed HIVEMIND memory too — recallable via /recall either way.`);
+  out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              uses the save_memory schema (tags/entities/verified relationships) when an LLM key is set; otherwise saves plain local text. --cloud also writes the canonical HIVEMIND memory.`);
   out(state, `  ${c.command('/llm-api')} <openrouter-api-key>                     save an OpenRouter key in macOS Keychain; it is never written to config or echoed.`);
   out(state, `  ${c.command('/model')} [search|model-id]                           browse text models or set the synthesis model.`);
   out(state, `  ${c.command('/thinking')} <off|minimal|low|medium|high|xhigh|max> set only an effort supported by the selected model.`);
@@ -528,18 +540,11 @@ function redraw(state) {
   // Floor bumped from 200 -> 800: with the hero box now persistent (shrinking contentH for the
   // whole session, not just before the first command), a smaller contentH would otherwise also
   // shrink the retained scrollback window right when real depth to scroll into matters most.
-  const RECENT_RAW_LINES = Math.max(contentH * 4, 800);
-  const allLines = state.transcript.slice(-RECENT_RAW_LINES).concat(pending);
-  const wrapped = allLines.flatMap((l) => wrapLine(l, cols));
-  // scrollOffset = wrapped rows scrolled UP from the live tail (0 = pinned to bottom, the
-  // previous, only-ever behavior — there was no scroll state anywhere before this, which is
-  // exactly why PageUp/mouse-wheel/etc did nothing: nothing existed for them to move). Clamped
-  // here every frame (not just where it's changed) since contentH itself can shrink on a resize,
-  // which would otherwise leave a stale offset pointing past the now-shorter available history.
-  const maxScroll = Math.max(0, wrapped.length - contentH);
-  state.scrollOffset = Math.min(Math.max(0, state.scrollOffset || 0), maxScroll);
-  const start = Math.max(0, wrapped.length - contentH - state.scrollOffset);
-  const visible = wrapped.slice(start, start + contentH);
+  // scrollOffset is measured in wrapped display rows, not source lines, so long answers and
+  // narrow terminals retain correct page movement.
+  const viewport = transcriptViewport(state.transcript, { contentH, cols, scrollOffset: state.scrollOffset || 0, pending });
+  state.scrollOffset = viewport.offset;
+  const visible = viewport.visible;
   const padCount = Math.max(0, contentH - visible.length);
 
   const frame = [];
@@ -727,11 +732,13 @@ async function run() {
       if (key === '\x1b[D') { if (state.cursor > 0) state.cursor--; continue; }
       if (key === '\x1b[C') { if (state.cursor < state.input.length) state.cursor++; continue; }
       if (key === '\x1b[A') {
+        if (!state.input) { state.scrollOffset = (state.scrollOffset || 0) + 3; scheduleRedraw(state); continue; }
         if (autocompleteMatches(state.input).length) continue; // reserved for future dropdown-select; history for now falls through below when no dropdown
         if (state.historyIdx > 0) { state.historyIdx--; state.input = state.history[state.historyIdx]; state.cursor = state.input.length; }
         continue;
       }
       if (key === '\x1b[B') {
+        if (!state.input && state.scrollOffset > 0) { state.scrollOffset = Math.max(0, state.scrollOffset - 3); scheduleRedraw(state); continue; }
         if (state.historyIdx < state.history.length - 1) { state.historyIdx++; state.input = state.history[state.historyIdx]; state.cursor = state.input.length; }
         else { state.historyIdx = state.history.length; state.input = ''; state.cursor = 0; }
         continue;
@@ -854,15 +861,13 @@ async function dispatch(line, state, cfg) {
       break;
     }
     case 'save': {
-      const text = argStr.trim();
+      const text = flags._.join(' ').trim();
       if (!text) { out(state, err('usage: /save <text> [--org name] [--cloud]')); break; }
-      if (hivemindConfigured(cfg) && flags.cloud) {
-        const r = await hivemindSaveMemory(text, org, cfg);
-        await saveLocalMemory(text, org, cfg, { viaCloud: true });
-        out(state, ok(`saved as a real memory (id ${r.memoryId || r.memoryIds?.[0] || '?'}) — goes through embedding, smart-router, contradiction checks, mirrored locally. Recallable via /recall alongside evidence.`));
+      const saved = await saveIntelligentMemory(text, org, cfg, { cloud: !!flags.cloud });
+      if (saved.mode === 'structured') {
+        out(state, ok(`saved with save_memory schema (id ${saved.id}) — ${saved.draft.entities.length} entities, ${saved.draft.tags.length} tags${saved.edge ? `, ${saved.edge.type} relationship` : ''}${saved.remote ? ', cloud canonical save' : ''}.`));
       } else {
-        await saveLocalMemory(text, org, cfg);
-        out(state, ok(`saved as a local memory in "${c.path(org)}"'s shard (embedded${embeddingsConfigured(cfg) ? '' : ' lexically — no embedding provider configured'}).`));
+        out(state, ok(`saved as a local memory in "${c.path(org)}"'s shard (embedded${embeddingsConfigured(cfg) ? '' : ' lexically — no LLM metadata available'}).`));
       }
       break;
     }
@@ -1078,4 +1083,4 @@ async function dispatch(line, state, cfg) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, transcriptViewport };

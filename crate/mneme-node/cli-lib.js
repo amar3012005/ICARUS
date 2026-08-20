@@ -1413,7 +1413,7 @@ async function purgeHivemindDocument(documentId, cfg) {
  * skip_fact_extraction/recall_exclude flags — this is a real, fully first-class memory, meant to
  * surface in normal recall next to evidence). `source.type: 'mcp'` matches detectMode()'s own
  * inference for single-memory saves, kept alongside the explicit `mode` override for clarity. */
-async function hivemindSaveMemory(text, org, cfg) {
+async function hivemindSaveMemory(text, org, cfg, opts = {}) {
   const base = hivemindApiBase(cfg);
   const res = await fetch(`${base}/api/ingest/source`, {
     method: 'POST',
@@ -1422,7 +1422,10 @@ async function hivemindSaveMemory(text, org, cfg) {
       content: text,
       mode: 'atomic',
       source: { type: 'mcp', platform: 'icarus' },
-      tags: [`icarus-org:${org}`],
+      title: opts.title || undefined,
+      memory_type: opts.memoryType || undefined,
+      entities: Array.isArray(opts.entities) ? opts.entities : undefined,
+      tags: [...new Set([`icarus-org:${org}`, ...(Array.isArray(opts.tags) ? opts.tags : [])])],
     }),
   });
   const bodyText = await res.text();
@@ -1461,6 +1464,85 @@ async function saveLocalMemory(text, org, cfg, opts = {}) {
   if (vectorMode) store.enableHnsw();
   store.flush();
   return slotId;
+}
+
+const SAVE_MEMORY_TOOL = {
+  type: 'function',
+  function: {
+    name: 'save_memory',
+    description: 'Save one durable user fact using the official structured memory schema. Preserve the user claim; do not invent facts, entities, or relationships.',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        title: { type: 'string' }, content: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } },
+        memory_type: { type: 'string', enum: ['fact', 'preference', 'decision', 'goal', 'event', 'lesson'] },
+        entities: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+        relationship: { type: 'string', enum: ['update', 'extend', 'derive', 'contradict', 'partof', 'mentions'] },
+        related_to: { type: 'string' },
+      },
+      required: ['title', 'content', 'tags'],
+    },
+  },
+};
+
+function normalizeStructuredSaveToolCall(argumentsText, knownIds = new Set()) {
+  let value;
+  try { value = JSON.parse(argumentsText); } catch (_) { return null; }
+  if (!value || typeof value.title !== 'string' || !value.title.trim() || typeof value.content !== 'string' || !value.content.trim()) return null;
+  const tags = Array.isArray(value.tags) ? [...new Set(value.tags.map((tag) => String(tag).trim()).filter(Boolean))].slice(0, 8) : [];
+  const entities = Array.isArray(value.entities) ? [...new Set(value.entities.map((entity) => String(entity).trim()).filter(Boolean))].slice(0, 12) : [];
+  const relationship = typeof value.relationship === 'string' && REL_WORD_TO_TYPE[value.relationship.toLowerCase()] && knownIds.has(value.related_to)
+    ? value.relationship.toLowerCase() : null;
+  return {
+    title: value.title.trim().slice(0, 160), content: value.content.trim(), tags,
+    memoryType: ['fact', 'preference', 'decision', 'goal', 'event', 'lesson'].includes(value.memory_type) ? value.memory_type : 'fact',
+    entities, relationship, relatedTo: relationship ? value.related_to : null,
+  };
+}
+
+async function draftStructuredSave(text, org, cfg) {
+  const key = openRouterApiKey(cfg);
+  if (!key || (cfg.llm?.provider && cfg.llm.provider !== 'openrouter')) return null;
+  const existing = listStructuredMemories(org, cfg, { limit: 20 });
+  const knownIds = new Set(existing.map((memory) => memory.id));
+  const candidates = existing.map((memory) => ({ id: memory.id, title: memory.title, content: memory.content.slice(0, 240) }));
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: resolveSynthesisModel(cfg), temperature: 0, max_tokens: 400,
+      messages: [
+        { role: 'system', content: 'Use the save_memory tool exactly once. Preserve the user claim in content. Supply 2-5 precise tags and exact named entities only. Create a relationship only when it is explicitly supported and related_to is one of the provided ids; otherwise omit both.' },
+        { role: 'user', content: `User memory: ${text}\n\nExisting structured memories eligible as relationship targets:\n${JSON.stringify(candidates)}` },
+      ],
+      tools: [SAVE_MEMORY_TOOL], tool_choice: { type: 'function', function: { name: 'save_memory' } },
+    }),
+  });
+  if (!res.ok) return null; // Unsupported tool calling / transient provider failure falls back without losing the save.
+  const args = (await res.json())?.choices?.[0]?.message?.tool_calls?.find((call) => call.function?.name === 'save_memory')?.function?.arguments;
+  return typeof args === 'string' ? normalizeStructuredSaveToolCall(args, knownIds) : null;
+}
+
+// Human /save uses the same official save_memory schema when an OpenRouter key is available.
+// A model or provider failure never blocks a durable save: it simply returns to plain local text.
+async function saveIntelligentMemory(text, org, cfg, { cloud = false } = {}) {
+  let draft = null;
+  try { draft = await draftStructuredSave(text, org, cfg); } catch (_) { /* graceful fallback below */ }
+  if (!draft) {
+    if (cloud && hivemindConfigured(cfg)) {
+      const remote = await hivemindSaveMemory(text, org, cfg);
+      const slot = await saveLocalMemory(text, org, cfg, { viaCloud: true });
+      return { mode: 'plain-cloud', remote, slot };
+    }
+    return { mode: 'plain-local', slot: await saveLocalMemory(text, org, cfg) };
+  }
+  const saved = await saveStructuredMemory(draft.content, org, cfg, {
+    title: draft.title, tags: [...draft.tags, ...draft.entities.map((entity) => `entity:${entity}`)], sourceType: draft.memoryType,
+    relationship: draft.relationship, relatedTo: draft.relatedTo,
+  });
+  let remote = null;
+  if (cloud && hivemindConfigured(cfg)) remote = await hivemindSaveMemory(draft.content, org, cfg, draft);
+  return { mode: 'structured', ...saved, draft, remote };
 }
 
 // ── Structured memory (agent-facing MCP tools) ──────────────────────────────────────────────
@@ -2041,7 +2123,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.37';
+const ICARUS_VERSION = '0.3.38';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2123,7 +2205,7 @@ module.exports = {
   hivemindConfigured, hivemindIngestDir, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
