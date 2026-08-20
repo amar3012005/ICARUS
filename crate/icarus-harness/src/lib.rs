@@ -1739,7 +1739,7 @@ pub fn promote_skill(
         }
     });
     let active = root
-        .join(".icarus/skills")
+        .join(".icarus/skills/active")
         .join(format!("{}.json", skill.id));
     atomic_write(
         &active,
@@ -1767,7 +1767,17 @@ pub fn retire_skill(
     let approval = owner_approval
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| HarnessError::invalid("skill retirement requires owner approval"))?;
-    let active = root.join(".icarus/skills").join(format!("{skill_id}.json"));
+    // Direct children of `.icarus/skills/` were used by the preview implementation. Read
+    // them for a non-destructive migration, but all new records use `active/`.
+    let active_v1 = root
+        .join(".icarus/skills/active")
+        .join(format!("{skill_id}.json"));
+    let legacy_active = root.join(".icarus/skills").join(format!("{skill_id}.json"));
+    let active = if active_v1.exists() {
+        active_v1
+    } else {
+        legacy_active
+    };
     let mut skill: HarnessSkill = serde_json::from_reader(
         File::open(&active).map_err(|_| HarnessError::invalid("active skill does not exist"))?,
     )?;
@@ -1785,6 +1795,13 @@ pub fn retire_skill(
         .join(format!("{}-v{}.json", skill.id, skill.version));
     atomic_write(
         &archive,
+        format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
+    )?;
+    let tracked_archive = root
+        .join(".icarus/skills/retired")
+        .join(format!("{}-v{}.json", skill.id, skill.version));
+    atomic_write(
+        &tracked_archive,
         format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
     )?;
     atomic_write(
@@ -2154,11 +2171,13 @@ fn skills_match_contract(skill: &Value, contract: &TaskContract) -> bool {
 /// and unverified candidates are intentionally invisible to managed execution.
 fn active_verified_skills(root: &Path, contract: &TaskContract) -> Vec<(String, String)> {
     let directory = root.join(".icarus/skills");
-    let Ok(entries) = fs::read_dir(&directory) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<_> = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+    // `active/` is the stable v1 layout. Direct root files are preview compatibility only;
+    // directories such as `retired/` are never traversed as candidates.
+    let mut paths: Vec<_> = [directory.join("active"), directory]
+        .into_iter()
+        .filter_map(|candidate| fs::read_dir(candidate).ok())
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())))
+        .filter(|path| path.is_file())
         .collect();
     paths.sort();
     paths

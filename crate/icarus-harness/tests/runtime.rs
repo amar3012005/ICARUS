@@ -738,7 +738,7 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
     let active =
         icarus_harness::promote_skill(repo.path(), "deploy-review", Some("APR-42".into())).unwrap();
     assert_eq!(active.verification["status"], "verified");
-    let active_path = repo.path().join(".icarus/skills/deploy-review.json");
+    let active_path = repo.path().join(".icarus/skills/active/deploy-review.json");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&active_path).unwrap())
             .unwrap()["verification"]["status"],
@@ -757,5 +757,9 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
     assert!(repo
         .path()
         .join(".icarus/runtime/skills/retired/deploy-review-v1.json")
+        .exists());
+    assert!(repo
+        .path()
+        .join(".icarus/skills/retired/deploy-review-v1.json")
         .exists());
 }
