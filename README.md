@@ -20,7 +20,7 @@
   <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a>
 </p>
 
-<img src="assets/icarus-readme-storyboard.png" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, and local developer capability" width="100%" />
+<img src="assets/icarus-readme-storyboard.jpg" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, local developer capability, and AMR format overview" width="100%" />
 
 ---
 
