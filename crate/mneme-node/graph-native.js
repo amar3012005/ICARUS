@@ -414,6 +414,11 @@ async function buildAndStore(repoDir) {
   db.run('COMMIT;');
   saveDb(db, repoDir);
   db.close();
+  // Rust owns the durable build receipt. This adapter reports the source fingerprint only after
+  // its database has been persisted; Rust recomputes it before atomically accepting the receipt.
+  if (fs.existsSync(path.join(repoDir, '.icarus', 'manifest.yaml'))) {
+    require('./harness.js').recordGraphReceipt(repoDir, fingerprint);
+  }
   return { files: result.files, nodes: result.nodes.length, edges: result.edges.length, sourceFingerprint: fingerprint };
 }
 

@@ -248,6 +248,18 @@ pub struct ContextPack {
     pub items: Vec<ContextItem>,
 }
 
+/// The Rust authority records the exact graph database and source set that a graph build
+/// observed. The graph parser may be supplied by an adapter, but it cannot make an unverified
+/// freshness claim on its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GraphReceipt {
+    pub schema_version: u32,
+    pub source_fingerprint: String,
+    pub graph_digest: String,
+    pub recorded_at: String,
+}
+
 fn sha256(value: &[u8]) -> String {
     format!("{:x}", Sha256::digest(value))
 }
@@ -942,6 +954,119 @@ fn graph_digest(root: &Path) -> Option<String> {
         .map(|bytes| sha256(&bytes))
 }
 
+fn graph_receipt_path(root: &Path) -> PathBuf {
+    runtime_root(root).join("graph/receipt.json")
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn is_graph_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "rs")
+    )
+}
+
+fn collect_graph_sources(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if entry.file_type()?.is_dir() {
+            if matches!(
+                name.as_ref(),
+                "node_modules" | ".git" | "target" | ".icarus-graph" | "dist" | "build"
+            ) {
+                continue;
+            }
+            collect_graph_sources(root, &path, files)?;
+        } else if is_graph_source(&path) {
+            files.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+/// Mirror the supported-file universe used by the graph adapter. Sort by raw path components,
+/// never locale, so this fingerprint is portable and deterministic.
+pub fn graph_source_fingerprint(root: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_graph_sources(root, root, &mut files)?;
+    files.sort();
+    let mut hasher = Sha256::new();
+    for relative in files {
+        let normalized = relative.to_string_lossy().replace('\\', "/");
+        hasher.update(normalized.as_bytes());
+        hasher.update([0]);
+        hasher.update(fs::read(root.join(&relative))?);
+        hasher.update([0]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Store a graph build receipt under Rust's atomic-write authority. `source_fingerprint` is
+/// independently recomputed, preventing an adapter from recording a graph as current for a
+/// different source tree.
+pub fn record_graph_receipt(repo_root: &Path, source_fingerprint: String) -> Result<GraphReceipt> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)?;
+    if !is_sha256(&source_fingerprint) {
+        return Err(HarnessError::invalid("invalid graph source fingerprint"));
+    }
+    let observed = graph_source_fingerprint(&root)?;
+    if observed != source_fingerprint {
+        return Err(HarnessError::invalid(
+            "graph source fingerprint changed during build; rebuild the graph",
+        ));
+    }
+    let graph_digest = graph_digest(&root)
+        .ok_or_else(|| HarnessError::invalid("graph database is missing after graph build"))?;
+    let receipt = GraphReceipt {
+        schema_version: 1,
+        source_fingerprint,
+        graph_digest,
+        recorded_at: now_rfc3339(),
+    };
+    atomic_write(
+        &graph_receipt_path(&root),
+        format!("{}\n", serde_json::to_string_pretty(&receipt)?).as_bytes(),
+    )?;
+    Ok(receipt)
+}
+
+fn graph_freshness(root: &Path) -> Value {
+    let Some(current_digest) = graph_digest(root) else {
+        return json!({"current": false, "reason": "graph database is missing"});
+    };
+    let receipt: GraphReceipt = match File::open(graph_receipt_path(root))
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, GraphReceipt>(file).ok())
+    {
+        Some(receipt) if receipt.schema_version == 1 => receipt,
+        _ => {
+            return json!({"current": false, "graph_digest": current_digest, "reason": "graph build receipt is missing or invalid"})
+        }
+    };
+    let current_source = match graph_source_fingerprint(root) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return json!({"current": false, "graph_digest": current_digest, "reason": error.to_string()})
+        }
+    };
+    let current =
+        receipt.graph_digest == current_digest && receipt.source_fingerprint == current_source;
+    json!({
+        "current": current,
+        "graph_digest": current_digest,
+        "source_fingerprint": current_source,
+        "receipt": receipt,
+        "reason": if current { "verified graph receipt matches supported source" } else { "graph database or supported source differs from its build receipt" },
+    })
+}
+
 /// Compile a deterministic context pack. This is intentionally extraction and ordering, not
 /// summarization: ICARUS has no LLM in this path, and every included byte is source-addressable.
 pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> Result<ContextPack> {
@@ -1012,13 +1137,13 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
     let worktree = serde_json::to_string_pretty(&json!({
         "git_sha": git_output(&root, &["rev-parse", "HEAD"]),
         "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()),
-        "graph_digest": graph_digest(&root),
+        "graph": graph_freshness(&root),
     }))?;
     add_context_item(
         &mut pack,
         ContextItem::new(
             "worktree",
-            "git + runtime graph",
+            "git + runtime graph receipt",
             "current",
             "observed workspace",
             "freshness and divergence check",
@@ -1149,13 +1274,13 @@ pub fn build_context_delta(
     )?;
     let worktree = serde_json::to_string_pretty(&json!({
         "base_checkpoint": {"sequence": base.sequence, "git_sha": base.git_sha, "dirty_state_fingerprint": base.dirty_state_fingerprint},
-        "current": {"git_sha": git_output(&root, &["rev-parse", "HEAD"]), "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()), "graph_digest": graph_digest(&root)},
+        "current": {"git_sha": git_output(&root, &["rev-parse", "HEAD"]), "dirty_state_fingerprint": sha256(git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default().as_bytes()), "graph": graph_freshness(&root)},
     }))?;
     add_context_item(
         &mut pack,
         ContextItem::new(
             "worktree_delta",
-            "git + runtime graph",
+            "git + runtime graph receipt",
             "current",
             "observed workspace",
             "changes since the base checkpoint",
@@ -1565,16 +1690,22 @@ pub fn doctor(repo_root: &Path) -> Result<DoctorReport> {
     });
     let runtime_graph = runtime.join("graph/graph.db");
     let legacy_graph = root.join(".icarus-graph/graph.db");
+    let graph_state = graph_freshness(&root);
+    let graph_current = graph_state
+        .get("current")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     checks.push(DoctorCheck {
         id: "graph".into(),
-        status: if runtime_graph.exists() {
-            "pass"
-        } else {
-            "warn"
-        }
-        .into(),
-        detail: if runtime_graph.exists() {
-            "runtime graph present".into()
+        status: if graph_current { "pass" } else { "warn" }.into(),
+        detail: if graph_current {
+            "runtime graph present and receipt is current".into()
+        } else if runtime_graph.exists() {
+            graph_state
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("runtime graph is stale")
+                .into()
         } else if legacy_graph.exists() {
             "legacy graph present; re-run harness init to migrate".into()
         } else {

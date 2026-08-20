@@ -17,6 +17,7 @@ export declare function harnessAmendTaskContract(repoRoot: string, taskId: strin
 export declare function harnessCheckpointTask(repoRoot: string, taskId: string, phase: string, inputJson: string): string
 export declare function harnessBuildContext(repoRoot: string, taskId: string, budgetTokens: number): string
 export declare function harnessBuildContextDelta(repoRoot: string, taskId: string, checkpointSequence: number, budgetTokens: number): string
+export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFingerprint: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
 /** One recall hit returned to JS. */
 export interface MnemeHit {

@@ -55,6 +55,10 @@ function buildContext(repoRoot, taskId, budgetTokens, checkpointSequence) {
     : invoke('harnessBuildContextDelta', [repoRoot, taskId, checkpointSequence, budgetTokens]);
 }
 
+function recordGraphReceipt(repoRoot, sourceFingerprint) {
+  return invoke('harnessRecordGraphReceipt', [repoRoot, sourceFingerprint]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -73,6 +77,7 @@ module.exports = {
   amendTaskContract,
   checkpointTask,
   buildContext,
+  recordGraphReceipt,
   authorizeAction,
   __setNativeHarnessBridgeForTest,
 };

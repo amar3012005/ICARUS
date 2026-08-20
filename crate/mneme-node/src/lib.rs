@@ -172,6 +172,19 @@ pub fn harness_build_context_delta(
 }
 
 #[napi]
+pub fn harness_record_graph_receipt(
+    repo_root: String,
+    source_fingerprint: String,
+) -> Result<String> {
+    let receipt =
+        harness::record_graph_receipt(std::path::Path::new(&repo_root), source_fingerprint)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_authorize_action(
     repo_root: String,
     task_id: String,

@@ -1,7 +1,8 @@
 use icarus_harness::{
     amend_task_contract, append_event, authorize_action, build_context, checkpoint_task, doctor,
-    init, read_snapshot, resume_task, start_task, task_status, transition_task, verify_event_chain,
-    write_snapshot, Action, EventInput, InitOptions, TaskContract,
+    graph_source_fingerprint, init, read_snapshot, record_graph_receipt, resume_task, start_task,
+    task_status, transition_task, verify_event_chain, write_snapshot, Action, EventInput,
+    InitOptions, TaskContract,
 };
 use std::fs;
 use std::process::Command;
@@ -335,4 +336,43 @@ fn delta_context_contains_only_changes_after_a_checkpoint() {
         .iter()
         .any(|item| item.kind == "lifecycle_delta"));
     assert!(!delta.items.iter().any(|item| item.kind == "contract"));
+}
+
+#[test]
+fn graph_receipt_is_atomically_bound_to_source_and_database() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "pub fn stable() {}\n").unwrap();
+    fs::create_dir_all(repo.path().join(".icarus/runtime/graph")).unwrap();
+    fs::write(
+        repo.path().join(".icarus/runtime/graph/graph.db"),
+        b"graph-v1",
+    )
+    .unwrap();
+    let fingerprint = graph_source_fingerprint(repo.path()).unwrap();
+    let receipt = record_graph_receipt(repo.path(), fingerprint).unwrap();
+    assert_eq!(receipt.schema_version, 1);
+    let task = start_task(repo.path(), "graph-aware context", contract()).unwrap();
+    let current = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    let worktree = current
+        .items
+        .iter()
+        .find(|item| item.kind == "worktree")
+        .unwrap();
+    assert!(worktree.content.contains("\"current\": true"));
+
+    fs::write(repo.path().join("src/lib.rs"), "pub fn changed() {}\n").unwrap();
+    let stale = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    let worktree = stale
+        .items
+        .iter()
+        .find(|item| item.kind == "worktree")
+        .unwrap();
+    assert!(worktree.content.contains("\"current\": false"));
+    assert!(doctor(repo.path())
+        .unwrap()
+        .checks
+        .iter()
+        .any(|check| check.id == "graph" && check.status == "warn"));
 }
