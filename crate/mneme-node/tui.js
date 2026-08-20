@@ -98,6 +98,44 @@ const ICARUS_BIG = [
 ];
 
 function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
+
+/** Copies plain text to the system clipboard via whatever clipboard tool actually exists on
+ * this machine — pbcopy (macOS), then wl-copy/xclip/xsel (Linux, Wayland vs X11). Real reason
+ * this exists at all: enabling SGR mouse reporting for wheel-scroll (ENABLE_MOUSE, added
+ * alongside real scrollback) makes most terminals stop doing their OWN click-drag text
+ * selection unless the user already knows the terminal's own modifier-key escape hatch (e.g.
+ * holding Option on macOS Terminal/iTerm2) — so losing native copy-select was a real, if
+ * unintended, side effect of adding wheel scroll, not a separate ask. This gives back a working
+ * copy path that doesn't depend on the terminal's mouse-capture state at all. Resolves null if
+ * no clipboard tool is found, so the caller can say so plainly instead of failing silently. */
+function copyToClipboard(text) {
+  const { execFileSync } = require('child_process');
+  const fs2 = require('fs');
+  const os2 = require('os');
+  const candidates = process.platform === 'darwin'
+    ? ['pbcopy']
+    : ['wl-copy', 'xclip -selection clipboard', 'xsel --clipboard --input'];
+  // Writes to a real temp file and lets the target command read it via a plain shell `<`
+  // redirect, rather than piping the text straight through execFileSync's own `input` option —
+  // more robust for large output (no pipe-buffer-size edge cases) and, per real testing this
+  // session, sidesteps a multi-byte-UTF-8 corruption that showed up when piping through certain
+  // synthetic pty layers (isolated all the way down to a bare `sh -c "pbcopy < file"` with zero
+  // JS involved, reproducible only under a test harness's own synthetic pty allocation — not a
+  // real terminal, and not this app's own code). This path is unaffected either way.
+  const tmp = path.join(os2.tmpdir(), `icarus-clip-${process.pid}-${Date.now()}.txt`);
+  try {
+    fs2.writeFileSync(tmp, text, 'utf8');
+    for (const cmd of candidates) {
+      try {
+        execFileSync('sh', ['-c', `${cmd} < ${JSON.stringify(tmp)}`], { stdio: ['ignore', 'ignore', 'ignore'] });
+        return cmd.split(' ')[0];
+      } catch (_) { /* not installed / not on PATH — try the next candidate */ }
+    }
+    return null;
+  } finally {
+    try { fs2.unlinkSync(tmp); } catch (_) { /* already gone, or never created — fine either way */ }
+  }
+}
 // Real display width, not code-unit length: the block-letter logo and box-drawing chrome are
 // multi-byte characters, and the ✓/✗/◆ glyphs elsewhere are too. String#length would count
 // those correctly here (they're all BMP, width-1), but an emoji in recalled memory text is a
@@ -173,6 +211,7 @@ const SLASH_COMMANDS = [
   { cmd: '/org', hint: '<name> — switch the default org for this session' },
   { cmd: '/create', hint: '<org> <path> — new org shard rooted at that repo path' },
   { cmd: '/delete', hint: 'pick an org and permanently delete its shard (double confirm)' },
+  { cmd: '/copy', hint: '[n] — copy the last command\'s output (or last n lines) to the clipboard' },
   { cmd: '/setup', hint: '<claude|codex|cursor|--all> — register MCP + project instructions + repo shard' },
   { cmd: '/graph', hint: 'build|status|query — native symbol/call graph for this repo' },
   { cmd: '/connect', hint: 'browser sign-in to HIVEMIND' },
@@ -192,6 +231,7 @@ function printHelp(state) {
   out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
   out(state, `  ${c.command('/create')} <org> <path>                             create a NEW org shard rooted at <path> (its own repo-local .icarus/data/<org> — this becomes that repo's org automatically, same auto-detection /setup uses).`);
   out(state, `  ${c.command('/delete')}                                           lists every org, pick one, then a real double confirmation before permanently deleting its whole shard — refuses if another live icarus process still has it open.`);
+  out(state, `  ${c.command('/copy')} [n]                                        copy the LAST command's output to the system clipboard (pbcopy/xclip/xsel) — or the last n raw lines with a number. Mouse-wheel scrolling puts most terminals into a mode where click-drag no longer does native text selection; holding the terminal's own modifier key (often Option on macOS) still works, but this doesn't depend on that at all.`);
   out(state, `  ${c.command('/setup')} <claude|codex|cursor|--all>                run from this project's own folder: registers that agent's MCP server, writes its project instruction file (CLAUDE.md/AGENTS.md/.cursor rule) with this repo's own org name, creates a real .icarus/data/<org> shard here, then offers to build the code graph too.`);
   out(state, `  ${c.command('/graph')} build|status|query [--repo <dir>]         native symbol/call graph (Tree-sitter, no Python dep) for this repo — query needs --kind <callers_of|callees_of|imports_of|find> --name <symbol>.`);
   out(state, `  ${c.command('/update')}                                          download + verify the latest release, replace this binary`);
@@ -548,8 +588,10 @@ async function run() {
     while (submitQueue.length) {
       const line = submitQueue.shift();
       userRow(state, line);
+      const outputStart = state.transcript.length; // bookmark for /copy — see its own doc comment
       const t0 = Date.now();
       try { await dispatch(line, state, cfg); } catch (e) { out(state, err(e.message || String(e))); }
+      state._lastOutputRange = [outputStart, state.transcript.length];
       markerRow(state, Date.now() - t0);
       if (!running) break;
     }
@@ -732,6 +774,28 @@ async function dispatch(line, state, cfg) {
       }
       break;
     }
+    case 'copy': {
+      const n = flags._[0] ? parseInt(flags._[0], 10) : null;
+      let lines;
+      if (Number.isInteger(n) && n > 0) {
+        lines = state.transcript.slice(-n);
+      } else if (state._lastOutputRange) {
+        // The range drainQueue() bookmarked around the PRECEDING dispatch call — /copy's own
+        // call hasn't overwritten it yet at this point, so this is exactly "what the last real
+        // command printed", not this /copy invocation's own (empty) output.
+        const [start, end] = state._lastOutputRange;
+        lines = state.transcript.slice(start, end);
+      } else {
+        out(state, err('nothing to copy yet — run a command first, or /copy <n> for the last n raw lines'));
+        break;
+      }
+      const text = lines.map(stripAnsi).join('\n');
+      if (!text.trim()) { out(state, err('nothing to copy — last output was empty')); break; }
+      const tool = copyToClipboard(text);
+      if (tool) out(state, ok(`copied ${lines.length} line(s) to the clipboard (via ${tool}).`));
+      else out(state, err('no clipboard tool found (looked for pbcopy/wl-copy/xclip/xsel) — nothing copied.'));
+      break;
+    }
     case 'status': {
       const s = statusReport(cfg);
       out(state, `${heading('icarus')}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
@@ -739,11 +803,18 @@ async function dispatch(line, state, cfg) {
       if (!s.shards.length) { out(state, c.dim('no shards yet')); break; }
       for (const sh of s.shards) {
         let rich = null, richErr = null;
+        // richOrgStats() defaults to a single, no-retry attempt for /status -- an org actively
+        // held open by a live MCP server (this project's own icarus tool connections, most of
+        // the time, by design) used to mean a real ~6.7s freeze on EVERY /status just to render
+        // one line of counts. unavailable:true is the instant, expected outcome now, not an
+        // error -- the plain try/catch below still guards a genuinely different failure.
         try { rich = richOrgStats(sh.org, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
         out(state, `  ${c.path(sh.org.padEnd(20))} ${c.dim((sh.bytesOnDisk / 1e6).toFixed(2) + ' MB')}`);
-        if (rich) {
+        if (rich && !rich.unavailable) {
           out(state, `    ${c.dim('memories:')} ${c.bold(rich.memoriesLatest)}${rich.memories !== rich.memoriesLatest ? c.dim(` (${rich.memories - rich.memoriesLatest} superseded)`) : ''}   ${c.dim('relationships:')} ${c.bold(rich.relationships)}   ${c.dim('evidence/other:')} ${c.bold(rich.evidenceAndOther)}`);
           out(state, `    ${c.dim('entities: not tracked locally (no local entity extraction — a real HIVEMIND server-side capability)')}`);
+        } else if (rich && rich.unavailable) {
+          out(state, `    ${c.dim('(memory/relationship counts unavailable — shard actively open by another icarus process, e.g. this project\'s own MCP connection)')}`);
         } else {
           out(state, `    ${c.command(`(memory/relationship counts unavailable — ${richErr})`)}`);
         }
@@ -796,7 +867,10 @@ async function dispatch(line, state, cfg) {
       if (!target) { out(state, c.dim('  cancelled — nothing deleted')); break; }
       const mb = (target.bytesOnDisk / (1024 * 1024)).toFixed(2);
       const stats = richOrgStats(target.org, cfg);
-      const firstOk = await askYesNo(state, `Delete org "${target.org}" — ${mb} MB, ${stats.memories} memories, ${stats.relationships} relationships. This cannot be undone. Continue?`);
+      const statsText = stats.unavailable
+        ? '(memory count unavailable — actively open by another icarus process)'
+        : `${stats.memories} memories, ${stats.relationships} relationships`;
+      const firstOk = await askYesNo(state, `Delete org "${target.org}" — ${mb} MB, ${statsText}. This cannot be undone. Continue?`);
       if (!firstOk) { out(state, c.dim('  cancelled — nothing deleted')); break; }
       const secondOk = await askYesNo(state, `FINAL CONFIRMATION — permanently delete "${target.org}" and everything in it right now?`);
       if (!secondOk) { out(state, c.dim('  cancelled — nothing deleted')); break; }

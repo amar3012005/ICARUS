@@ -47,12 +47,24 @@ function sleepSyncMs(ms) {
 // lock feel broken, long enough to ride out real transient overlap.
 const LOCK_RETRY_DELAYS_MS = [200, 400, 800, 1600, 3200];
 
-function openStore(cfg, org) {
+/** `{retry: false}` skips the whole backoff and fails on the FIRST lock conflict — for read-only,
+ * informational callers (a /status count, an org-picker's stats line) where a real MCP server
+ * legitimately holding an org open for its whole session (by design — see _storeCache's own doc
+ * comment) is completely normal, not a rare transient overlap worth waiting out. Real reported
+ * pain: /status hung for ~6.7s and then showed a "still locked" error just to report a memory
+ * count, every single time, whenever this project's own live MCP tool connections had the org
+ * open (which is most of the time, by design). A stale/unavailable count there is a fine
+ * tradeoff; a multi-second freeze on every /status call to render one is not. Mutating callers
+ * (ingest/save/delete/etc.) must NOT pass this — they genuinely need the wait-and-retry so a
+ * brief real overlap doesn't hard-fail a write that would have succeeded a moment later. */
+function openStore(cfg, org, opts = {}) {
   const key = `${cfg.dataRoot}::${org}`;
   let store = _storeCache.get(key);
   if (store) return store;
+  const retry = opts.retry !== false;
+  const attempts = retry ? LOCK_RETRY_DELAYS_MS.length : 0;
   let lastErr;
-  for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
+  for (let attempt = 0; attempt <= attempts; attempt++) {
     try {
       store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
       _storeCache.set(key, store);
@@ -60,9 +72,10 @@ function openStore(cfg, org) {
     } catch (e) {
       lastErr = e;
       if (!/locked by another process/i.test(e.message || '')) throw e; // a different error — don't mask it with retries
-      if (attempt < LOCK_RETRY_DELAYS_MS.length) sleepSyncMs(LOCK_RETRY_DELAYS_MS[attempt]);
+      if (attempt < attempts) sleepSyncMs(LOCK_RETRY_DELAYS_MS[attempt]);
     }
   }
+  if (!retry) throw lastErr; // no-retry path: surface the plain native error instantly, no ~6s wait
   // Genuinely still stuck after ~6.3s of retrying — a real, actionable message instead of the raw
   // native error, since "shard is locked by another process" alone gives no next step.
   throw new Error(
@@ -1850,8 +1863,22 @@ function listOrgsWithMeta(cfg) {
  * admitting the gap. Bounded to a real shard size (500k cap) so a huge shard's full scan can't
  * hang a status call indefinitely — same page-by-page streaming pattern listStructuredMemories
  * already uses. */
-function richOrgStats(org, cfg) {
-  const store = openStore(cfg, org);
+/** `opts.retry: false` (the default here — /status and org-pickers are the callers) fails fast
+ * on a real lock conflict instead of the usual ~6.3s CRUD-path wait — see openStore()'s own doc
+ * comment for why a read-only stats display shouldn't pay that cost. Returns `{unavailable:
+ * true}` in that case rather than throwing, so a caller can render a plain, instant "counts
+ * unavailable" line instead of every /status turning into a multi-second freeze. Pass
+ * `{retry: true}` explicitly for a caller that genuinely needs the real numbers and can afford
+ * to wait (none currently do — kept as an explicit opt-in, not a silent default). */
+function richOrgStats(org, cfg, opts = {}) {
+  const retry = opts.retry === true;
+  let store;
+  try {
+    store = openStore(cfg, org, { retry });
+  } catch (e) {
+    if (/locked by another process|still locked/i.test(e.message || '')) return { unavailable: true, reason: e.message };
+    throw e;
+  }
   const live = store.liveCount();
   const memories = listStructuredMemories(org, cfg, { limit: 500000, includeSuperseded: true });
   let relationships = 0;
@@ -1864,6 +1891,7 @@ function richOrgStats(org, cfg) {
     memoriesLatest: memories.filter((m) => m.is_latest !== false).length,
     relationships,
     evidenceAndOther: Math.max(0, live - memories.length),
+    unavailable: false,
   };
 }
 
@@ -1872,7 +1900,7 @@ function richOrgStats(org, cfg) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.32';
+const ICARUS_VERSION = '0.3.33';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
