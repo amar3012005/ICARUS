@@ -106,13 +106,45 @@ fn wait_for_response(
 }
 
 fn spawn(command: &str) -> Result<Child> {
-    Command::new(command)
+    let executable = resolve_executable(command)?;
+    Command::new(executable)
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(HarnessError::from)
+}
+
+/// `CreateProcess` does not apply PATHEXT to a bare program name as consistently as the
+/// interactive Windows shell does. Resolve through the platform's standard `where` utility
+/// before spawning so managed Codex can use a normal `codex.cmd` installation. On Unix the
+/// bare command remains deliberate: `Command` performs the normal PATH lookup.
+fn resolve_executable(command: &str) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("where")
+            .arg(command)
+            .output()
+            .map_err(HarnessError::from)?;
+        if !output.status.success() {
+            return Err(HarnessError::invalid(format!(
+                "Codex app-server program `{command}` is not available on PATH"
+            )));
+        }
+        return String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| HarnessError::invalid(format!(
+                "Codex app-server program `{command}` was not returned by where"
+            )));
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(command.to_owned())
+    }
 }
 
 /// Run exactly one governed app-server turn. `app_server_command` exists for the standalone

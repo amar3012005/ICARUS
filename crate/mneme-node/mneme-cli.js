@@ -410,7 +410,19 @@ function cmdContext(flags) {
 function commandOnPath(command) {
   const locator = process.platform === 'win32' ? 'where' : 'command';
   const args = process.platform === 'win32' ? [command] : ['-v', command];
-  return spawnSync(locator, args, { stdio: 'ignore', shell: process.platform !== 'win32' }).status === 0;
+  const result = spawnSync(locator, args, {
+    encoding: 'utf8',
+    shell: process.platform !== 'win32',
+  });
+  if (result.status !== 0) return null;
+  // On Windows `where` applies PATHEXT and can return `claude.cmd` / `codex.cmd`.
+  // `spawn("claude")` does not consistently repeat that resolution, so hand the
+  // exact discovered executable to the managed launch. This is transport only;
+  // Rust still owns the task, approval, lifecycle, and sealing authority.
+  if (process.platform === 'win32') {
+    return String(result.stdout || '').split(/\r?\n/).map((value) => value.trim()).find(Boolean) || null;
+  }
+  return command;
 }
 
 // The launcher does not configure, proxy, or pay for a model. It prepares a Rust-governed
@@ -491,7 +503,8 @@ async function cmdRun(flags) {
   const commands = { claude: 'claude', codex: 'codex', cursor: 'cursor', grok: 'grok' };
   const command = commands[agent];
   if (!command) throw new Error(`unsupported agent adapter \`${agent}\``);
-  if (!commandOnPath(command)) throw new Error(`${agent} adapter is not available on PATH (${command})`);
+  const resolvedCommand = commandOnPath(command);
+  if (!resolvedCommand) throw new Error(`${agent} adapter is not available on PATH (${command})`);
   const harness = require('./harness.js');
   const userArgs = flags.agentArgs || [];
   harness.validateAgentArguments(agent, userArgs);
@@ -520,7 +533,7 @@ async function cmdRun(flags) {
       result = { status: 0, signal: null, timedOut: false };
     } else {
       result = await observeManagedAdapter(
-        command,
+        resolvedCommand,
         [...(preparation.launch_arguments || []), ...userArgs],
         preparation.workspace_path,
         harness,
