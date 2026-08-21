@@ -368,7 +368,7 @@ function cmdTask(flags) {
 
 function cmdContext(flags) {
   const subcommand = flags._[0];
-  if (subcommand !== 'build') throw new Error('usage: icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]');
+  if (!['build', 'inspect'].includes(subcommand)) throw new Error('usage: icarus context <build|inspect> --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]');
   if (!flags.task) throw new Error('context build requires --task <TASK-ID>');
   const budget = Number(flags.budget || 12_000);
   if (!Number.isInteger(budget) || budget <= 0) throw new Error('--budget must be a positive integer');
@@ -376,8 +376,24 @@ function cmdContext(flags) {
   if (checkpoint != null && (!Number.isInteger(checkpoint) || checkpoint <= 0)) throw new Error('--since-checkpoint must be a positive checkpoint sequence');
   const result = require('./harness.js').buildContext(flags.repo || process.cwd(), flags.task, budget, checkpoint);
   if (flags.format && !['json', 'markdown'].includes(flags.format)) throw new Error('--format must be json or markdown');
-  if (flags.format === 'json') console.log(JSON.stringify(result.pack, null, 2));
-  else console.log(result.markdown);
+  if (flags.format === 'json') {
+    console.log(JSON.stringify(result.pack, null, 2));
+    return;
+  }
+  if (subcommand === 'build') {
+    console.log(result.markdown);
+    return;
+  }
+  const pack = result.pack;
+  console.log(c.bold(`context inspection · ${pack.task_id}`));
+  console.log(c.dim(`  execution: ${pack.execution_id} · status: ${pack.status} · budget upper bound: ${pack.upper_bound_tokens}/${pack.budget_tokens}`));
+  console.log(c.dim(`  ${pack.items.length} Rust-selected item(s); inspect uses the same deterministic compiler as context build.`));
+  for (const [index, item] of pack.items.entries()) {
+    console.log(`\n  ${index + 1}. ${c.bold(item.kind)}${item.mandatory ? c.command(' · mandatory') : ''}`);
+    console.log(c.dim(`     source: ${item.source}`));
+    console.log(c.dim(`     authority: ${item.authority} · freshness: ${item.freshness}`));
+    console.log(c.dim(`     reason: ${item.retrieval_reason} · digest: ${item.digest}`));
+  }
 }
 
 function commandOnPath(command) {
@@ -1395,6 +1411,9 @@ async function main() {
   icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]
                                         compile a deterministic, source-traceable context pack
                                         without making an LLM or network call.
+  icarus context inspect --task <TASK-ID> [--budget <tokens>] [--format json] [--repo <dir>]
+                                        inspect the Rust-selected context sources, authority,
+                                        freshness, reasons, and digests without printing content.
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
                                         inspect, resume, transition, or ask the Rust authority
                                         whether a scoped action is allowed. No LLM is invoked.

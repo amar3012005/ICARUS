@@ -62,6 +62,10 @@ test('fake Claude adapter proves governed launch, hook receipts, scope, and hand
     for (const state of ['orienting', 'contracted', 'planned']) {
       requireSuccess(['task', 'transition', taskId, state, '--repo', repo], { env });
     }
+    const inspection = requireSuccess(['context', 'inspect', '--task', taskId, '--repo', repo], { env });
+    assert.match(inspection.output, new RegExp(`context inspection.*${taskId}`));
+    assert.match(inspection.output, /Rust-selected item\(s\)/);
+    assert.match(inspection.output, /source: .*contract/);
 
     // This shim extracts the Rust-generated task id from Claude settings, obtains a pre-write
     // authorization, writes the scoped file, and records a post-write receipt.
