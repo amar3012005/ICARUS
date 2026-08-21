@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -104,7 +104,7 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
 `);
     makeAgentShimExecutable(shim);
     const launched = requireSuccess(['run', '--task', taskId, '--agent', 'claude', '--workspace', 'current', '--acknowledge-dirty-current', '--repo', repo], {
-      env: { ...env, PATH: `${shimDir}:${process.env.PATH}`, ICARUS_TEST_CLI: CLI },
+      env: { ...env, PATH: `${shimDir}${delimiter}${process.env.PATH}`, ICARUS_TEST_CLI: CLI },
     });
     assert.match(launched.output, /compatibility mode/);
     assert.match(launched.output, /→ verifying/);
@@ -124,7 +124,7 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
     assert.match(explanation.output, /README\.md/);
     assert.match(explanation.output, /outside the declared task contract/);
     const doctor = requireSuccess(['doctor', '--repo', repo], {
-      env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
+      env: { ...env, PATH: `${shimDir}${delimiter}${process.env.PATH}` },
     });
     assert.match(doctor.output, /event_chain.*verified/);
   } finally {
@@ -191,7 +191,7 @@ exit 73
 `);
     makeAgentShimExecutable(shim);
     const launched = requireSuccess(['run', '--task', taskId, '--agent', 'codex', '--workspace', 'current', '--acknowledge-dirty-current', '--codex-app-server', '--repo', repo], {
-      env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
+      env: { ...env, PATH: `${shimDir}${delimiter}${process.env.PATH}` },
     });
     assert.match(launched.output, /→ verifying/);
     const events = readFileSync(join(repo, '.icarus/runtime/logs/events.jsonl'), 'utf8');
