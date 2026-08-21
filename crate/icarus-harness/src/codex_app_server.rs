@@ -6,6 +6,8 @@
 
 use super::*;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 fn write_message(writer: &mut ChildStdin, message: &Value) -> Result<()> {
@@ -107,20 +109,31 @@ fn wait_for_response(
 
 fn spawn(command: &str) -> Result<Child> {
     let executable = resolve_executable(command)?;
-    let batch_shim = executable.to_ascii_lowercase().ends_with(".cmd")
-        || executable.to_ascii_lowercase().ends_with(".bat");
-    let mut process = if batch_shim {
-        // A batch shim is not a PE executable. `cmd /d /s /c` is the documented Windows
-        // launcher and is intentionally used only for the concrete PATH-resolved shim; model
-        // input never becomes part of this command line.
-        let invocation = format!(
-            "\"{}\" app-server --listen stdio://",
-            executable.replace('"', "\"\"")
-        );
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/d", "/s", "/c", &invocation]);
-        cmd
-    } else {
+    #[cfg(windows)]
+    let mut process = {
+        let batch_shim = executable.to_ascii_lowercase().ends_with(".cmd")
+            || executable.to_ascii_lowercase().ends_with(".bat");
+        if batch_shim {
+            // A batch shim is not a PE executable. `cmd /d /s /c` is the documented Windows
+            // launcher and is intentionally used only for the concrete PATH-resolved shim; model
+            // input never becomes part of this command line.
+            let mut cmd = Command::new("cmd");
+            // Command's normal Windows escaping changes the leading command quote into a literal
+            // backslash for cmd.exe. Keep this fixed, PATH-resolved invocation raw instead; no
+            // model or user input is interpolated here.
+            cmd.raw_arg(format!(
+                "/d /s /c \"\"{}\" app-server --listen stdio://\"",
+                executable.replace('"', "\"\"")
+            ));
+            cmd
+        } else {
+            let mut direct = Command::new(executable);
+            direct.args(["app-server", "--listen", "stdio://"]);
+            direct
+        }
+    };
+    #[cfg(not(windows))]
+    let mut process = {
         let mut direct = Command::new(executable);
         direct.args(["app-server", "--listen", "stdio://"]);
         direct

@@ -445,10 +445,20 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId, wallTi
       // directly but delegates a batch file through cmd.exe. The command path came from `where`
       // above, never from the model or a free-form CLI flag.
       const batchShim = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
-      if (batchShim && [command, ...args].some((value) => /[\r\n"&|<>^%!]/.test(String(value)))) {
+      // Rust deliberately uses extended-length paths for filesystem authority. cmd.exe and
+      // batch shims are legacy transports that do not accept the `\\?\` form, so strip only
+      // that presentation prefix at this final process boundary. The underlying Rust checks
+      // continue to use the canonical extended path.
+      const batchPath = (value) => process.platform === 'win32'
+        ? String(value).replace(/^\\\\\?\\/, '')
+        : value;
+      const launchCommand = batchShim ? batchPath(command) : command;
+      const launchArgs = batchShim ? args.map(batchPath) : args;
+      const launchCwd = batchShim ? batchPath(cwd) : cwd;
+      if (batchShim && [launchCommand, ...launchArgs].some((value) => /[\r\n"&|<>^%!]/.test(String(value)))) {
         throw new Error('refusing Windows batch adapter launch with cmd.exe metacharacters; use a native .exe adapter or remove the unsafe argument');
       }
-      child = spawnProcess(command, args, { cwd, stdio: 'inherit', shell: batchShim });
+      child = spawnProcess(launchCommand, launchArgs, { cwd: launchCwd, stdio: 'inherit', shell: batchShim });
     } catch (error) {
       reject(error);
       return;
