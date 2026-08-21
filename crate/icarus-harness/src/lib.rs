@@ -1170,6 +1170,13 @@ pub fn load_repository_policy(repo_root: &Path) -> Result<RepositoryPolicy> {
     validate_repository_policy(serde_yaml::from_reader(File::open(path)?)?, &manifest)
 }
 
+/// Return the immutable repository identity used by optional authority transports.  Consumers
+/// must obtain it from Rust rather than reconstructing it from a path or Git URL in JavaScript.
+pub fn repository_identity(repo_root: &Path) -> Result<Manifest> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)
+}
+
 fn object_schema(title: &str, required: &[&str], properties: Value) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

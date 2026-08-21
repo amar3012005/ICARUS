@@ -33,7 +33,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -407,11 +407,10 @@ function cmdContext(flags) {
   }
 }
 
-// Optional authority synchronization.  v1 intentionally uses explicit JSON bundles rather than
-// an ambient background client: a user can inspect exactly what crosses the boundary, and no
-// credential or network permission is ever needed by this CLI command.  A future HIVE-MIND
-// transport will carry these Rust-validated documents unchanged.
-function cmdSync(flags) {
+// Optional authority synchronization. v1 has no ambient/background client: file bundles are
+// fully offline, while `pull --remote` is a named, user-invoked read using the configured
+// HIVE-MIND account. A cache never authorizes an external action.
+async function cmdSync(flags, cfg) {
   const [subcommand] = flags._;
   const repo = flags.repo || process.cwd();
   const harness = require('./harness.js');
@@ -428,8 +427,24 @@ function cmdSync(flags) {
     return;
   }
   if (subcommand === 'pull') {
-    if (!flags.file) throw new Error('usage: icarus sync pull --file <authority-snapshot.json> [--repo <dir>]');
-    const snapshot = fs.readFileSync(path.resolve(flags.file), 'utf8');
+    if (!!flags.file === !!flags.remote) throw new Error('usage: icarus sync pull (--file <authority-snapshot.json> | --remote --project <project-id>) [--repo <dir>]');
+    let snapshot;
+    if (flags.remote) {
+      if (!flags.project) throw new Error('remote authority pull requires --project <project-id>');
+      if (!hivemindConfigured(cfg) || !cfg.hivemind?.token) throw new Error('no HIVEMIND connection is configured; run `icarus connect` first or use --file');
+      const identity = harness.repositoryIdentity(repo);
+      const base = String(flags['api-url'] || process.env.HIVEMIND_API_URL || cfg.hivemind.apiUrl || DEFAULT_HIVEMIND_API_URL).replace(/\/$/, '');
+      const endpoint = `${base}/api/icarus/authority/snapshot?repo_id=${encodeURIComponent(identity.repo_id)}&project_id=${encodeURIComponent(flags.project)}`;
+      const response = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${cfg.hivemind.token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`HIVEMIND authority pull ${response.status}: ${text.slice(0, 500)}`);
+      snapshot = text;
+    } else {
+      snapshot = fs.readFileSync(path.resolve(flags.file), 'utf8');
+    }
     const installed = harness.installAuthoritySnapshot(repo, snapshot);
     return console.log(ok(`installed authority snapshot ${installed.revision} for ${installed.scope.org_id}/${installed.scope.project_id} (expires ${installed.expires_at}).`));
   }
@@ -1357,7 +1372,7 @@ async function main() {
       case 'policy': cmdPolicy(flags); break;
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
-      case 'sync': cmdSync(flags); break;
+      case 'sync': await cmdSync(flags, cfg); break;
       case 'run': await cmdRun(flags); break;
       case 'harness-skill': cmdHarnessSkill(flags); break;
       case 'learn': cmdHarnessSkill(flags, 'learn'); break;
@@ -1507,8 +1522,9 @@ async function main() {
                                         freshness, reasons, and digests without printing content.
   icarus sync inspect [--repo <dir>]    inspect the opt-in cached authority boundary. It never
                                         contacts a remote service or authorizes external actions.
-  icarus sync pull --file <snapshot.json> [--repo <dir>]
-                                        validate and cache a scoped, unexpired authority snapshot.
+  icarus sync pull (--file <snapshot.json> | --remote --project <project-id>) [--repo <dir>]
+                                        validate and cache a scoped authority snapshot. --remote
+                                        uses the configured HIVE-MIND account; it is explicit.
   icarus sync push --task <TASK-ID> --user <id> --org <id> --project <id> --file <request.json>
                                         export only a sealed task's redacted receipt for an
                                         explicit remote transport; no network call is made.

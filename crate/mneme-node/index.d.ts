@@ -16,6 +16,11 @@ export declare function harnessDoctor(repoRoot: string): string
  */
 export declare function harnessPolicyCheck(repoRoot: string): string
 /**
+ * Rust-derived repository identity for an optional authority transport.  Node never derives a
+ * repo id from a mutable path or remote URL itself.
+ */
+export declare function harnessRepositoryIdentity(repoRoot: string): string
+/**
  * Read a durable Rust-recorded policy denial by id. The Node layer does not recreate policy
  * reasons from current files, because current policy can differ from the decision-time state.
  */

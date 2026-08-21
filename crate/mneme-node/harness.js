@@ -33,6 +33,10 @@ function policyCheck(repoRoot) {
   return invoke('harnessPolicyCheck', [repoRoot]);
 }
 
+function repositoryIdentity(repoRoot) {
+  return invoke('harnessRepositoryIdentity', [repoRoot]);
+}
+
 function policyExplain(repoRoot, denialId) {
   return invoke('harnessPolicyExplain', [repoRoot, denialId]);
 }
@@ -174,6 +178,7 @@ module.exports = {
   migrateHarness,
   doctor,
   policyCheck,
+  repositoryIdentity,
   policyExplain,
   startTask,
   taskStatus,

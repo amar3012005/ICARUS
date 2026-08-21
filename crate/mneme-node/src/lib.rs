@@ -85,6 +85,17 @@ pub fn harness_policy_check(repo_root: String) -> Result<String> {
     )
 }
 
+/// Rust-derived repository identity for an optional authority transport.  Node never derives a
+/// repo id from a mutable path or remote URL itself.
+#[napi]
+pub fn harness_repository_identity(repo_root: String) -> Result<String> {
+    let manifest = harness::repository_identity(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(manifest).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// Read a durable Rust-recorded policy denial by id. The Node layer does not recreate policy
 /// reasons from current files, because current policy can differ from the decision-time state.
 #[napi]
