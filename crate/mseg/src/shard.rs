@@ -67,16 +67,34 @@ fn unlock(file: &File) {
     }
 }
 
-#[cfg(not(unix))]
+/// Windows uses `LockFileEx` through `fs2`. It is non-blocking and non-reentrant across
+/// independently opened handles, preserving the same double-open protection as Unix `flock`.
+#[cfg(windows)]
+fn try_lock_exclusive(file: &File) -> Result<()> {
+    use fs2::FileExt;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Err(MsegError::ShardLocked)
+        }
+        Err(error) => Err(MsegError::Io(error)),
+    }
+}
+
+#[cfg(windows)]
+fn unlock(file: &File) {
+    use fs2::FileExt;
+    let _ = file.unlock();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn try_lock_exclusive(_file: &File) -> Result<()> {
-    // Non-unix hosts are out of scope for P2 (HIVEMIND prod is Linux). Fail loudly rather
-    // than silently run without a lock.
     Err(MsegError::Corrupt(
         "shard lock unsupported on this platform".into(),
     ))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unlock(_file: &File) {}
 
 /// One org's shard: an exclusive lock plus its [`Segment`]. CRUD is delegated to the

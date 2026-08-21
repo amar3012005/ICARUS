@@ -34,10 +34,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux and macOS both matter: the engine mmaps files and relies on sparse-file and
-        # page-cache behaviour that differs between them. A single-platform run would not catch
-        # a regression that only shows up on the other.
-        os: [ubuntu-latest, macos-latest]
+        # Windows is a supported storage target too: its LockFileEx implementation must pass
+        # the same shard-isolation suite as Unix flock. Linux/macOS retain mmap and sparse-file
+        # coverage across their differing kernels/filesystems.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: crate
