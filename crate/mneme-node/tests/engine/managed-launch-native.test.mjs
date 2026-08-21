@@ -95,12 +95,15 @@ while [ "$#" -gt 0 ]; do
 done
 task=$(grep -o -- '--task [^ ]*' "$settings" | head -n 1 | sed 's/--task //')
 [ -n "$task" ]
-printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$PWD"
-if printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/README.md"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$PWD"; then
+repo=$(pwd -W 2>/dev/null || pwd)
+# Adapter tool events may use a workspace-relative path. That avoids leaking Git Bash's `/c/...`
+# presentation into the Windows-native Rust authority while exercising the same scoped write.
+printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$repo"
+if printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"README.md"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$repo"; then
   exit 74
 fi
 printf 'adapter edit was authorized\\n' > src/fake-agent.txt
-printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event post-tool --repo "$PWD"
+printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event post-tool --repo "$repo"
 `);
     makeAgentShimExecutable(shim);
     const launched = requireSuccess(['run', '--task', taskId, '--agent', 'claude', '--workspace', 'current', '--acknowledge-dirty-current', '--repo', repo], {

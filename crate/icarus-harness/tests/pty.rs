@@ -1,14 +1,22 @@
 //! Real pseudo-terminal coverage for the interactive Node TUI. Unit viewport tests cannot prove
 //! raw-mode input, TTY gating, alternate-screen lifecycle, or an orderly interactive exit.
 
+#[cfg(not(windows))]
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+#[cfg(not(windows))]
 use std::io::{Read, Write};
+#[cfg(not(windows))]
 use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::sync::mpsc;
+#[cfg(not(windows))]
 use std::thread;
+#[cfg(not(windows))]
 use std::time::{Duration, Instant};
+#[cfg(not(windows))]
 use tempfile::tempdir;
 
+#[cfg(not(windows))]
 fn receive_until(receiver: &mpsc::Receiver<Vec<u8>>, marker: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut output = Vec::new();
@@ -31,6 +39,10 @@ fn receive_until(receiver: &mpsc::Receiver<Vec<u8>>, marker: &str) -> String {
     );
 }
 
+// ConPTY does not expose the ANSI interactive lifecycle used by this assertion; Windows has
+// independent compiled-CLI, native-MCP, storage, and managed-adapter coverage in CI. Keep this
+// test limited to the Unix PTY contract it is designed to verify.
+#[cfg(not(windows))]
 #[test]
 fn interactive_tui_enters_a_real_pty_accepts_help_and_exits_cleanly() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
