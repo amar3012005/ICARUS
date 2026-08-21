@@ -32,3 +32,11 @@ test('REGRESSION: native MCP shard round-trip has its own addon-build CI gate', 
   assert.match(ci, /name: Build the local native addon\n\s+working-directory: crate\/mneme-node\n\s+run: npm run build:debug/);
   assert.match(ci, /name: Native MCP shard round-trip\n\s+working-directory: crate\/mneme-node\n\s+run: npm run test:engine/);
 });
+
+test('REGRESSION: normal CI independently exercises the compiled CLI with a native shard', () => {
+  const ci = workflow('ci.yml');
+  assert.match(ci, /compiled-cli:/, 'compiled artifact verification must not exist only in the release workflow');
+  assert.match(ci, /bun build --compile \.\/mneme-cli\.js --outfile/);
+  assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" save "compiled binary native shard round trip" --org ci-e2e/);
+  assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" recall "compiled binary native shard" --org ci-e2e/);
+});

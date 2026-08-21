@@ -149,6 +149,52 @@ jobs:
         working-directory: crate/mneme-node
         run: npm run test:engine
 
+  # A release workflow can mask packaging breakage because it is both the producer and verifier
+  # of the artifact.  Build the single-file executable independently on the normal public CI
+  # path and make it open a native shard, write a memory, then recall it.  This covers Bun's
+  # native-addon embedding as received by an open-source user, not merely source-mode Node.
+  compiled-cli:
+    name: compiled CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Node dependencies and build native addon
+        working-directory: crate/mneme-node
+        run: |
+          npm ci
+          npm run build:debug
+
+      - name: Compile and exercise the self-contained CLI
+        working-directory: crate/mneme-node
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/icarus-ci"
+          HOME_DIR="$RUNNER_TEMP/icarus-ci-home"
+          bun build --compile ./mneme-cli.js --outfile "$BIN"
+          [ "$("$BIN" --version)" = "$(tr -d '[:space:]' < ../../VERSION)" ]
+          ICARUS_HOME="$HOME_DIR" "$BIN" save "compiled binary native shard round trip" --org ci-e2e
+          ICARUS_HOME="$HOME_DIR" "$BIN" recall "compiled binary native shard" --org ci-e2e | grep -Fi "compiled binary native shard round trip"
+
   # Separate job, not folded into `test`: mneme-python's `extension-module` pyo3 feature cannot
   # link under plain `cargo build`/`cargo test` (Python provides its own symbols at dlopen time,
   # so a maturin-style build is required) -- proved locally when adding this crate broke the
