@@ -1156,6 +1156,29 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
         &serde_json::json!({"threadId": "thread-other", "turnId": "turn-1", "itemId": "item-3"}),
     )
     .is_err());
+    let failed_turn = record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "turn/completed",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turn": {
+                "id": "turn-1",
+                "status": "failed",
+                "items": [],
+                "error": {
+                    "message": "The selected model requires a newer version of Codex. Please upgrade.",
+                    "codexErrorInfo": "other"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    assert_eq!(failed_turn.turn_status.as_deref(), Some("failed"));
+    assert_eq!(
+        failed_turn.turn_error_class.as_deref(),
+        Some("client_upgrade_required")
+    );
     assert!(
         verify_event_chain(repo.path(), &initialized.manifest.repo_id)
             .unwrap()

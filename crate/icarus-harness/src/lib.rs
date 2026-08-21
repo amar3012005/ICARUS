@@ -5305,7 +5305,7 @@ pub fn record_codex_app_server_event(
         .and_then(|turn| turn.get("status"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let turn_error_class = params
+    let mut turn_error_class = params
         .get("turn")
         .and_then(|turn| turn.get("error"))
         .and_then(|error| error.get("codexErrorInfo"))
@@ -5316,6 +5316,23 @@ pub fn record_codex_app_server_event(
                     .cloned()
             })
         });
+    // Keep the provider message out of durable state, but turn the one upgrade-specific
+    // condition into an actionable, stable class. Older Codex clients otherwise report it as
+    // the unhelpful generic `other` even though the agent cannot execute any managed turn.
+    if turn_error_class.as_deref() == Some("other")
+        && params
+            .get("turn")
+            .and_then(|turn| turn.get("error"))
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(|message| {
+                let normalized = message.to_ascii_lowercase();
+                normalized.contains("requires a newer version")
+                    || normalized.contains("please upgrade")
+            })
+    {
+        turn_error_class = Some("client_upgrade_required".into());
+    }
     if matches!(method, "turn/started" | "item/started" | "item/completed") && turn_id.is_none() {
         return Err(HarnessError::invalid(
             "Codex app-server notification requires turnId",
