@@ -1219,7 +1219,7 @@ while IFS= read -r line; do
       esac
       echo '{"method":"turn/started","params":{"threadId":"thread-fixture","turnId":"turn-fixture","startedAtMs":2}}'
       echo '{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":3,"item":{"id":"item-fixture","type":"fileChange","status":"completed","changes":[{"path":"src/fixture.rs","diff":"@@","kind":{"type":"add"}}]}}}'
-      echo '{"method":"turn/completed","params":{"threadId":"thread-fixture","turn":{"id":"turn-fixture"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"thread-fixture","turn":{"id":"turn-fixture","status":"completed","items":[]}}}'
       exit 0
       ;;
   esac
@@ -1254,6 +1254,7 @@ exit 92
     let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
     assert!(events.contains("codex_app_server_thread_bound"));
     assert!(events.contains("codex_app_server_approval_authorized"));
+    assert!(events.contains("\"turn_status\":\"completed\""));
     assert!(events.contains("codex_app_server_turn_completed"));
     assert!(events.contains("adapter_session_ended"));
 }

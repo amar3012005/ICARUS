@@ -827,6 +827,10 @@ pub struct CodexAppServerEventReceipt {
     /// a non-mutating assistant message from a missing protocol notification.
     pub item_kind: Option<String>,
     pub item_status: Option<String>,
+    /// The documented terminal turn state and a bounded error classification, if any. Error
+    /// messages are intentionally excluded: they can contain model or provider text.
+    pub turn_status: Option<String>,
+    pub turn_error_class: Option<String>,
     pub method: String,
     pub event_sequence: u64,
 }
@@ -5296,6 +5300,22 @@ pub fn record_codex_app_server_event(
         .and_then(|item| item.get("status"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let turn_status = params
+        .get("turn")
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let turn_error_class = params
+        .get("turn")
+        .and_then(|turn| turn.get("error"))
+        .and_then(|error| error.get("codexErrorInfo"))
+        .and_then(|info| {
+            info.as_str().map(str::to_owned).or_else(|| {
+                info.as_object()
+                    .and_then(|object| object.keys().next())
+                    .cloned()
+            })
+        });
     if matches!(method, "turn/started" | "item/started" | "item/completed") && turn_id.is_none() {
         return Err(HarnessError::invalid(
             "Codex app-server notification requires turnId",
@@ -5363,6 +5383,8 @@ pub fn record_codex_app_server_event(
                 "item_id": item_id,
                 "item_kind": item_kind,
                 "item_status": item_status,
+                "turn_status": turn_status,
+                "turn_error_class": turn_error_class,
                 "method": method,
                 "file_change_paths": file_change_paths.map(|(_, paths)| paths),
             }),
@@ -5377,6 +5399,8 @@ pub fn record_codex_app_server_event(
         item_id,
         item_kind,
         item_status,
+        turn_status,
+        turn_error_class,
         method: method.into(),
         event_sequence: event.sequence,
     })
