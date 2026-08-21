@@ -5589,9 +5589,10 @@ fn append_event_locked(root: &Path, input: EventInput) -> Result<RuntimeEvent> {
 #[cfg(feature = "test-failpoints")]
 fn crash_after_event_log_sync_if_requested() {
     if std::env::var("ICARUS_TEST_CRASH_POINT").ok().as_deref() == Some("event-after-log-sync") {
-        // Deliberately bypass destructors, just as SIGKILL/power loss would. This path exists
-        // only in the explicit test feature and is exercised from a separate child process.
-        std::process::abort();
+        // Deliberately bypass destructors, just as SIGKILL/power loss would. `exit` is used
+        // rather than `abort` because macOS crash reporting can indefinitely retain an aborting
+        // child during a nested test run; neither path permits the head snapshot below to run.
+        std::process::exit(85);
     }
 }
 
