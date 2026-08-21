@@ -72,7 +72,13 @@ fn dispatch(
             // The server can emit thread/started before its thread/start response. The bind is
             // the durable start receipt, so never record an event before it is bound.
             if thread_bound {
-                record_codex_app_server_event(repo_root, task_id, method, &params)?;
+                let receipt = record_codex_app_server_event(repo_root, task_id, method, &params)?;
+                if method == "turn/completed" && receipt.turn_status.as_deref() == Some("failed") {
+                    let class = receipt.turn_error_class.as_deref().unwrap_or("unknown");
+                    return Err(HarnessError::invalid(format!(
+                        "Codex app-server managed turn failed ({class}); task remains blocked for diagnosis or resume"
+                    )));
+                }
             }
             return Ok(method == "turn/completed");
         }
