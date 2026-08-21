@@ -6161,9 +6161,34 @@ fn process_is_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+
+    // Query the process without granting destructive rights. A failed open or status query is
+    // treated as live: an inaccessible owner must never make its runtime lock reclaimable.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle == 0 {
+        return true;
+    }
+    let mut exit_code = 0u32;
+    let query_succeeded = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+    let _ = unsafe { CloseHandle(handle) };
+    !query_succeeded || exit_code == STILL_ACTIVE as u32
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_is_alive(_pid: u32) -> bool {
-    false
+    // Unsupported platforms must fail closed: this prevents deleting a lock merely because
+    // liveness cannot be established natively.
+    true
 }
 
 struct RuntimeLock {
