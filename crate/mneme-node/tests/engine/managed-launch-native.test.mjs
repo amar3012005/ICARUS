@@ -27,6 +27,16 @@ function requireSuccess(args, options) {
   return result;
 }
 
+// The production launcher resolves adapters through the host's normal command lookup. Windows
+// does not consider an extensionless POSIX script executable through PATHEXT, so expose the same
+// fixture through a tiny .cmd bridge there rather than weakening the real adapter lookup.
+function makeAgentShimExecutable(shim) {
+  chmodSync(shim, 0o755);
+  if (process.platform === 'win32') {
+    writeFileSync(`${shim}.cmd`, '@echo off\r\n"%ProgramFiles%\\Git\\bin\\bash.exe" "%~dp0' + shim.split(/[\\/]/).pop() + '" %*\r\n');
+  }
+}
+
 test('fake Claude adapter proves governed launch, hook receipts, scope, and handoff end-to-end', () => {
   const root = mkdtempSync(join(tmpdir(), 'icarus-managed-agent-'));
   const shimDir = join(root, 'bin');
@@ -92,7 +102,7 @@ fi
 printf 'adapter edit was authorized\\n' > src/fake-agent.txt
 printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event post-tool --repo "$PWD"
 `);
-    chmodSync(shim, 0o755);
+    makeAgentShimExecutable(shim);
     const launched = requireSuccess(['run', '--task', taskId, '--agent', 'claude', '--workspace', 'current', '--acknowledge-dirty-current', '--repo', repo], {
       env: { ...env, PATH: `${shimDir}:${process.env.PATH}`, ICARUS_TEST_CLI: CLI },
     });
@@ -179,7 +189,7 @@ while IFS= read -r line; do
 done
 exit 73
 `);
-    chmodSync(shim, 0o755);
+    makeAgentShimExecutable(shim);
     const launched = requireSuccess(['run', '--task', taskId, '--agent', 'codex', '--workspace', 'current', '--acknowledge-dirty-current', '--codex-app-server', '--repo', repo], {
       env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
     });
