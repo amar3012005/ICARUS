@@ -132,7 +132,7 @@ fn resolve_executable(command: &str) -> Result<String> {
                 "Codex app-server program `{command}` is not available on PATH"
             )));
         }
-        return String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(str::trim)
             .find(|value| !value.is_empty())
