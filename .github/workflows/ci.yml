@@ -134,7 +134,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # A Windows Rust build alone cannot prove the NAPI artifact can load or that the actual
+        # MCP process can open a locked local shard. Exercise the same native round-trip there.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -171,7 +173,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # This is the user-facing artifact gate. Windows must compile and execute the embedded
+        # addon before it can be named as a release target.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -198,6 +202,7 @@ jobs:
 
       - name: Compile and exercise the self-contained CLI
         working-directory: crate/mneme-node
+        shell: bash
         run: |
           set -euo pipefail
           BIN="$RUNNER_TEMP/icarus-ci"
