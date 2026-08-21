@@ -2882,6 +2882,28 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
             .status,
         "pass"
     );
+    // A writable ignored runtime receipt is not promotion authority: the matching native event
+    // binds its exact digest and replay execution. Tampering with the local JSON removes it from
+    // the eligible replay set until ICARUS evaluates the sealed replay again.
+    let evaluation_path = repo
+        .path()
+        .join(".icarus/runtime/skills/evaluations/safe-review")
+        .join(format!("{replay_one}.json"));
+    let mut tampered: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&evaluation_path).unwrap()).unwrap();
+    tampered["final_receipt_digest"] = serde_json::json!("forged-local-receipt");
+    fs::write(
+        &evaluation_path,
+        format!("{}\n", serde_json::to_string_pretty(&tampered).unwrap()),
+    )
+    .unwrap();
+    assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
+    assert_eq!(
+        evaluate_skill(repo.path(), "safe-review", &replay_one)
+            .unwrap()
+            .status,
+        "pass"
+    );
     let active = icarus_harness::promote_skill(repo.path(), "safe-review", None).unwrap();
     assert_eq!(
         active.verification["promotion"]["successful_native_replay_count"],

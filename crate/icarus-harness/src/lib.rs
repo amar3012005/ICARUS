@@ -3469,6 +3469,28 @@ fn native_skill_evaluations(root: &Path, skill: &HarnessSkill) -> Result<Vec<Ski
         return Ok(Vec::new());
     }
     let digest = skill_candidate_digest(skill)?;
+    // Evaluation JSON lives in ignored runtime state and is useful for local inspection, but it
+    // is not authority by itself.  Only an identical, hash-chained `skill_evaluated` event can
+    // make a replay eligible for promotion.
+    let event_backed: BTreeSet<String> = read_events(root)?
+        .into_iter()
+        .filter(|event| event.event_type == "skill_evaluated")
+        .filter_map(|event| serde_json::from_value::<SkillEvaluation>(event.payload).ok())
+        .filter(|evaluation| {
+            evaluation.schema_version == 1
+                && evaluation.skill_id == skill.id
+                && evaluation.candidate_digest == digest
+        })
+        .map(|evaluation| {
+            format!(
+                "{}:{}:{}:{}",
+                evaluation.replay_task_id,
+                evaluation.replay_execution_id,
+                evaluation.status,
+                evaluation.final_receipt_digest
+            )
+        })
+        .collect();
     let mut evaluations = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -3479,12 +3501,45 @@ fn native_skill_evaluations(root: &Path, skill: &HarnessSkill) -> Result<Vec<Ski
         if evaluation.schema_version == 1
             && evaluation.skill_id == skill.id
             && evaluation.candidate_digest == digest
+            && event_backed.contains(&format!(
+                "{}:{}:{}:{}",
+                evaluation.replay_task_id,
+                evaluation.replay_execution_id,
+                evaluation.status,
+                evaluation.final_receipt_digest
+            ))
         {
             evaluations.push(evaluation);
         }
     }
     evaluations.sort_by(|left, right| left.replay_task_id.cmp(&right.replay_task_id));
     Ok(evaluations)
+}
+
+fn verify_sealed_task_receipt(root: &Path, task: &TaskRecord) -> Result<()> {
+    if task.status != "sealed" {
+        return Err(HarnessError::invalid("task is not sealed"));
+    }
+    let final_path = runtime_root(root)
+        .join("tasks")
+        .join(&task.task_id)
+        .join("final-result.json");
+    let receipt: Value = serde_json::from_reader(
+        File::open(&final_path)
+            .map_err(|_| HarnessError::invalid("sealed task final receipt is missing"))?,
+    )?;
+    if receipt.pointer("/seal/sealed").and_then(Value::as_bool) != Some(true)
+        || receipt.pointer("/seal/task_id").and_then(Value::as_str) != Some(task.task_id.as_str())
+        || receipt
+            .pointer("/seal/execution_id")
+            .and_then(Value::as_str)
+            != Some(task.execution_id.as_str())
+    {
+        return Err(HarnessError::invalid(
+            "sealed task final receipt does not bind the current task and execution",
+        ));
+    }
+    Ok(())
 }
 
 /// Evaluate a proposed procedure against a separate, sealed replay task. ICARUS does not call a
@@ -3496,6 +3551,7 @@ pub fn evaluate_skill(
     replay_task_id: &str,
 ) -> Result<SkillEvaluation> {
     let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
     let skill: HarnessSkill = serde_json::from_reader(
         File::open(proposed_skill_path(&root, skill_id))
             .map_err(|_| HarnessError::invalid("proposed skill does not exist"))?,
@@ -3507,6 +3563,10 @@ pub fn evaluate_skill(
     }
     let replay_task = task_status(&root, replay_task_id)?;
     let mut issues = Vec::new();
+    let chain = verify_event_chain(&root, &manifest.repo_id)?;
+    if !chain.valid {
+        issues.push(format!("event chain invalid: {}", chain.issues.join("; ")));
+    }
     if skill
         .source_tasks
         .iter()
@@ -3514,8 +3574,8 @@ pub fn evaluate_skill(
     {
         issues.push("replay task must be independent of the candidate source tasks".into());
     }
-    if replay_task.status != "sealed" {
-        issues.push("replay task is not sealed".into());
+    if let Err(error) = verify_sealed_task_receipt(&root, &replay_task) {
+        issues.push(format!("replay task sealed receipt is invalid: {error}"));
     }
     let checkpoints = read_checkpoints(&root, replay_task_id)?;
     let applied = checkpoints.iter().any(|checkpoint| {
@@ -3551,6 +3611,17 @@ pub fn evaluate_skill(
     atomic_write(
         &skill_evaluation_path(&root, skill_id, replay_task_id),
         format!("{}\n", serde_json::to_string_pretty(&evaluation)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: evaluation.replay_execution_id.clone(),
+            task_id: evaluation.replay_task_id.clone(),
+            event_type: "skill_evaluated".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::to_value(&evaluation)?,
+        },
     )?;
     Ok(evaluation)
 }
@@ -3780,7 +3851,14 @@ pub fn review_active_skills(repo_root: &Path) -> Result<SkillHealthReview> {
 
 pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<HarnessSkill> {
     let root = canonical_root(repo_root)?;
-    load_manifest(&root)?;
+    let manifest = load_manifest(&root)?;
+    let chain = verify_event_chain(&root, &manifest.repo_id)?;
+    if !chain.valid {
+        return Err(HarnessError::invalid(format!(
+            "cannot propose a skill while the event chain is invalid: {}",
+            chain.issues.join("; ")
+        )));
+    }
     if !skill_id_valid(&skill.id)
         || skill.instructions.trim().is_empty()
         || skill.source_tasks.is_empty()
@@ -3802,11 +3880,12 @@ pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<Harnes
         ));
     }
     for task_id in &skill.source_tasks {
-        if task_status(&root, task_id)?.status != "sealed" {
-            return Err(HarnessError::invalid(format!(
-                "source task `{task_id}` is not sealed"
-            )));
-        }
+        let source = task_status(&root, task_id)?;
+        verify_sealed_task_receipt(&root, &source).map_err(|error| {
+            HarnessError::invalid(format!(
+                "source task `{task_id}` is not sealed and receipt-bound: {error}"
+            ))
+        })?;
     }
     skill.schema_version = 1;
     skill.state = "proposed".into();
@@ -3824,6 +3903,14 @@ pub fn promote_skill(
     owner_approval: Option<String>,
 ) -> Result<HarnessSkill> {
     let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let chain = verify_event_chain(&root, &manifest.repo_id)?;
+    if !chain.valid {
+        return Err(HarnessError::invalid(format!(
+            "cannot promote a skill while the event chain is invalid: {}",
+            chain.issues.join("; ")
+        )));
+    }
     let proposed = proposed_skill_path(&root, skill_id);
     let mut skill: HarnessSkill = serde_json::from_reader(
         File::open(&proposed)
@@ -3866,18 +3953,19 @@ pub fn promote_skill(
         ));
     }
     for task_id in &skill.source_tasks {
-        if task_status(&root, task_id)?.status != "sealed" {
-            return Err(HarnessError::invalid(format!(
-                "source task `{task_id}` is no longer sealed"
-            )));
-        }
+        let source = task_status(&root, task_id)?;
+        verify_sealed_task_receipt(&root, &source).map_err(|error| {
+            HarnessError::invalid(format!(
+                "source task `{task_id}` is no longer sealed and receipt-bound: {error}"
+            ))
+        })?;
     }
     skill.state = "active".into();
     skill.verification = json!({
         "status": "verified",
         "promotion": {
             "approval_id": owner_approval,
-            "policy_version": load_manifest(&root)?.policy_version,
+            "policy_version": manifest.policy_version,
             "source_task_count": skill.source_tasks.len(),
             "successful_native_replay_count": successful_replays.len(),
             "proof_expires_at": skill.proof_expires_at,
