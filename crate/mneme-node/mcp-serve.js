@@ -597,6 +597,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_policy_explain',
+    {
+      title: 'Read a durable Rust-recorded policy denial',
+      description: 'Use only with a DENIAL id returned by a rejected managed adapter write. ICARUS reads the immutable decision-time receipt from the Rust runtime; it does not infer a new explanation from current policy, agent prose, or file content.',
+      inputSchema: { repo: z.string().default(process.cwd()), denial_id: z.string() },
+    },
+    async ({ repo, denial_id }) => {
+      try { return textResult(harnessFor().policyExplain(repo, denial_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_checkpoint',
     {
       title: 'Checkpoint governed task progress',
