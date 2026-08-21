@@ -2289,7 +2289,8 @@ fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
     fs::write(repo.path().join("README.md"), "exportable artifact\n").unwrap();
     let mut export_contract = contract();
     export_contract.acceptance_criteria = serde_json::json!([
-        {"id":"artifact","type":"artifact","path":"README.md","required":true}
+        {"id":"artifact","type":"artifact","path":"README.md","required":true},
+        {"id":"secret-output","type":"test","command":"printf 'api_key=ICARUS_TEST_SECRET_DO_NOT_EXPORT\\n'","required":true}
     ]);
     let task = start_task(
         repo.path(),
@@ -2308,6 +2309,7 @@ fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
         transition_task(repo.path(), &task.task_id, state).unwrap();
     }
     verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap();
+    verify_task_criterion(repo.path(), &task.task_id, "secret-output").unwrap();
     assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
 
     let full = export_task(repo.path(), &task.task_id, false).unwrap();
@@ -2319,6 +2321,11 @@ fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
     assert!(full.final_receipt_path.is_some());
     assert_eq!(full.criteria[0]["criterion_id"], "artifact");
     assert_eq!(full.criteria[0]["artifacts"][0], "README.md");
+    assert!(full.criteria.iter().any(|criterion| {
+        criterion["output_excerpt"]
+            .as_str()
+            .is_some_and(|output| output.contains("ICARUS_TEST_SECRET_DO_NOT_EXPORT"))
+    }));
 
     let redacted = export_task(repo.path(), &task.task_id, true).unwrap();
     assert!(redacted.objective.is_none());
@@ -2327,6 +2334,11 @@ fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
     assert!(redacted.criteria[0].get("artifacts").is_none());
     assert!(redacted.criteria[0].get("output_excerpt").is_none());
     assert!(redacted.criteria[0].get("attestation").is_none());
+    assert!(redacted.criteria.iter().all(|criterion| {
+        !criterion
+            .to_string()
+            .contains("ICARUS_TEST_SECRET_DO_NOT_EXPORT")
+    }));
     assert!(!redacted.criteria[0]["output_digest"]
         .as_str()
         .unwrap()
