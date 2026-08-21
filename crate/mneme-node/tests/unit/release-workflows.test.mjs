@@ -33,6 +33,14 @@ test('REGRESSION: native MCP shard round-trip has its own addon-build CI gate', 
   assert.match(ci, /name: Native MCP shard round-trip\n\s+working-directory: crate\/mneme-node\n\s+run: npm run test:engine/);
 });
 
+test('REGRESSION: native engine tests do not rely on a shell glob', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'crate', 'mneme-node', 'package.json'), 'utf8'));
+  const runner = readFileSync(join(ROOT, 'crate', 'mneme-node', 'scripts', 'test-engine.mjs'), 'utf8');
+  assert.equal(pkg.scripts['test:engine'], 'node scripts/test-engine.mjs');
+  assert.match(runner, /spawn\(process\.execPath, \['--test', \.\.\.tests\]/);
+  assert.match(runner, /no native engine tests found/);
+});
+
 test('REGRESSION: normal CI independently exercises the compiled CLI with a native shard', () => {
   const ci = workflow('ci.yml');
   assert.match(ci, /compiled-cli:/, 'compiled artifact verification must not exist only in the release workflow');
