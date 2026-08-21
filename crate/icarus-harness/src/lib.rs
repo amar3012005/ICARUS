@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Run one governed Codex app-server turn through Rust's process, policy, event and lifecycle
@@ -47,6 +48,11 @@ pub fn run_codex_app_server_bridge_with_command(
 const MANIFEST_VERSION: u32 = 1;
 const RUNTIME_DIR: &str = ".icarus/runtime";
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+// Event appends are normally milliseconds long, but an adapter hook can legitimately arrive
+// while the launcher records its adjacent lifecycle event. Wait briefly for that live owner;
+// continuing past this bounded window would hide a wedged writer, so it remains fail-closed.
+const LOCK_CONTENTION_RETRIES: usize = 25;
+const LOCK_CONTENTION_DELAY: Duration = Duration::from_millis(20);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -6168,7 +6174,7 @@ impl RuntimeLock {
     fn acquire(root: &Path, name: &str) -> Result<Self> {
         let path = locks_dir(root).join(format!("{}.lock", name));
         fs::create_dir_all(path.parent().unwrap())?;
-        for _ in 0..2 {
+        for attempt in 0..=LOCK_CONTENTION_RETRIES {
             match fs::create_dir(&path) {
                 Ok(()) => {
                     atomic_write(
@@ -6196,6 +6202,10 @@ impl RuntimeLock {
                                 return Err(error.into());
                             }
                         }
+                        continue;
+                    }
+                    if attempt < LOCK_CONTENTION_RETRIES {
+                        thread::sleep(LOCK_CONTENTION_DELAY);
                         continue;
                     }
                     return Err(HarnessError::invalid(format!(

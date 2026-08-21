@@ -15,6 +15,7 @@ use std::fs;
 #[cfg(feature = "test-failpoints")]
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 use tempfile::tempdir;
 
 fn repo() -> tempfile::TempDir {
@@ -814,6 +815,43 @@ fn doctor_detects_dead_stale_locks_without_flagging_a_live_writer() {
         .checks
         .iter()
         .any(|check| check.id == "stale_locks" && check.status == "fail"));
+}
+
+#[test]
+fn adjacent_runtime_event_writers_wait_briefly_for_a_live_lock_owner() {
+    // A managed adapter hook can arrive just after its launcher starts recording a lifecycle
+    // event. This is legitimate short contention, not stale ownership. The second writer must
+    // wait for the live owner rather than spuriously blocking a task; it still fails closed if
+    // the owner does not release inside the bounded wait window.
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let lock = repo.path().join(".icarus/runtime/locks/events.lock");
+    fs::create_dir_all(&lock).unwrap();
+    fs::write(
+        lock.join("owner.json"),
+        format!(
+            "{{\"pid\":{},\"acquired_at_unix_seconds\":0}}\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    let releaser = std::thread::spawn({
+        let lock = lock.clone();
+        move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::remove_dir_all(lock).unwrap();
+        }
+    });
+    append_event(
+        repo.path(),
+        EventInput::new("exec-wait", "TASK-WAIT", "created"),
+    )
+    .unwrap();
+    releaser.join().unwrap();
+    assert!(repo
+        .path()
+        .join(".icarus/runtime/logs/events.jsonl")
+        .exists());
 }
 
 #[test]
