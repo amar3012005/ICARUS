@@ -231,14 +231,17 @@ pub fn run(
         )?;
         write_message(
             &mut stdin,
-            &json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {"cwd": workspace, "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": "workspace-write", "developerInstructions": "This is a governed ICARUS task. The Rust harness controls authorization, verification, and sealing."}}),
+            // `on-request` permits ordinary workspace file changes without emitting a request,
+            // which cannot satisfy a pre-action governed adapter. The documented `untrusted`
+            // mode asks the Rust bridge before every action that needs authorization.
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {"cwd": workspace, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "workspace-write", "developerInstructions": "This is a governed ICARUS task. The Rust harness controls authorization, verification, and sealing."}}),
         )?;
         let started = wait_for_response(&mut stdout, &mut stdin, repo_root, task_id, 2, false)?;
         let thread_id = thread_id_from_start(&started)?.to_owned();
         bind_codex_app_server_thread(repo_root, task_id, &thread_id)?;
         write_message(
             &mut stdin,
-            &json!({"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": {"threadId": thread_id, "approvalPolicy": "on-request", "approvalsReviewer": "user", "cwd": workspace, "input": [{"type": "text", "text": prompt}]}}),
+            &json!({"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": {"threadId": thread_id, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "cwd": workspace, "input": [{"type": "text", "text": prompt}]}}),
         )?;
         wait_for_response(&mut stdout, &mut stdin, repo_root, task_id, 3, true)?;
         loop {

@@ -5154,7 +5154,43 @@ fn load_bound_codex_session(
     Ok(session)
 }
 
-fn codex_file_change_paths(params: &Value) -> Result<Option<(String, Vec<String>)>> {
+fn codex_absolute_workspace_relative_path(workspace: &Path, candidate: &Path) -> Result<PathBuf> {
+    let workspace = workspace.canonicalize().map_err(HarnessError::from)?;
+    let mut existing = candidate.to_path_buf();
+    loop {
+        if existing.exists() {
+            let suffix = candidate.strip_prefix(&existing).map_err(|_| {
+                HarnessError::invalid("Codex file-change path has an invalid existing ancestor")
+            })?;
+            let resolved = existing
+                .canonicalize()
+                .map_err(HarnessError::from)?
+                .join(suffix);
+            return resolved
+                .strip_prefix(&workspace)
+                .map(Path::to_path_buf)
+                .map_err(|_| {
+                    HarnessError::invalid(
+                        "Codex file-change item names a path outside the managed workspace",
+                    )
+                });
+        }
+        let parent = existing.parent().ok_or_else(|| {
+            HarnessError::invalid("Codex file-change path has no existing workspace ancestor")
+        })?;
+        if parent == existing {
+            return Err(HarnessError::invalid(
+                "Codex file-change path has no existing workspace ancestor",
+            ));
+        }
+        existing = parent.to_path_buf();
+    }
+}
+
+fn codex_file_change_paths(
+    workspace: &Path,
+    params: &Value,
+) -> Result<Option<(String, Vec<String>)>> {
     let Some(item) = params.get("item").and_then(Value::as_object) else {
         return Ok(None);
     };
@@ -5183,7 +5219,19 @@ fn codex_file_change_paths(params: &Value) -> Result<Option<(String, Vec<String>
             .and_then(Value::as_str)
             .filter(|path| !path.trim().is_empty())
             .ok_or_else(|| HarnessError::invalid("Codex file-change item has a pathless change"))?;
-        let normalized = checked_repo_relative_path(path)?
+        let candidate = Path::new(path);
+        // Current Codex app-server versions report FileUpdateChange paths as absolute workspace
+        // paths, while older fixtures use repository-relative strings. Support both without ever
+        // granting an absolute path: it must lexically live beneath the Rust-selected workspace,
+        // then the normal workspace/symlink validation below proves its resolved destination.
+        let absolute_relative;
+        let relative = if candidate.is_absolute() {
+            absolute_relative = codex_absolute_workspace_relative_path(workspace, candidate)?;
+            &absolute_relative
+        } else {
+            candidate
+        };
+        let normalized = checked_repo_relative_path(&relative.to_string_lossy())?
             .to_string_lossy()
             .replace('\\', "/");
         paths.insert(normalized);
@@ -5343,7 +5391,7 @@ pub fn record_codex_app_server_event(
             "Codex app-server item notification requires item id",
         ));
     }
-    let file_change_paths = codex_file_change_paths(params)?;
+    let file_change_paths = codex_file_change_paths(Path::new(&run.workspace_path), params)?;
     if method == "item/started" {
         if let Some((file_change_id, paths)) = file_change_paths.clone() {
             if item_id.as_deref() != Some(file_change_id.as_str()) {

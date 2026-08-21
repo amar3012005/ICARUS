@@ -1071,6 +1071,11 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
     .unwrap();
     assert_eq!(file_change.decision, "decline");
     assert!(file_change.reason.contains("prior structured file-change"));
+    let allowed_absolute_path = repo
+        .path()
+        .join("src/allowed.rs")
+        .to_string_lossy()
+        .into_owned();
     record_codex_app_server_event(
         repo.path(),
         &task.task_id,
@@ -1083,7 +1088,7 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
                 "id": "item-allowed",
                 "type": "fileChange",
                 "status": "inProgress",
-                "changes": [{"path": "src/allowed.rs", "diff": "@@", "kind": {"type": "add"}}],
+                "changes": [{"path": allowed_absolute_path, "diff": "@@", "kind": {"type": "add"}}],
             },
         }),
     )
@@ -1107,7 +1112,7 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
                 "id": "item-allowed",
                 "type": "fileChange",
                 "status": "completed",
-                "changes": [{"path": "src/allowed.rs", "diff": "@@", "kind": {"type": "add"}}],
+                "changes": [{"path": repo.path().join("src/allowed.rs").to_string_lossy(), "diff": "@@", "kind": {"type": "add"}}],
             },
         }),
     )
