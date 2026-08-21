@@ -83,8 +83,9 @@ fn try_lock_exclusive(file: &File) -> Result<()> {
 
 #[cfg(windows)]
 fn unlock(file: &File) {
-    use fs2::FileExt;
-    let _ = file.unlock();
+    // Keep the call on fs2's cross-platform trait: `std::fs::File::unlock` was added after
+    // ICARUS's Rust 1.77 MSRV and otherwise shadows this trait method on newer toolchains.
+    let _ = fs2::FileExt::unlock(file);
 }
 
 #[cfg(not(any(unix, windows)))]
