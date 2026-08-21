@@ -742,6 +742,25 @@ pub struct AdapterAuthorizationReceipt {
     pub path: String,
     pub allowed: bool,
     pub reason: String,
+    /// Present only for a Rust-recorded denial. The identifier resolves to a durable, bounded
+    /// policy explanation; callers must not manufacture explanations from the reason string.
+    pub denial_id: Option<String>,
+    pub event_sequence: u64,
+}
+
+/// A durable explanation of an authorization denial. It contains only the policy decision and
+/// normalized tool boundary—not model text, file contents, or arbitrary hook payloads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyDenial {
+    pub schema_version: u32,
+    pub denial_id: String,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub tool_name: String,
+    pub path: String,
+    pub reason: String,
     pub event_sequence: u64,
 }
 
@@ -1499,6 +1518,32 @@ fn task_path(root: &Path, task_id: &str) -> Result<PathBuf> {
         return Err(HarnessError::invalid("invalid ICARUS task id"));
     }
     checked_runtime_path(root, &format!("tasks/{task_id}/task.json"))
+}
+
+fn denial_path(root: &Path, denial_id: &str) -> Result<PathBuf> {
+    if !denial_id.starts_with("DENIAL-")
+        || denial_id.len() != 40
+        || !denial_id[7..].chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        return Err(HarnessError::invalid("invalid policy denial id"));
+    }
+    checked_runtime_path(root, &format!("denials/{denial_id}.json"))
+}
+
+/// Read a typed denial explanation emitted by the Rust adapter authority. This cannot explain a
+/// made-up id or reconstruct a decision from current mutable state.
+pub fn explain_policy_denial(repo_root: &Path, denial_id: &str) -> Result<PolicyDenial> {
+    let root = canonical_root(repo_root)?;
+    let value = read_snapshot(&root, &format!("denials/{denial_id}.json"))?.ok_or_else(|| {
+        HarnessError::invalid(format!("policy denial `{denial_id}` does not exist"))
+    })?;
+    let denial: PolicyDenial = serde_json::from_value(value)?;
+    if denial.denial_id != denial_id {
+        return Err(HarnessError::invalid("policy denial snapshot id mismatch"));
+    }
+    Ok(denial)
 }
 
 fn contract_path(root: &Path, task_id: &str, version: u32) -> Result<PathBuf> {
@@ -5425,6 +5470,25 @@ pub fn authorize_adapter_write(
             }),
         },
     )?;
+    let denial_id = if authorization.allowed {
+        None
+    } else {
+        let denial_id = format!("DENIAL-{}-{:020}", &task.task_id[5..], event.sequence);
+        let denial = PolicyDenial {
+            schema_version: 1,
+            denial_id: denial_id.clone(),
+            task_id: task.task_id.clone(),
+            execution_id: task.execution_id.clone(),
+            agent: agent.into(),
+            tool_name: tool_name.into(),
+            path: path.into(),
+            reason: authorization.reason.clone(),
+            event_sequence: event.sequence,
+        };
+        let denial_path = denial_path(&root, &denial_id)?;
+        atomic_write(&denial_path, serde_json::to_vec_pretty(&denial)?.as_slice())?;
+        Some(denial_id)
+    };
     Ok(AdapterAuthorizationReceipt {
         schema_version: 1,
         task_id: task.task_id,
@@ -5434,6 +5498,7 @@ pub fn authorize_adapter_write(
         path: path.into(),
         allowed: authorization.allowed,
         reason: authorization.reason,
+        denial_id,
         event_sequence: event.sequence,
     })
 }

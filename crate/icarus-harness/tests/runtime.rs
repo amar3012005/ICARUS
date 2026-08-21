@@ -1143,6 +1143,12 @@ fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
             .unwrap();
     assert!(!denied.allowed);
     assert!(denied.event_sequence > allowed.event_sequence);
+    let denial_id = denied.denial_id.as_deref().unwrap();
+    let explanation = icarus_harness::explain_policy_denial(repo.path(), denial_id).unwrap();
+    assert_eq!(explanation.reason, denied.reason);
+    assert_eq!(explanation.path, "README.md");
+    assert_eq!(explanation.event_sequence, denied.event_sequence);
+    assert!(icarus_harness::explain_policy_denial(repo.path(), "DENIAL-not-real").is_err());
     assert!(
         authorize_adapter_write(repo.path(), &task.task_id, "codex", "Write", "src/other.rs",)
             .is_err()

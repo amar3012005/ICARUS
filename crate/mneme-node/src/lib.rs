@@ -85,6 +85,17 @@ pub fn harness_policy_check(repo_root: String) -> Result<String> {
     )
 }
 
+/// Read a durable Rust-recorded policy denial by id. The Node layer does not recreate policy
+/// reasons from current files, because current policy can differ from the decision-time state.
+#[napi]
+pub fn harness_policy_explain(repo_root: String, denial_id: String) -> Result<String> {
+    let denial = harness::explain_policy_denial(std::path::Path::new(&repo_root), &denial_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(denial).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 #[napi]
 pub fn harness_start_task(
     repo_root: String,

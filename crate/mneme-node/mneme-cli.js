@@ -241,7 +241,18 @@ function cmdDoctor(flags) {
 
 function cmdPolicy(flags) {
   const subcommand = flags._[0];
-  if (subcommand !== 'check') throw new Error('usage: icarus policy check [--repo <dir>]');
+  if (!['check', 'explain'].includes(subcommand)) throw new Error('usage: icarus policy <check|explain> [<DENIAL-ID>] [--repo <dir>]');
+  if (subcommand === 'explain') {
+    const denialId = flags._[1];
+    if (!denialId) throw new Error('usage: icarus policy explain <DENIAL-ID> [--repo <dir>]');
+    const denial = require('./harness.js').policyExplain(flags.repo || process.cwd(), denialId);
+    console.log(`\n${heading(`ICARUS policy denial · ${denial.denial_id}`)}\n`);
+    console.log(`  ${c.error('✗')} ${c.bold('denied'.padEnd(18))}${denial.reason}`);
+    console.log(`  ${c.dim('task'.padEnd(20))}${denial.task_id} · ${denial.execution_id}`);
+    console.log(`  ${c.dim('boundary'.padEnd(20))}${denial.agent} ${denial.tool_name} ${denial.path}`);
+    console.log(`  ${c.dim('audit event'.padEnd(20))}${denial.event_sequence}`);
+    return;
+  }
   const policy = require('./harness.js').policyCheck(flags.repo || process.cwd());
   console.log(`\n${heading('ICARUS Harness policy')}\n`);
   console.log(`  ${c.success('✓')} ${c.bold('validated'.padEnd(18))} policy v${policy.policy_version}`);
@@ -1414,6 +1425,9 @@ async function main() {
   icarus context inspect --task <TASK-ID> [--budget <tokens>] [--format json] [--repo <dir>]
                                         inspect the Rust-selected context sources, authority,
                                         freshness, reasons, and digests without printing content.
+  icarus policy explain <DENIAL-ID> [--repo <dir>]
+                                        read the exact Rust-recorded reason for an actual adapter
+                                        write denial; it never reconstructs a decision from prose.
   icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]
                                         inspect, resume, transition, or ask the Rust authority
                                         whether a scoped action is allowed. No LLM is invoked.

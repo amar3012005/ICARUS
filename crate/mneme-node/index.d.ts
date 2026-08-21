@@ -15,6 +15,11 @@ export declare function harnessDoctor(repoRoot: string): string
  * display the result, but cannot parse YAML or decide whether an invalid policy is acceptable.
  */
 export declare function harnessPolicyCheck(repoRoot: string): string
+/**
+ * Read a durable Rust-recorded policy denial by id. The Node layer does not recreate policy
+ * reasons from current files, because current policy can differ from the decision-time state.
+ */
+export declare function harnessPolicyExplain(repoRoot: string, denialId: string): string
 export declare function harnessStartTask(repoRoot: string, objective: string, contractJson: string): string
 export declare function harnessTaskStatus(repoRoot: string, taskId: string): string
 export declare function harnessTransitionTask(repoRoot: string, taskId: string, target: string): string

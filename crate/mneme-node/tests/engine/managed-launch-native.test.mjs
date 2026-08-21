@@ -2,7 +2,7 @@
 // Claude/Codex subscription or network call. It is intentionally not adapter certification.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -86,6 +86,9 @@ done
 task=$(grep -o -- '--task [^ ]*' "$settings" | head -n 1 | sed 's/--task //')
 [ -n "$task" ]
 printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$PWD"
+if printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/README.md"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$PWD"; then
+  exit 74
+fi
 printf 'adapter edit was authorized\\n' > src/fake-agent.txt
 printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event post-tool --repo "$PWD"
 `);
@@ -103,6 +106,13 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
     for (const eventType of ['adapter_session_started', 'adapter_pre_action_authorized', 'adapter_post_action_observed', 'adapter_session_ended', 'current_workspace_scope_checked']) {
       assert.match(events, new RegExp(eventType));
     }
+    const denialFiles = readdirSync(join(repo, '.icarus/runtime/denials'));
+    assert.equal(denialFiles.length, 1);
+    const denialId = denialFiles[0].replace(/\.json$/, '');
+    const explanation = requireSuccess(['policy', 'explain', denialId, '--repo', repo], { env });
+    assert.match(explanation.output, new RegExp(`policy denial.*${denialId}`));
+    assert.match(explanation.output, /README\.md/);
+    assert.match(explanation.output, /outside the declared task contract/);
     const doctor = requireSuccess(['doctor', '--repo', repo], {
       env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
     });
