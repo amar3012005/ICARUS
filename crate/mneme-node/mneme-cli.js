@@ -441,7 +441,14 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId, wallTi
     let forceKillTimer = null;
     let child;
     try {
-      child = spawnProcess(command, args, { cwd, stdio: 'inherit' });
+      // npm commonly installs Windows CLIs as `.cmd` shims. Node can launch a native `.exe`
+      // directly but delegates a batch file through cmd.exe. The command path came from `where`
+      // above, never from the model or a free-form CLI flag.
+      const batchShim = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
+      if (batchShim && [command, ...args].some((value) => /[\r\n"&|<>^%!]/.test(String(value)))) {
+        throw new Error('refusing Windows batch adapter launch with cmd.exe metacharacters; use a native .exe adapter or remove the unsafe argument');
+      }
+      child = spawnProcess(command, args, { cwd, stdio: 'inherit', shell: batchShim });
     } catch (error) {
       reject(error);
       return;

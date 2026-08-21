@@ -107,8 +107,25 @@ fn wait_for_response(
 
 fn spawn(command: &str) -> Result<Child> {
     let executable = resolve_executable(command)?;
-    Command::new(executable)
-        .args(["app-server", "--listen", "stdio://"])
+    let batch_shim = executable.to_ascii_lowercase().ends_with(".cmd")
+        || executable.to_ascii_lowercase().ends_with(".bat");
+    let mut process = if batch_shim {
+        // A batch shim is not a PE executable. `cmd /d /s /c` is the documented Windows
+        // launcher and is intentionally used only for the concrete PATH-resolved shim; model
+        // input never becomes part of this command line.
+        let invocation = format!(
+            "\"{}\" app-server --listen stdio://",
+            executable.replace('"', "\"\"")
+        );
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/d", "/s", "/c", &invocation]);
+        cmd
+    } else {
+        let mut direct = Command::new(executable);
+        direct.args(["app-server", "--listen", "stdio://"]);
+        direct
+    };
+    process
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
