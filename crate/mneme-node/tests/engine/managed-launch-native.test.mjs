@@ -118,6 +118,11 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
 
     const status = requireSuccess(['task', 'status', taskId, '--repo', repo], { env });
     assert.match(status.output, new RegExp(`${taskId}\\s+verifying`));
+    // The public harness interface documents --task for task-scoped commands. Retain the
+    // positional spelling for older scripts, but prove the documented form reaches the same
+    // Rust-owned persisted task rather than treating --task as an ignored presentation flag.
+    const flaggedStatus = requireSuccess(['task', 'status', '--task', taskId, '--repo', repo], { env });
+    assert.match(flaggedStatus.output, new RegExp(`${taskId}\\s+verifying`));
     const events = readFileSync(join(repo, '.icarus/runtime/logs/events.jsonl'), 'utf8');
     for (const eventType of ['adapter_session_started', 'adapter_pre_action_authorized', 'adapter_post_action_observed', 'adapter_session_ended', 'current_workspace_scope_checked']) {
       assert.match(events, new RegExp(eventType));

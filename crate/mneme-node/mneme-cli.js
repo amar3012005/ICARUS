@@ -307,38 +307,43 @@ function cmdTask(flags) {
     }
     return;
   }
-  if (!taskId) throw new Error('usage: icarus task <status|resume|transition|reconcile|authorize> <TASK-ID> [state] [--repo <dir>]');
+  // The documented harness interface accepts `--task <id>` for task-scoped operations. Keep
+  // the original positional spelling too, because scripts and earlier previews already use it.
+  // Resolve it here, after `dogfood` consumes its own positional action, so a flag can never be
+  // mistaken for a dogfood subcommand or an objective fallback for `task start`.
+  const resolvedTaskId = taskId || flags.task;
+  if (!resolvedTaskId) throw new Error('usage: icarus task <status|resume|transition|reconcile|authorize> <TASK-ID> [state] [--task <TASK-ID>] [--repo <dir>]');
   if (subcommand === 'status') {
-    const task = harness.taskStatus(repo, taskId);
+    const task = harness.taskStatus(repo, resolvedTaskId);
     console.log(`${c.bold(task.task_id)}  ${c.system(task.status)}  contract v${task.contract_version}`);
     console.log(c.dim(`  execution: ${task.execution_id}${task.previous_execution_id ? `  resumed from: ${task.previous_execution_id}` : ''}`));
     console.log(c.dim(`  objective: ${task.objective}`));
     return;
   }
   if (subcommand === 'resume') {
-    const task = harness.resumeTask(repo, taskId);
+    const task = harness.resumeTask(repo, resolvedTaskId);
     console.log(ok(`resumed ${c.path(task.task_id)} as ${task.execution_id} · ${task.status}`));
     return;
   }
   if (subcommand === 'transition') {
     if (!target) throw new Error('usage: icarus task transition <TASK-ID> <state> [--repo <dir>]');
-    const task = harness.transitionTask(repo, taskId, target);
+    const task = harness.transitionTask(repo, resolvedTaskId, target);
     console.log(ok(`${c.path(task.task_id)} → ${task.status}`));
     return;
   }
   if (subcommand === 'reconcile') {
-    const result = harness.reconcileRun(repo, taskId);
-    if (result.reconciled) console.log(ok(`${c.path(taskId)} reconciled ${result.changed_files.length} file(s) from the isolated worktree`));
+    const result = harness.reconcileRun(repo, resolvedTaskId);
+    if (result.reconciled) console.log(ok(`${c.path(resolvedTaskId)} reconciled ${result.changed_files.length} file(s) from the isolated worktree`));
     else if (result.workspace_mode === 'current') {
       const detail = result.changed_files.length
         ? `observed ${result.changed_files.length} contract-scoped post-launch file change(s)`
         : 'found no post-launch file delta';
-      console.log(ok(`${c.path(taskId)} current-workspace scope check ${detail}.`));
-    } else console.log(c.dim(`${c.path(taskId)} has no isolated worktree delta to reconcile`));
+      console.log(ok(`${c.path(resolvedTaskId)} current-workspace scope check ${detail}.`));
+    } else console.log(c.dim(`${c.path(resolvedTaskId)} has no isolated worktree delta to reconcile`));
     return;
   }
   if (subcommand === 'handoff') {
-    const receipt = harness.handoffManagedTask(repo, taskId);
+    const receipt = harness.handoffManagedTask(repo, resolvedTaskId);
     console.log(ok(`${c.path(receipt.task_id)} handed off to verification; ICARUS receipts are required before sealing.`));
     return;
   }
@@ -346,7 +351,7 @@ function cmdTask(flags) {
     if (!flags.contract || !flags.reason) throw new Error('usage: icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>] [--repo <dir>]');
     let contract;
     try { contract = JSON.parse(fs.readFileSync(flags.contract, 'utf8')); } catch (error) { throw new Error(`cannot read task contract ${flags.contract}: ${error.message}`); }
-    const task = harness.amendTaskContract(repo, taskId, contract, flags.reason, flags.approval);
+    const task = harness.amendTaskContract(repo, resolvedTaskId, contract, flags.reason, flags.approval);
     console.log(ok(`${c.path(task.task_id)} contract amended to v${task.contract_version}`));
     return;
   }
@@ -356,20 +361,20 @@ function cmdTask(flags) {
     if (flags.input) {
       try { input = JSON.parse(fs.readFileSync(flags.input, 'utf8')); } catch (error) { throw new Error(`cannot read checkpoint input ${flags.input}: ${error.message}`); }
     }
-    const checkpoint = harness.checkpointTask(repo, taskId, flags.phase, input);
+    const checkpoint = harness.checkpointTask(repo, resolvedTaskId, flags.phase, input);
     console.log(ok(`checkpoint ${checkpoint.sequence} · ${checkpoint.phase} · ${checkpoint.git_sha || 'no git HEAD'}`));
     return;
   }
   if (subcommand === 'block') {
     if (!flags.reason) throw new Error('usage: icarus task block <TASK-ID> --reason <text> [--repo <dir>]');
-    const task = harness.transitionTask(repo, taskId, 'blocked');
-    harness.checkpointTask(repo, taskId, 'blocked', { open_risks: [flags.reason], next_valid_action: 'resolve blocking condition' });
+    const task = harness.transitionTask(repo, resolvedTaskId, 'blocked');
+    harness.checkpointTask(repo, resolvedTaskId, 'blocked', { open_risks: [flags.reason], next_valid_action: 'resolve blocking condition' });
     console.log(ok(`${c.path(task.task_id)} blocked with an attributable checkpoint`));
     return;
   }
   if (subcommand === 'authorize') {
     if (!flags.kind) throw new Error('usage: icarus task authorize <TASK-ID> --kind write --path <repo-relative-path> [--repo <dir>]');
-    const decision = harness.authorizeAction(repo, taskId, { kind: flags.kind, path: flags.path });
+    const decision = harness.authorizeAction(repo, resolvedTaskId, { kind: flags.kind, path: flags.path });
     console.log(decision.allowed ? ok(`authorized — ${decision.reason}`) : err(`denied — ${decision.reason}`));
     if (!decision.allowed) process.exitCode = 3;
     return;
@@ -377,7 +382,7 @@ function cmdTask(flags) {
   if (subcommand === 'verify') {
     const criterion = flags.criterion || target;
     if (!criterion) throw new Error('usage: icarus task verify <TASK-ID> --criterion <id> [--repo <dir>]');
-    const receipt = harness.verifyTaskCriterion(repo, taskId, criterion);
+    const receipt = harness.verifyTaskCriterion(repo, resolvedTaskId, criterion);
     console.log(receipt.status === 'pass' ? ok(`${c.path(receipt.criterion_id)} passed`) : receipt.status === 'pending' ? c.command(`pending ${receipt.criterion_id}`) : err(`${c.path(receipt.criterion_id)} failed`));
     console.log(c.dim(`  receipt: ${receipt.output_path} · ${receipt.output_digest.slice(0, 12)}`));
     if (receipt.status === 'fail') process.exitCode = 3;
@@ -385,23 +390,23 @@ function cmdTask(flags) {
   }
   if (subcommand === 'attest') {
     if (!flags.criterion || !flags.approval || !flags.approver) throw new Error('usage: icarus task attest <TASK-ID> --criterion <id> --approval <id> --approver <name> [--expires-at <rfc3339>] [--repo <dir>]');
-    const receipt = harness.attestTaskCriterion(repo, taskId, flags.criterion, flags.approval, flags.approver, flags['expires-at']);
-    console.log(ok(`${c.path(taskId)} · ${receipt.criterion_id} attested`));
+    const receipt = harness.attestTaskCriterion(repo, resolvedTaskId, flags.criterion, flags.approval, flags.approver, flags['expires-at']);
+    console.log(ok(`${c.path(resolvedTaskId)} · ${receipt.criterion_id} attested`));
     return;
   }
   if (subcommand === 'seal') {
-    const result = harness.sealTask(repo, taskId);
+    const result = harness.sealTask(repo, resolvedTaskId);
     if (!result.sealed) {
-      console.log(err(`${c.path(taskId)} cannot seal`));
+      console.log(err(`${c.path(resolvedTaskId)} cannot seal`));
       for (const issue of [...result.unmet_criteria, ...result.issues]) console.log(c.dim(`  · ${issue}`));
       process.exitCode = 3;
       return;
     }
-    console.log(ok(`${c.path(taskId)} sealed · ${result.final_receipt_path}`));
+    console.log(ok(`${c.path(resolvedTaskId)} sealed · ${result.final_receipt_path}`));
     return;
   }
   if (subcommand === 'export') {
-    const receipt = harness.exportTask(repo, taskId, !!flags.redact);
+    const receipt = harness.exportTask(repo, resolvedTaskId, !!flags.redact);
     console.log(JSON.stringify(receipt, null, 2));
     return;
   }
