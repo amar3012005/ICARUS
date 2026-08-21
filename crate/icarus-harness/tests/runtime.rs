@@ -3041,12 +3041,22 @@ fn sealed_baseline_task(repo: &std::path::Path, objective: &str) -> String {
     ] {
         transition_task(repo, &task.task_id, state).unwrap();
     }
-    // The candidate has to earn a measurable improvement against this independent run.  Keep
-    // this deliberately above clock granularity so CI cannot pass only because timestamps tie.
-    // Runtime event-lock recovery deliberately waits up to 500 ms for a live writer.  Keep the
-    // synthetic baseline comfortably beyond that bound so this measurement test never mistakes
-    // ordinary lock contention for a candidate regression on a busy CI runner.
-    std::thread::sleep(Duration::from_secs(2));
+    // The candidate must earn a measurable improvement against this independent run. Model the
+    // baseline's additional managed tool action as a native, append-only runtime event instead
+    // of relying on scheduler-dependent wall-clock timing. The replay fixture has no such event,
+    // so the evaluation proves the tool-action branch of the production comparison on every OS.
+    append_event(
+        repo,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "adapter_post_action_observed".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::json!({"fixture": "baseline managed tool action"}),
+        },
+    )
+    .unwrap();
     assert_eq!(
         verify_task_criterion(repo, &task.task_id, "unit")
             .unwrap()
