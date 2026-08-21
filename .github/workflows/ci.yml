@@ -49,6 +49,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # The Rust PTY integration starts the checked-in Node TUI under a real pseudo-terminal.
+      # Pin the supported Node floor here instead of relying on an image-provided runtime.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       # usearch builds a C++ core, so the build is the slow part, not the tests.
       - uses: Swatinem/rust-cache@v2
         with:

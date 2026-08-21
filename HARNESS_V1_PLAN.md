@@ -434,7 +434,9 @@ Target: v0.9.x.
 
   - Rust storage and property tests.
   - Node CLI/MCP contract tests.
-  - Real PTY tests for TUI behavior.
+  - Real PTY tests for TUI behavior. **Implemented:** a Rust portable-PTY integration starts the
+    checked-in Node TUI under an actual pseudo-terminal and proves alternate-screen entry, raw
+    interactive input, `/help`, and clean `/quit` on macOS and Linux CI.
   - Fake-agent adapter conformance tests.
   - Crash/restart tests for every task phase.
   - Permission and path-escape tests.
