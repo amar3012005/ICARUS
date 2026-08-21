@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "measurement": {
+    "unit": "utf8_byte_upper_bound",
+    "why": "A UTF-8 byte count is a conservative upper bound for BPE tokenizers: the compiler must not promise a context fits a selected model when it does not know that model's tokenizer.",
+    "baseline": "The same mandatory task/policy/runtime material plus every locally indexed evidence document. This is the explicit unbounded-retrieval baseline that a harness replaces; it is not a model-generated summary."
+  },
+  "cases": [
+    {
+      "id": "cache-owner",
+      "objective": "repair cache invalidation sentinel",
+      "required_anchor": "CACHE_OWNER_SENTINEL",
+      "irrelevant_count": 24,
+      "irrelevant_template": "Historical cafeteria menu and office plant-watering notes. This record is intentionally unrelated to repository cache ownership.",
+      "minimum_reduction": 0.5
+    },
+    {
+      "id": "migration-format",
+      "objective": "preserve migration format compatibility",
+      "required_anchor": "MIGRATION_FORMAT_SENTINEL",
+      "irrelevant_count": 24,
+      "irrelevant_template": "Quarterly volunteer rota and meeting-room seating notes. This record is intentionally unrelated to durable storage compatibility.",
+      "minimum_reduction": 0.5
+    },
+    {
+      "id": "password-reset",
+      "objective": "fix password reset token expiry",
+      "required_anchor": "RESET_EXPIRY_SENTINEL",
+      "irrelevant_count": 24,
+      "irrelevant_template": "Archived weather observations and generic stationery inventory. This record is intentionally unrelated to authentication expiry behaviour.",
+      "minimum_reduction": 0.5
+    }
+  ]
+}

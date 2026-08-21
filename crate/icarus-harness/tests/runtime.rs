@@ -4,10 +4,11 @@ use icarus_harness::{
     decide_codex_app_server_approval, doctor, evaluate_skill, graph_source_fingerprint,
     handoff_managed_task, init, load_repository_policy, migrate, prepare_run, read_snapshot,
     reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
-    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt, resume_task,
-    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
-    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
-    EventInput, HarnessSkill, InitOptions, TaskContract,
+    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
+    render_context_markdown, resume_task, retire_skill, review_active_skills, seal_task,
+    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, ContextItem, EventInput, HarnessSkill,
+    InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -2030,6 +2031,97 @@ fn context_retrieves_task_relevant_committed_repo_local_amr_evidence() {
         .contains("harness-recall-fixture/shard.amr#slot-0"));
     assert!(recalled[0].content.contains("orbital cache invalidation"));
     assert!(recalled[0].retrieval_reason.contains("full-corpus BM25"));
+}
+
+#[test]
+fn published_context_corpus_retains_required_evidence_and_halves_unbounded_startup_context() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/evals/context-corpus-v1.json")).unwrap();
+    assert_eq!(corpus["schema_version"], 1);
+    let cases = corpus["cases"].as_array().unwrap();
+    assert!(
+        cases.len() >= 3,
+        "the public corpus needs diverse task cases"
+    );
+
+    for case in cases {
+        let id = case["id"].as_str().unwrap();
+        let objective = case["objective"].as_str().unwrap();
+        let required_anchor = case["required_anchor"].as_str().unwrap();
+        let irrelevant_count = case["irrelevant_count"].as_u64().unwrap() as usize;
+        let irrelevant_template = case["irrelevant_template"].as_str().unwrap();
+        let minimum_reduction = case["minimum_reduction"].as_f64().unwrap();
+
+        let outer = tempdir().unwrap();
+        let repo_path = outer.path().join(format!("context-eval-{id}"));
+        fs::create_dir_all(&repo_path).unwrap();
+        fs::write(repo_path.join(".git"), "gitdir: fake\n").unwrap();
+        init(&repo_path, InitOptions::default()).unwrap();
+
+        let mut documents = vec![format!(
+            "{required_anchor}: authoritative repository evidence for {objective}."
+        )];
+        documents.extend((0..irrelevant_count).map(|index| {
+            format!(
+                "irrelevant-record-{index}: {}",
+                irrelevant_template.repeat(8)
+            )
+        }));
+        let local_org = format!("context-eval-{id}");
+        let mut shard = mseg::Shard::open(&repo_path.join(".icarus/data"), &local_org, 4).unwrap();
+        for document in &documents {
+            shard
+                .segment()
+                .insert(mseg::MemoryInput::new(document, vec![0.0; 4]))
+                .unwrap();
+        }
+        shard.segment().flush().unwrap();
+        drop(shard);
+
+        let task = start_task(&repo_path, objective, contract()).unwrap();
+        let compiled = build_context(&repo_path, &task.task_id, 100_000).unwrap();
+        assert!(
+            compiled.items.iter().any(|item| {
+                item.kind == "local_memory_evidence" && item.content.contains(required_anchor)
+            }),
+            "{id} dropped its required evidence anchor"
+        );
+
+        // The corpus baseline is deliberately transparent: it is the exact compiled pack with
+        // every local evidence record injected, which models the old unbounded-startup approach.
+        // It does not use a model-generated summary or a hand-picked token estimate.
+        let mut unbounded = compiled.clone();
+        unbounded.items.retain(|item| {
+            item.kind != "local_memory_evidence" && item.kind != "local_memory_recall"
+        });
+        for (index, document) in documents.iter().enumerate() {
+            unbounded.items.push(ContextItem {
+                kind: "unbounded_local_memory_baseline".into(),
+                source: format!(".icarus/data/{local_org}/shard.amr#slot-{index}"),
+                digest: format!("baseline-{index}"),
+                freshness: "committed snapshot".into(),
+                authority: "repository-local AMR evidence".into(),
+                retrieval_reason: "unbounded local-evidence startup baseline".into(),
+                mandatory: false,
+                content: document.clone(),
+            });
+        }
+        let compiled_units = render_context_markdown(&compiled).len();
+        let baseline_units = render_context_markdown(&unbounded).len();
+        let reduction = 1.0 - compiled_units as f64 / baseline_units as f64;
+        eprintln!(
+            "context-corpus {id}: compiled={compiled_units} baseline={baseline_units} reduction={:.1}%",
+            reduction * 100.0
+        );
+        assert!(
+            reduction >= minimum_reduction,
+            "{id} reduced startup context by {:.1}%, below the published {:.1}% gate ({} vs {} byte upper-bound units)",
+            reduction * 100.0,
+            minimum_reduction * 100.0,
+            compiled_units,
+            baseline_units,
+        );
+    }
 }
 
 #[test]
