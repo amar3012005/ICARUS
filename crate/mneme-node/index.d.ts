@@ -38,6 +38,12 @@ export declare function harnessBuildContextDelta(repoRoot: string, taskId: strin
 export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFingerprint: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
 /**
+ * Authorize and audit a documented Claude Edit/Write PreToolUse event. The JavaScript hook
+ * adapter transports only normalized fields; Rust verifies the prepared execution and appends
+ * the resulting allow/deny decision itself.
+ */
+export declare function harnessAuthorizeAdapterWrite(repoRoot: string, taskId: string, agent: string, toolName: string, path: string): string
+/**
  * Record a typed adapter process boundary observed by the local managed launcher. This bridge
  * exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
  * chain, so a presentation client cannot turn model prose into trusted execution evidence.

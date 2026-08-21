@@ -391,6 +391,30 @@ pub fn harness_authorize_action(
     )
 }
 
+/// Authorize and audit a documented Claude Edit/Write PreToolUse event. The JavaScript hook
+/// adapter transports only normalized fields; Rust verifies the prepared execution and appends
+/// the resulting allow/deny decision itself.
+#[napi]
+pub fn harness_authorize_adapter_write(
+    repo_root: String,
+    task_id: String,
+    agent: String,
+    tool_name: String,
+    path: String,
+) -> Result<String> {
+    let receipt = harness::authorize_adapter_write(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &agent,
+        &tool_name,
+        &path,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// Record a typed adapter process boundary observed by the local managed launcher. This bridge
 /// exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
 /// chain, so a presentation client cannot turn model prose into trusted execution evidence.

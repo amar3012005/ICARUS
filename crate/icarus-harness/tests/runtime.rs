@@ -1,11 +1,11 @@
 use icarus_harness::{
-    amend_task_contract, append_event, attest_task_criterion, authorize_action, build_context,
-    checkpoint_task, doctor, evaluate_skill, graph_source_fingerprint, init,
-    load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
-    record_active_skill_outcome, record_adapter_lifecycle, record_graph_receipt, resume_task,
-    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
-    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
-    EventInput, HarnessSkill, InitOptions, TaskContract,
+    amend_task_contract, append_event, attest_task_criterion, authorize_action,
+    authorize_adapter_write, build_context, checkpoint_task, doctor, evaluate_skill,
+    graph_source_fingerprint, init, load_repository_policy, migrate, prepare_run, read_snapshot,
+    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle, record_graph_receipt,
+    resume_task, retire_skill, review_active_skills, seal_task, start_task, task_status,
+    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
+    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -439,6 +439,57 @@ fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
             .unwrap()
             .valid
     );
+}
+
+#[test]
+fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
+    let repo = repo();
+    let initialized = init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["claude".into()],
+        },
+    )
+    .unwrap();
+    let task = start_task(repo.path(), "audit hook decisions", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "claude".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+    let allowed = authorize_adapter_write(
+        repo.path(),
+        &task.task_id,
+        "claude",
+        "Edit",
+        "src/allowed.rs",
+    )
+    .unwrap();
+    assert!(allowed.allowed);
+    let denied =
+        authorize_adapter_write(repo.path(), &task.task_id, "claude", "Write", "README.md")
+            .unwrap();
+    assert!(!denied.allowed);
+    assert!(denied.event_sequence > allowed.event_sequence);
+    assert!(
+        authorize_adapter_write(repo.path(), &task.task_id, "codex", "Write", "src/other.rs",)
+            .is_err()
+    );
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("adapter_pre_action_authorized"));
+    assert!(events.contains("adapter_pre_action_denied"));
 }
 
 #[test]

@@ -663,6 +663,23 @@ pub struct AdapterLifecycleReceipt {
     pub event_sequence: u64,
 }
 
+/// A pre-action authorization decision recorded as a first-class audit event. The decision is
+/// made by Rust from the immutable task contract; a hook client only supplies the adapter's
+/// already-normalized tool name and candidate repository-relative path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterAuthorizationReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub tool_name: String,
+    pub path: String,
+    pub allowed: bool,
+    pub reason: String,
+    pub event_sequence: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
@@ -4354,6 +4371,81 @@ pub fn authorize_action(repo_root: &Path, task_id: &str, action: Action) -> Resu
     Ok(Authorization {
         allowed: true,
         reason: "write is authorized by the executing task contract".into(),
+    })
+}
+
+/// Authorize a Claude Edit/Write hook and bind that decision to the task's append-only audit
+/// chain. Unlike the generic MCP-facing `authorize_action` helper, this requires the exact
+/// prepared Claude execution, accepts only the documented write tools, and records denials as
+/// well as approvals. Failure to create the event is a failure to authorize.
+pub fn authorize_adapter_write(
+    repo_root: &Path,
+    task_id: &str,
+    agent: &str,
+    tool_name: &str,
+    path: &str,
+) -> Result<AdapterAuthorizationReceipt> {
+    if agent != "claude" || !matches!(tool_name, "Edit" | "Write") {
+        return Err(HarnessError::invalid(
+            "adapter write authorization only supports Claude Edit or Write hooks",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "adapter write authorization requires an executing task",
+        ));
+    }
+    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id || run.agent != agent {
+        return Err(HarnessError::invalid(
+            "adapter write authorization does not match the prepared execution",
+        ));
+    }
+    let authorization = authorize_action(
+        &root,
+        &task.task_id,
+        Action {
+            kind: "write".into(),
+            path: Some(path.into()),
+        },
+    )?;
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: if authorization.allowed {
+                "adapter_pre_action_authorized".into()
+            } else {
+                "adapter_pre_action_denied".into()
+            },
+            worktree_id: run.worktree_id.clone(),
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "observation": "hook_pre_action",
+                "agent": agent,
+                "tool_name": tool_name,
+                "path": path,
+                "allowed": authorization.allowed,
+                "reason": authorization.reason.clone(),
+            }),
+        },
+    )?;
+    Ok(AdapterAuthorizationReceipt {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        agent: agent.into(),
+        tool_name: tool_name.into(),
+        path: path.into(),
+        allowed: authorization.allowed,
+        reason: authorization.reason,
+        event_sequence: event.sequence,
     })
 }
 

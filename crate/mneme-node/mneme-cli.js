@@ -158,9 +158,13 @@ async function cmdHarness(flags) {
       candidate = path.join(resolvedExisting, ...missing);
       const relative = path.relative(root, candidate);
       if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('file path escapes the managed workspace');
-      const decision = require('./harness.js').authorizeAction(repo, taskId, {
-        kind: 'write', path: relative.split(path.sep).join('/'),
-      });
+      const decision = require('./harness.js').authorizeAdapterWrite(
+        repo,
+        taskId,
+        'claude',
+        input.tool_name,
+        relative.split(path.sep).join('/'),
+      );
       if (!decision.allowed) throw new Error(decision.reason);
     } catch (error) {
       console.error(`ICARUS denied hook: ${error.message}`);
