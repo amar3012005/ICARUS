@@ -1351,8 +1351,16 @@ fn harness_schema_documents() -> Vec<(&'static str, Value)> {
             object_schema(
                 "ICARUS Authority Snapshot",
                 &[
-                    "schema_version", "scope", "repo_id", "revision", "issued_at",
-                    "expires_at", "decisions", "approvals", "team_skills", "digest",
+                    "schema_version",
+                    "scope",
+                    "repo_id",
+                    "revision",
+                    "issued_at",
+                    "expires_at",
+                    "decisions",
+                    "approvals",
+                    "team_skills",
+                    "digest",
                 ],
                 json!({
                     "schema_version": {"type":"integer","const":1},
@@ -3486,7 +3494,11 @@ fn task_worktree_id(root: &Path, task_id: &str) -> String {
     read_snapshot(root, &format!("state/run-{task_id}.json"))
         .ok()
         .flatten()
-        .and_then(|run| run.get("worktree_id").and_then(Value::as_str).map(ToOwned::to_owned))
+        .and_then(|run| {
+            run.get("worktree_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_else(|| "main".into())
 }
 
@@ -3515,7 +3527,10 @@ fn authority_snapshot_is_fresh(snapshot: &AuthoritySnapshot) -> bool {
     .unwrap_or(false)
 }
 
-fn validate_authority_snapshot(root: &Path, snapshot: AuthoritySnapshot) -> Result<AuthoritySnapshot> {
+fn validate_authority_snapshot(
+    root: &Path,
+    snapshot: AuthoritySnapshot,
+) -> Result<AuthoritySnapshot> {
     let manifest = load_manifest(root)?;
     if snapshot.schema_version != 1
         || snapshot.repo_id != manifest.repo_id
@@ -3560,11 +3575,15 @@ fn validate_authority_snapshot(root: &Path, snapshot: AuthoritySnapshot) -> Resu
 /// Install a remote authority response after transport authentication has already happened.
 /// This is intentionally the only cache-write entry point: a caller cannot smuggle a stale,
 /// cross-repository, or mutable authority object into managed context.
-pub fn install_authority_snapshot(repo_root: &Path, snapshot_json: &str) -> Result<AuthoritySnapshot> {
+pub fn install_authority_snapshot(
+    repo_root: &Path,
+    snapshot_json: &str,
+) -> Result<AuthoritySnapshot> {
     let root = canonical_root(repo_root)?;
     let _lock = RuntimeLock::acquire(&root, "authority-sync")?;
-    let snapshot: AuthoritySnapshot = serde_json::from_str(snapshot_json)
-        .map_err(|error| HarnessError::invalid(format!("invalid authority snapshot JSON: {error}")))?;
+    let snapshot: AuthoritySnapshot = serde_json::from_str(snapshot_json).map_err(|error| {
+        HarnessError::invalid(format!("invalid authority snapshot JSON: {error}"))
+    })?;
     let snapshot = validate_authority_snapshot(&root, snapshot)?;
     atomic_write(
         &authority_snapshot_path(&root),
@@ -4788,11 +4807,18 @@ fn referenced_decisions(
     let authority_snapshot = load_authority_snapshot(root).ok();
     for reference in references {
         if let Some(snapshot) = authority_snapshot.as_ref() {
-            if let Some(decision) = snapshot.decisions.iter().find(|decision| decision.id == *reference) {
+            if let Some(decision) = snapshot
+                .decisions
+                .iter()
+                .find(|decision| decision.id == *reference)
+            {
                 items.push((
                     format!(".icarus/runtime/authority/snapshot.json#decision:{reference}"),
                     "cached_unexpired_snapshot".into(),
-                    format!("scoped organizational decision {}@{}", snapshot.scope.org_id, snapshot.revision),
+                    format!(
+                        "scoped organizational decision {}@{}",
+                        snapshot.scope.org_id, snapshot.revision
+                    ),
                     serde_json::to_string_pretty(decision).unwrap_or_default(),
                 ));
                 continue;
