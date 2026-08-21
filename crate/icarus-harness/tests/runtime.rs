@@ -1924,7 +1924,9 @@ fn isolated_run_reconciliation_imports_only_contract_scoped_regular_files() {
     assert_eq!(result.changed_files, vec!["src/lib.rs", "src/new.rs"]);
     assert!(result.patch_digest.is_some());
     assert_eq!(
-        fs::read_to_string(repo.path().join("src/lib.rs")).unwrap(),
+        fs::read_to_string(repo.path().join("src/lib.rs"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "pub fn after() {}\n"
     );
     assert_eq!(
