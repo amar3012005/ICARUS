@@ -7,7 +7,8 @@ Rule for this file: an item is **DONE** only when its verification is real — a
 against the unfixed code, an observed command output, a cold-verified artifact. "Implemented"
 is not "done". Anything unverified says so.
 
-Last updated at CLI version **0.3.59** (release in progress).
+Last updated after the independently verified CLI release **0.3.59**. Newer hardening on `main`
+is not represented as released until it passes CI and a subsequent release is cold-verified.
 
 ---
 
@@ -21,7 +22,7 @@ Target: v0.3.47–v0.3.x
 | Private-to-public scanner preserved as a pre-publish security check | **DONE** | Retained and made *correct*: it scanned the whole tree including `node_modules/` (false positives from `jose`'s literal `-----BEGIN PRIVATE KEY-----` and `sql.js`'s base64 blob), which forced a manual "move node_modules aside" step every publish. Now scans exactly the tracked publish set — 170 files, clean, no stash. |
 | Root `VERSION` source used by binary, tags, update checks | **DONE** | `VERSION` + `scripts/version.mjs` (print / `--check` / `--write` / `--set`). 12 tests in `tests/unit/version.test.mjs` run against sandboxed copies. Engine package `singulance-amr` deliberately keeps its own version, per plan. |
 | Node-layer CI (CLI, TUI, MCP, installers, recall, ingestion, skills, binary smoke) | **PARTIAL** | Public CI runs on macOS and Linux. A native-addon MCP job drives the actual stdio process through local lexical ingest, structured save, recall, and get-by-id against a disposable shard, with no credentials or network. A separate normal-CI job compiles the Bun executable, opens its embedded native shard, saves a record, and recalls it. The framing suite separately rejects non-JSON stdout. **Still missing:** real PTY coverage and broader upgrade/rollback coverage. |
-| Automated release: asset naming, checksums, draft detection, cold download, version execution | **DONE for v0.3.56** | Public release run `32434963782` passed version validation, Linux x64 + macOS ARM64/x64 builds, exact binary version execution, checksums, non-draft publishing, expected asset checks, cold download/hash/execution, and `releases/latest` routing. |
+| Automated release: asset naming, checksums, draft detection, cold download, version execution | **DONE for v0.3.59** | Public release `v0.3.59` passed version validation, Linux x64 + macOS ARM64/x64 builds, exact binary version execution, checksums, non-draft publishing, expected asset checks, cold download/hash/execution, and `releases/latest` routing. A clean macOS ARM64 download was also independently SHA-256 checked and executed as `0.3.59`. |
 | Contributor docs, governance, security reporting, code of conduct, RFC template | **DONE** | `GOVERNANCE.md` (new), `.github/ISSUE_TEMPLATE/rfc.md` (new), plus existing `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, PR template. |
 | Record v0.3.46 as the compatibility baseline | **DONE** | `COMPATIBILITY.md`, written from a live install and the real on-disk shard set — not from source. Includes the sparse-file accounting rule, the `flock`-not-`fcntl` decision, org-name charset, the local-recall-always guarantee, exit codes, and two honestly-recorded baseline defects. |
 

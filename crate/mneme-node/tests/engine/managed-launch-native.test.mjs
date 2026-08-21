@@ -68,6 +68,10 @@ test('fake Claude adapter proves governed launch, hook receipts, scope, and hand
     const shim = join(shimDir, 'claude');
     writeFileSync(shim, `#!/bin/sh
 set -eu
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf 'fake claude 0.0.0\\n'
+  exit 0
+fi
 settings=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -95,7 +99,9 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
     for (const eventType of ['adapter_session_started', 'adapter_pre_action_authorized', 'adapter_post_action_observed', 'adapter_session_ended', 'current_workspace_scope_checked']) {
       assert.match(events, new RegExp(eventType));
     }
-    const doctor = requireSuccess(['doctor', '--repo', repo], { env });
+    const doctor = requireSuccess(['doctor', '--repo', repo], {
+      env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
+    });
     assert.match(doctor.output, /event_chain.*verified/);
   } finally {
     rmSync(root, { recursive: true, force: true });
