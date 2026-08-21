@@ -883,6 +883,14 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
     assert_eq!(prepared.workspace_mode, "isolated");
     assert_eq!(prepared.certification, "compatibility");
     assert!(prepared.compatibility_mode);
+    let deadline = prepared
+        .wall_time_deadline
+        .as_deref()
+        .expect("contract wall-time budget creates a Rust-owned deadline");
+    assert!(
+        time::OffsetDateTime::parse(deadline, &time::format_description::well_known::Rfc3339)
+            .is_ok()
+    );
     assert!(!prepared.capabilities.pre_action_authorization);
     assert!(prepared
         .launch_arguments
@@ -979,6 +987,58 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn wall_time_budget_is_validated_before_task_creation() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut invalid = contract();
+    invalid.budgets = serde_json::json!({"wall_time_minutes": 0});
+    let error = start_task(repo.path(), "invalid zero budget", invalid).unwrap_err();
+    assert!(error.to_string().contains("wall_time_minutes"));
+
+    let mut fractional = contract();
+    fractional.budgets = serde_json::json!({"wall_time_minutes": 1.5});
+    let error = start_task(repo.path(), "invalid fractional budget", fractional).unwrap_err();
+    assert!(error.to_string().contains("wall_time_minutes"));
+
+    let mut non_object = contract();
+    non_object.budgets = serde_json::json!("unbounded");
+    let error = start_task(repo.path(), "invalid budget shape", non_object).unwrap_err();
+    assert!(error.to_string().contains("budgets"));
+}
+
+#[test]
+fn expired_rust_owned_wall_time_deadline_blocks_adapter_start_and_handoff() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "expired managed deadline", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "claude".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    let snapshot_path = format!("state/run-{}.json", task.task_id);
+    let mut snapshot = read_snapshot(repo.path(), &snapshot_path).unwrap().unwrap();
+    snapshot["wall_time_deadline"] = serde_json::json!("1970-01-01T00:00:00Z");
+    write_snapshot(repo.path(), &snapshot_path, snapshot).unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+
+    let start_error =
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_started", None)
+            .unwrap_err();
+    assert!(start_error.to_string().contains("wall-time budget expired"));
+    let handoff_error = handoff_managed_task(repo.path(), &task.task_id).unwrap_err();
+    assert!(handoff_error
+        .to_string()
+        .contains("wall-time budget expired"));
 }
 
 #[test]

@@ -9,6 +9,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Rust-owned managed-run wall-time budgets:** a task contract may set
+  `budgets.wall_time_minutes` (1–1,440). Rust validates and fixes the deadline in the prepared
+  execution; the launcher only terminates the child at that deadline, records the lifecycle
+  boundary, and blocks the task with a durable checkpoint. An expired deadline also rejects a
+  new adapter start or verification handoff, so Node cannot extend it.
 - **Managed Claude completion gate:** an executing managed task must explicitly hand off to
   Rust-owned verification before Claude's documented `Stop` hook can end the session. The
   handoff is audited and does not claim successful verification or permit sealing; current

@@ -242,6 +242,11 @@ pub struct RunPreparation {
     /// launch them, but may not weaken the safety posture or invent an adapter profile.
     pub launch_arguments: Vec<String>,
     pub compatibility_mode: bool,
+    /// Rust-derived latest time at which a managed adapter may run. `None` means the immutable
+    /// task contract did not configure a wall-time budget. Presentation code may enforce this
+    /// deadline but cannot select or extend it.
+    #[serde(default)]
+    pub wall_time_deadline: Option<String>,
 }
 
 /// Result of importing an isolated, governed worktree into the authoritative repository. A
@@ -1413,6 +1418,21 @@ fn validate_contract(contract: &TaskContract) -> Result<()> {
             "task contract is missing a required governance field",
         ));
     }
+    if !contract.budgets.is_object() {
+        return Err(HarnessError::invalid(
+            "task contract budgets must be a JSON object",
+        ));
+    }
+    if let Some(value) = contract.budgets.get("wall_time_minutes") {
+        let minutes = value.as_u64().ok_or_else(|| {
+            HarnessError::invalid("wall_time_minutes must be a positive whole number")
+        })?;
+        if !(1..=1_440).contains(&minutes) {
+            return Err(HarnessError::invalid(
+                "wall_time_minutes must be between 1 and 1440",
+            ));
+        }
+    }
     if contract.decision_references.iter().any(|reference| {
         reference.is_empty()
             || reference.len() > 128
@@ -1425,6 +1445,24 @@ fn validate_contract(contract: &TaskContract) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn wall_time_deadline(contract: &TaskContract) -> Result<Option<String>> {
+    let Some(minutes) = contract.budgets.get("wall_time_minutes") else {
+        return Ok(None);
+    };
+    let minutes = minutes.as_u64().ok_or_else(|| {
+        HarnessError::invalid("wall_time_minutes must be a positive whole number")
+    })?;
+    let duration = time::Duration::minutes(
+        i64::try_from(minutes)
+            .map_err(|_| HarnessError::invalid("wall_time_minutes is too large"))?,
+    );
+    Ok(Some(
+        (time::OffsetDateTime::now_utc() + duration)
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("the RFC3339 formatter supports UTC timestamps"),
+    ))
 }
 
 /// Creates one durable task and its first execution attempt. The contract is written once and
@@ -1751,6 +1789,7 @@ pub fn prepare_run(
         certification: certification.into(),
         compatibility_mode: certification != "certified",
         capabilities,
+        wall_time_deadline: wall_time_deadline(&task.contract)?,
         launch_arguments: adapter_launch_arguments(
             &agent,
             &workspace_path,
@@ -4577,6 +4616,18 @@ pub fn record_adapter_post_action(
     })
 }
 
+fn managed_run_deadline_expired(run: &RunPreparation) -> Result<bool> {
+    let Some(deadline) = run.wall_time_deadline.as_deref() else {
+        return Ok(false);
+    };
+    let deadline =
+        time::OffsetDateTime::parse(deadline, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| {
+                HarnessError::invalid("managed run has an invalid Rust-owned wall-time deadline")
+            })?;
+    Ok(time::OffsetDateTime::now_utc() >= deadline)
+}
+
 /// Move one prepared managed execution into verification. This is an explicit handoff, not a
 /// completion claim: it is intentionally unavailable before execution and it never seals a
 /// task. Adapters that can intercept a conversational stop may use it as the only route that
@@ -4595,6 +4646,11 @@ pub fn handoff_managed_task(repo_root: &Path, task_id: &str) -> Result<ManagedTa
     if run.task_id != task.task_id || run.execution_id != task.execution_id {
         return Err(HarnessError::invalid(
             "managed task handoff does not match the prepared execution",
+        ));
+    }
+    if managed_run_deadline_expired(&run)? {
+        return Err(HarnessError::invalid(
+            "managed task wall-time budget expired; block or resume under a newly prepared execution",
         ));
     }
     let transitioned = transition_task(&root, task_id, "verifying")?;
@@ -4674,6 +4730,11 @@ pub fn record_adapter_lifecycle(
     if run.task_id != task.task_id || run.execution_id != task.execution_id {
         return Err(HarnessError::invalid(
             "managed run preparation does not match the active task execution",
+        ));
+    }
+    if event_type == "adapter_session_started" && managed_run_deadline_expired(&run)? {
+        return Err(HarnessError::invalid(
+            "managed task wall-time budget expired before the adapter session started",
         ));
     }
     let event = append_event(

@@ -377,14 +377,19 @@ function commandOnPath(command) {
 }
 
 // The launcher does not configure, proxy, or pay for a model. It prepares a Rust-governed
-// workspace, then starts the user's already-installed coding CLI in that directory.
-function observeManagedAdapter(command, args, cwd, harness, repo, taskId) {
+// workspace, then starts the user's already-installed coding CLI in that directory. If the
+// immutable Rust contract configured a wall-time budget, Node is only the local process-control
+// transport: it receives the already-derived deadline and cannot extend it.
+function observeManagedAdapter(command, args, cwd, harness, repo, taskId, wallTimeDeadline, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
     let spawned = false;
     let lifecycleError = null;
+    let timedOut = false;
+    let deadlineTimer = null;
+    let forceKillTimer = null;
     let child;
     try {
-      child = spawn(command, args, { cwd, stdio: 'inherit' });
+      child = spawnProcess(command, args, { cwd, stdio: 'inherit' });
     } catch (error) {
       reject(error);
       return;
@@ -393,6 +398,18 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId) {
       spawned = true;
       try {
         harness.recordAdapterLifecycle(repo, taskId, 'adapter_session_started');
+        if (wallTimeDeadline) {
+          const deadlineMs = Date.parse(wallTimeDeadline);
+          if (!Number.isFinite(deadlineMs)) throw new Error('Rust returned an invalid managed wall-time deadline');
+          const delay = Math.max(0, deadlineMs - Date.now());
+          deadlineTimer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            // An interactive client can leave a child process alive after SIGTERM. This bounded
+            // escalation is still driven by Rust's deadline, never by an agent or a user flag.
+            forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+          }, delay);
+        }
       } catch (error) {
         // Do not permit an unobserved managed session to continue. The task remains durable and
         // will be blocked by the caller after the child has terminated.
@@ -404,6 +421,8 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId) {
       if (!spawned) reject(error);
     });
     child.once('close', (code, signal) => {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       if (!spawned) {
         reject(new Error(`${command} exited before ICARUS observed a process start${signal ? ` (${signal})` : ''}`));
         return;
@@ -423,7 +442,7 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId) {
         reject(error);
         return;
       }
-      resolve({ status: code, signal });
+      resolve({ status: code, signal, timedOut });
     });
   });
 }
@@ -461,12 +480,21 @@ async function cmdRun(flags) {
       harness,
       repo,
       task.task_id,
+      preparation.wall_time_deadline,
     );
   } catch (error) {
     harness.transitionTask(repo, task.task_id, 'blocked');
     throw new Error(`managed ${agent} launch blocked: ${error.message}`);
   }
-  if (result.status === 0) {
+  if (result.timedOut) {
+    harness.transitionTask(repo, task.task_id, 'blocked');
+    harness.checkpointTask(repo, task.task_id, 'wall-time-budget-exhausted', {
+      open_risks: ['Rust-owned managed wall-time budget expired; adapter process was terminated.'],
+      next_valid_action: 'resume with an approved task contract amendment or a new managed execution',
+    });
+    console.log(err(`${c.path(task.task_id)} blocked: its Rust-owned wall-time budget expired; the ${agent} process was terminated.`));
+    process.exitCode = 124;
+  } else if (result.status === 0) {
     try {
       const reconciliation = harness.reconcileRun(repo, task.task_id);
       if (reconciliation.reconciled) console.log(ok(`reconciled ${reconciliation.changed_files.length} contract-scoped file(s) from the isolated worktree.`));
@@ -1405,4 +1433,8 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+// Exported solely for deterministic local launcher tests. It retains no authority: the deadline
+// and every lifecycle decision remain Rust-derived through the injected harness bridge.
+module.exports = { observeManagedAdapter };
