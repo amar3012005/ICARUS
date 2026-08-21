@@ -1922,6 +1922,11 @@ fn expired_rust_owned_wall_time_deadline_blocks_adapter_start_and_handoff() {
     assert!(handoff_error
         .to_string()
         .contains("wall-time budget expired"));
+    transition_task(repo.path(), &task.task_id, "verifying").unwrap();
+    let verification_error = verify_task_criterion(repo.path(), &task.task_id, "unit").unwrap_err();
+    assert!(verification_error
+        .to_string()
+        .contains("wall-time budget expired"));
 }
 
 #[test]

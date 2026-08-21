@@ -2757,6 +2757,27 @@ fn toolchain_versions(root: &Path) -> Value {
     })
 }
 
+/// Verification is part of the managed execution, not an escape hatch after its Rust-owned
+/// wall-time budget has elapsed. Repositories may also use the verifier without `icarus run`;
+/// in that local-only case there is intentionally no managed-run snapshot to enforce.
+fn ensure_verification_deadline(root: &Path, task: &TaskRecord) -> Result<()> {
+    let Some(value) = read_snapshot(root, &format!("state/run-{}.json", task.task_id))? else {
+        return Ok(());
+    };
+    let run: RunPreparation = serde_json::from_value(value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id {
+        return Err(HarnessError::invalid(
+            "verification does not match the prepared managed execution; resume and prepare a new run",
+        ));
+    }
+    if managed_run_deadline_expired(&run)? {
+        return Err(HarnessError::invalid(
+            "managed task wall-time budget expired; block or resume under a newly prepared execution",
+        ));
+    }
+    Ok(())
+}
+
 /// Execute one immutable contract criterion in the managed repository and emit a machine-backed
 /// receipt. The shell command is taken only from the immutable contract, never from a free-form
 /// agent parameter.
@@ -2772,6 +2793,7 @@ pub fn verify_task_criterion(
             "verification requires an executing or verifying task",
         ));
     }
+    ensure_verification_deadline(&root, &task)?;
     let criterion = criterion_for(&task, criterion_id)?;
     let criterion_type = criterion
         .get("type")
