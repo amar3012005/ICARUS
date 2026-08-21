@@ -4205,16 +4205,19 @@ fn repo_local_org(root: &Path) -> String {
     }
 }
 
+#[cfg(unix)]
 struct SharedShardReadLock(File);
 
+#[cfg(unix)]
 impl SharedShardReadLock {
     fn acquire(path: &Path) -> std::result::Result<Self, String> {
-        use fs2::FileExt;
+        use std::os::unix::io::AsRawFd;
         let file = File::open(path).map_err(|error| error.to_string())?;
-        // A shared, non-blocking lock gives readers a stable committed snapshot without waiting
-        // behind a long-running ingest or opening a competing writer handle. fs2 maps this to
-        // the supported advisory primitive on both Unix and Windows.
-        if FileExt::try_lock_shared(&file).is_ok() {
+        // SAFETY: the descriptor belongs to `file` for the duration of the call. A shared,
+        // non-blocking lock gives readers a stable committed snapshot without waiting behind a
+        // long-running ingest or opening a competing writer handle.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+        if result == 0 {
             Ok(Self(file))
         } else {
             Err("repo-local shard is busy; retry after the writer releases shard.lock".into())
@@ -4222,11 +4225,48 @@ impl SharedShardReadLock {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SharedShardReadLock {
     fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: this descriptor is owned by the guard and the unlock is best-effort only.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(windows)]
+struct SharedShardReadLock(File);
+
+#[cfg(windows)]
+impl SharedShardReadLock {
+    fn acquire(path: &Path) -> std::result::Result<Self, String> {
         use fs2::FileExt;
-        // This descriptor is owned by the guard and the unlock is best-effort only.
-        let _ = FileExt::unlock(&self.0);
+        let file = File::open(path).map_err(|error| error.to_string())?;
+        // LockFileEx's shared lock can block behind the writer in this process model. A
+        // non-blocking exclusive probe has the same safety property—never read mid-write—and
+        // is released immediately after the bounded read. It is intentionally Windows-only.
+        if FileExt::try_lock_exclusive(&file).is_ok() {
+            Ok(Self(file))
+        } else {
+            Err("repo-local shard is busy; retry after the writer releases shard.lock".into())
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SharedShardReadLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+struct SharedShardReadLock;
+
+#[cfg(not(any(unix, windows)))]
+impl SharedShardReadLock {
+    fn acquire(_path: &Path) -> std::result::Result<Self, String> {
+        Err("repo-local AMR read locking is unsupported on this platform".into())
     }
 }
 
