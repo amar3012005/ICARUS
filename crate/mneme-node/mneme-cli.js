@@ -33,7 +33,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -423,6 +423,7 @@ async function cmdSync(flags, cfg) {
     if (inspection.scope) console.log(`  scope: ${c.path(`${inspection.scope.user_id} / ${inspection.scope.org_id} / ${inspection.scope.project_id}`)}`);
     if (inspection.revision) console.log(`  revision: ${inspection.revision}  expires: ${inspection.expires_at}`);
     if (inspection.configured) console.log(`  approved decisions: ${inspection.decision_count}  team skills: ${inspection.team_skill_count}`);
+    if (inspection.conflict) console.log(c.error(`  conflict: cached ${inspection.conflict.existing_revision} vs incoming ${inspection.conflict.incoming_revision} — re-run pull with --accept-revision only after review.`));
     console.log(c.dim(`  ${inspection.reason}`));
     return;
   }
@@ -445,7 +446,7 @@ async function cmdSync(flags, cfg) {
     } else {
       snapshot = fs.readFileSync(path.resolve(flags.file), 'utf8');
     }
-    const installed = harness.installAuthoritySnapshot(repo, snapshot);
+    const installed = harness.installAuthoritySnapshotWithReplacement(repo, snapshot, !!flags['accept-revision']);
     return console.log(ok(`installed authority snapshot ${installed.revision} for ${installed.scope.org_id}/${installed.scope.project_id} (expires ${installed.expires_at}).`));
   }
   if (subcommand === 'push') {
@@ -1522,9 +1523,10 @@ async function main() {
                                         freshness, reasons, and digests without printing content.
   icarus sync inspect [--repo <dir>]    inspect the opt-in cached authority boundary. It never
                                         contacts a remote service or authorizes external actions.
-  icarus sync pull (--file <snapshot.json> | --remote --project <project-id>) [--repo <dir>]
+  icarus sync pull (--file <snapshot.json> | --remote --project <project-id>) [--accept-revision] [--repo <dir>]
                                         validate and cache a scoped authority snapshot. --remote
-                                        uses the configured HIVE-MIND account; it is explicit.
+                                        uses the configured HIVE-MIND account; a competing valid
+                                        revision must be inspected and explicitly accepted.
   icarus sync push --task <TASK-ID> --user <id> --org <id> --project <id> --file <request.json>
                                         export only a sealed task's redacted receipt for an
                                         explicit remote transport; no network call is made.

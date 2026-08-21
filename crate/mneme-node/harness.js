@@ -96,6 +96,10 @@ function installAuthoritySnapshot(repoRoot, snapshotJson) {
   return invoke('harnessInstallAuthoritySnapshot', [repoRoot, snapshotJson]);
 }
 
+function installAuthoritySnapshotWithReplacement(repoRoot, snapshotJson, acceptReplacement) {
+  return invoke('harnessInstallAuthoritySnapshotWithReplacement', [repoRoot, snapshotJson, !!acceptReplacement]);
+}
+
 function inspectAuthoritySync(repoRoot) {
   return invoke('harnessInspectAuthoritySync', [repoRoot]);
 }
@@ -192,6 +196,7 @@ module.exports = {
   sealTask,
   exportTask,
   installAuthoritySnapshot,
+  installAuthoritySnapshotWithReplacement,
   inspectAuthoritySync,
   buildAuthoritySyncRequest,
   proposeSkill,

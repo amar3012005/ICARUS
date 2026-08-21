@@ -41,6 +41,7 @@ export declare function harnessExportTask(repoRoot: string, taskId: string, reda
  * JSON document; Rust validates repository identity, scope, expiry, and digest before caching.
  */
 export declare function harnessInstallAuthoritySnapshot(repoRoot: string, snapshotJson: string): string
+export declare function harnessInstallAuthoritySnapshotWithReplacement(repoRoot: string, snapshotJson: string, acceptReplacement: boolean): string
 export declare function harnessInspectAuthoritySync(repoRoot: string): string
 /**
  * Build a redacted outbound bundle.  This method deliberately cannot issue an HTTP request or

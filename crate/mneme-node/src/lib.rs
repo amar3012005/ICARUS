@@ -254,6 +254,23 @@ pub fn harness_install_authority_snapshot(
 }
 
 #[napi]
+pub fn harness_install_authority_snapshot_with_replacement(
+    repo_root: String,
+    snapshot_json: String,
+    accept_replacement: bool,
+) -> Result<String> {
+    let snapshot = harness::install_authority_snapshot_with_replacement(
+        std::path::Path::new(&repo_root),
+        &snapshot_json,
+        accept_replacement,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(snapshot).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_inspect_authority_sync(repo_root: String) -> Result<String> {
     let inspection = harness::inspect_authority_sync(std::path::Path::new(&repo_root))
         .map_err(|error| Error::from_reason(error.to_string()))?;

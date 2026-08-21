@@ -689,6 +689,21 @@ pub struct AuthoritySyncRequest {
     pub sealed_receipt: TaskExport,
 }
 
+/// A durable competing-revision record.  ICARUS never silently replaces an unexpired authority
+/// cache: the user or a future live-approval transport must explicitly accept the new revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritySyncConflict {
+    pub schema_version: u32,
+    pub scope: AuthorityScope,
+    pub repo_id: String,
+    pub existing_revision: String,
+    pub existing_digest: String,
+    pub incoming_revision: String,
+    pub incoming_digest: String,
+    pub detected_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoritySyncInspection {
@@ -703,6 +718,8 @@ pub struct AuthoritySyncInspection {
     pub expires_at: Option<String>,
     pub decision_count: usize,
     pub team_skill_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<AuthoritySyncConflict>,
 }
 
 /// A harness procedure, never a chat persona. Candidates have no execution authority until the
@@ -3497,6 +3514,10 @@ fn authority_snapshot_path(root: &Path) -> PathBuf {
     runtime_root(root).join("authority/snapshot.json")
 }
 
+fn authority_conflict_path(root: &Path) -> PathBuf {
+    runtime_root(root).join("authority/conflict.json")
+}
+
 fn task_worktree_id(root: &Path, task_id: &str) -> String {
     read_snapshot(root, &format!("state/run-{task_id}.json"))
         .ok()
@@ -3538,6 +3559,18 @@ fn validate_authority_snapshot(
     root: &Path,
     snapshot: AuthoritySnapshot,
 ) -> Result<AuthoritySnapshot> {
+    validate_authority_snapshot_integrity(root, &snapshot, true)?;
+    Ok(snapshot)
+}
+
+/// Validate the signed-content shape independently from its temporary freshness.  This is used
+/// when replacing an expired local cache: expiry must block use, not permanently prevent the
+/// next authenticated pull from refreshing the same scoped authority.
+fn validate_authority_snapshot_integrity(
+    root: &Path,
+    snapshot: &AuthoritySnapshot,
+    require_fresh: bool,
+) -> Result<()> {
     let manifest = load_manifest(root)?;
     if snapshot.schema_version != 1
         || snapshot.repo_id != manifest.repo_id
@@ -3555,11 +3588,18 @@ fn validate_authority_snapshot(
         &time::format_description::well_known::Rfc3339,
     )
     .is_err()
-        || !authority_snapshot_is_fresh(&snapshot)
+        || time::OffsetDateTime::parse(
+            &snapshot.expires_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .is_err()
+        || (require_fresh && !authority_snapshot_is_fresh(snapshot))
     {
-        return Err(HarnessError::invalid(
-            "authority snapshot must have valid issued_at and unexpired expires_at timestamps",
-        ));
+        return Err(HarnessError::invalid(if require_fresh {
+            "authority snapshot must have valid issued_at and unexpired expires_at timestamps"
+        } else {
+            "cached authority snapshot must have valid issued_at and expires_at timestamps"
+        }));
     }
     if snapshot.decisions.iter().any(|decision| {
         !authority_identifier_valid(&decision.id)
@@ -3571,12 +3611,12 @@ fn validate_authority_snapshot(
             "authority snapshot contains an invalid or non-approved decision",
         ));
     }
-    if snapshot.digest != authority_snapshot_digest(&snapshot)? {
+    if snapshot.digest != authority_snapshot_digest(snapshot)? {
         return Err(HarnessError::invalid(
             "authority snapshot digest does not match its content",
         ));
     }
-    Ok(snapshot)
+    Ok(())
 }
 
 /// Install a remote authority response after transport authentication has already happened.
@@ -3586,16 +3626,70 @@ pub fn install_authority_snapshot(
     repo_root: &Path,
     snapshot_json: &str,
 ) -> Result<AuthoritySnapshot> {
+    install_authority_snapshot_with_replacement(repo_root, snapshot_json, false)
+}
+
+/// Install a snapshot only when it does not compete with a fresh cached revision, unless the
+/// caller supplies an explicit replacement acknowledgement. Scope changes never become an
+/// acknowledgement path: those are always denied rather than treated as a resolvable conflict.
+pub fn install_authority_snapshot_with_replacement(
+    repo_root: &Path,
+    snapshot_json: &str,
+    accept_replacement: bool,
+) -> Result<AuthoritySnapshot> {
     let root = canonical_root(repo_root)?;
     let _lock = RuntimeLock::acquire(&root, "authority-sync")?;
     let snapshot: AuthoritySnapshot = serde_json::from_str(snapshot_json).map_err(|error| {
         HarnessError::invalid(format!("invalid authority snapshot JSON: {error}"))
     })?;
     let snapshot = validate_authority_snapshot(&root, snapshot)?;
+    if authority_snapshot_path(&root).exists() {
+        let existing: AuthoritySnapshot = serde_json::from_reader(File::open(
+            authority_snapshot_path(&root),
+        )?)
+        .map_err(|error| {
+            HarnessError::invalid(format!(
+                "cached authority snapshot is invalid JSON: {error}"
+            ))
+        })?;
+        validate_authority_snapshot_integrity(&root, &existing, false)?;
+        if existing.scope != snapshot.scope || existing.repo_id != snapshot.repo_id {
+            return Err(HarnessError::invalid(
+                "authority scope mismatch; cached authority cannot be replaced across user, org, project, or repository",
+            ));
+        }
+        if authority_snapshot_is_fresh(&existing) && existing.revision != snapshot.revision {
+            let conflict = AuthoritySyncConflict {
+                schema_version: 1,
+                scope: snapshot.scope.clone(),
+                repo_id: snapshot.repo_id.clone(),
+                existing_revision: existing.revision,
+                existing_digest: existing.digest,
+                incoming_revision: snapshot.revision.clone(),
+                incoming_digest: snapshot.digest.clone(),
+                detected_at: now_rfc3339(),
+            };
+            atomic_write(
+                &authority_conflict_path(&root),
+                format!("{}\n", serde_json::to_string_pretty(&conflict)?).as_bytes(),
+            )?;
+            if !accept_replacement {
+                return Err(HarnessError::invalid(format!(
+                    "authority revision conflict: cached {} competes with {}; inspect `icarus sync inspect` and retry with --accept-revision to replace it explicitly",
+                    conflict.existing_revision, conflict.incoming_revision,
+                )));
+            }
+        }
+    }
     atomic_write(
         &authority_snapshot_path(&root),
         format!("{}\n", serde_json::to_string_pretty(&snapshot)?).as_bytes(),
     )?;
+    if let Err(error) = fs::remove_file(authority_conflict_path(&root)) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+    }
     Ok(snapshot)
 }
 
@@ -3614,19 +3708,27 @@ fn load_authority_snapshot(root: &Path) -> Result<AuthoritySnapshot> {
 /// for ordinary local work, but never enough to authorize an external mutation.
 pub fn inspect_authority_sync(repo_root: &Path) -> Result<AuthoritySyncInspection> {
     let root = canonical_root(repo_root)?;
+    let conflict = File::open(authority_conflict_path(&root))
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, AuthoritySyncConflict>(file).ok());
     match load_authority_snapshot(&root) {
         Ok(snapshot) => Ok(AuthoritySyncInspection {
             schema_version: 1,
             configured: true,
             usable_for_local_tasks: true,
             usable_for_external_actions: false,
-            reason: "cached authority is valid for local context only; external actions require a live remote approval".into(),
+            reason: if conflict.is_some() {
+                "authority revision conflict is pending; local context remains on the cached revision and outbound sync is blocked".into()
+            } else {
+                "cached authority is valid for local context only; external actions require a live remote approval".into()
+            },
             scope: Some(snapshot.scope),
             repo_id: Some(snapshot.repo_id),
             revision: Some(snapshot.revision),
             expires_at: Some(snapshot.expires_at),
             decision_count: snapshot.decisions.len(),
             team_skill_count: snapshot.team_skills.len(),
+            conflict,
         }),
         Err(error) => Ok(AuthoritySyncInspection {
             schema_version: 1,
@@ -3640,6 +3742,7 @@ pub fn inspect_authority_sync(repo_root: &Path) -> Result<AuthoritySyncInspectio
             expires_at: None,
             decision_count: 0,
             team_skill_count: 0,
+            conflict,
         }),
     }
 }
@@ -3654,6 +3757,11 @@ pub fn build_authority_sync_request(
     scope: AuthorityScope,
 ) -> Result<AuthoritySyncRequest> {
     let root = canonical_root(repo_root)?;
+    if authority_conflict_path(&root).exists() {
+        return Err(HarnessError::invalid(
+            "authority revision conflict is pending; resolve it before exporting an outbound request",
+        ));
+    }
     let snapshot = load_authority_snapshot(&root)?;
     if snapshot.scope != scope {
         return Err(HarnessError::invalid(

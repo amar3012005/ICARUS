@@ -4,14 +4,14 @@ use icarus_harness::{
     build_authority_sync_request, build_context, checkpoint_task, codex_app_server_resume_session,
     decide_codex_app_server_approval, doctor, evaluate_skill, export_task,
     graph_source_fingerprint, handoff_managed_task, init, inspect_authority_sync,
-    install_authority_snapshot, load_repository_policy, migrate, prepare_run, read_snapshot,
-    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
-    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
-    render_context_markdown, resume_codex_app_server_thread, resume_task, retire_skill,
-    review_active_skills, seal_task, start_task, task_status, transition_task,
-    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
-    AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem, EventInput, HarnessSkill,
-    InitOptions, TaskContract,
+    install_authority_snapshot, install_authority_snapshot_with_replacement,
+    load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
+    record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
+    record_codex_app_server_event, record_graph_receipt, render_context_markdown,
+    resume_codex_app_server_thread, resume_task, retire_skill, review_active_skills, seal_task,
+    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
+    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -2391,10 +2391,55 @@ fn authority_sync_is_scoped_fresh_and_exports_only_a_redacted_sealed_receipt() {
         &task.task_id,
         AuthorityScope {
             project_id: "other-project".into(),
-            ..scope
+            ..scope.clone()
         }
     )
     .is_err());
+
+    let mut replacement = snapshot;
+    replacement.revision = "revision-2".into();
+    replacement.digest = authority_snapshot_digest(&replacement).unwrap();
+    assert!(
+        install_authority_snapshot(repo.path(), &serde_json::to_string(&replacement).unwrap())
+            .is_err()
+    );
+    let conflicted = inspect_authority_sync(repo.path()).unwrap();
+    assert_eq!(conflicted.conflict.unwrap().incoming_revision, "revision-2");
+    assert!(build_authority_sync_request(repo.path(), &task.task_id, scope.clone()).is_err());
+    install_authority_snapshot_with_replacement(
+        repo.path(),
+        &serde_json::to_string(&replacement).unwrap(),
+        true,
+    )
+    .unwrap();
+    assert!(inspect_authority_sync(repo.path())
+        .unwrap()
+        .conflict
+        .is_none());
+
+    // Expiry makes the cached authority unusable but must not strand the repository: a fresh,
+    // authenticated replacement for the same scope can install without pretending the expired
+    // revision is a live conflict.
+    let mut expired = replacement;
+    expired.expires_at = "2020-01-01T00:00:00Z".into();
+    expired.digest = authority_snapshot_digest(&expired).unwrap();
+    fs::write(
+        repo.path().join(".icarus/runtime/authority/snapshot.json"),
+        serde_json::to_string(&expired).unwrap(),
+    )
+    .unwrap();
+    let mut refreshed = expired;
+    refreshed.revision = "revision-3".into();
+    refreshed.expires_at = "2099-01-01T00:00:00Z".into();
+    refreshed.digest = authority_snapshot_digest(&refreshed).unwrap();
+    install_authority_snapshot(repo.path(), &serde_json::to_string(&refreshed).unwrap()).unwrap();
+    assert_eq!(
+        inspect_authority_sync(repo.path())
+            .unwrap()
+            .revision
+            .as_deref(),
+        Some("revision-3")
+    );
 }
 
 #[test]
