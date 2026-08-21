@@ -169,6 +169,15 @@ jobs:
         working-directory: crate/mneme-node
         run: npm run test:engine
 
+      # The deterministic harness is deliberately separate from the optional remote sync and
+      # from memory-chat providers. Run the real native conformance corpus with every network
+      # operation denied so a future dependency cannot quietly make local lifecycle/context work
+      # depend on an LLM, telemetry endpoint, or account service.
+      - name: Network-isolated native harness conformance
+        if: runner.os == 'macOS'
+        working-directory: crate/mneme-node
+        run: sandbox-exec -p '(version 1) (allow default) (deny network*)' npm run test:engine
+
   # A release workflow can mask packaging breakage because it is both the producer and verifier
   # of the artifact.  Build the single-file executable independently on the normal public CI
   # path and make it open a native shard, write a memory, then recall it.  This covers Bun's
