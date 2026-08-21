@@ -49,6 +49,27 @@ export declare function harnessAuthorizeAdapterWrite(repoRoot: string, taskId: s
  */
 export declare function harnessRecordAdapterPostAction(repoRoot: string, taskId: string, agent: string, toolName: string, path: string): string
 /**
+ * Bind the stable thread returned by Codex app-server to a prepared Codex execution. Node may
+ * transport the response, but the native harness persists and validates the binding.
+ */
+export declare function harnessBindCodexAppServerThread(repoRoot: string, taskId: string, threadId: string): string
+/**
+ * Record a bounded structured Codex app-server notification. The native core rejects unknown
+ * event vocabularies and mismatched threads rather than accepting arbitrary JSON-RPC payloads.
+ */
+export declare function harnessRecordCodexAppServerEvent(repoRoot: string, taskId: string, method: string, paramsJson: string): string
+/**
+ * Decide a Codex app-server approval request in Rust. Current decisions intentionally fail
+ * closed until the protocol exposes canonical per-file write paths and a native command policy.
+ */
+export declare function harnessDecideCodexAppServerApproval(repoRoot: string, taskId: string, method: string, paramsJson: string): string
+/**
+ * Execute one governed Codex app-server turn inside the Rust native addon. This is synchronous
+ * by design: JavaScript only invokes the native bridge and then performs its usual post-run
+ * reconciliation; it never parses app-server events or decides an approval.
+ */
+export declare function harnessRunCodexAppServer(repoRoot: string, taskId: string, prompt?: string | undefined | null): string
+/**
  * Hand a prepared managed execution to ICARUS verification. This does not accept an agent
  * result or seal a task; it only records the durable execution-to-verification boundary.
  */
