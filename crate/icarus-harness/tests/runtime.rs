@@ -250,6 +250,16 @@ fn crash_child_after_atomic_snapshot_rename() {
 
 #[cfg(feature = "test-failpoints")]
 #[test]
+fn crash_child_during_task_snapshot_transition() {
+    let Ok(root) = std::env::var("ICARUS_TEST_CRASH_REPO") else {
+        return;
+    };
+    let task_id = std::env::var("ICARUS_TEST_CRASH_TASK").unwrap();
+    transition_task(Path::new(&root), &task_id, "orienting").unwrap();
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
 fn killed_writer_reclaims_its_dead_lock_and_recovers_the_durable_event_log() {
     let repo = repo();
     let initialized = init(repo.path(), InitOptions::default()).unwrap();
@@ -322,6 +332,46 @@ fn killed_writer_after_atomic_snapshot_rename_leaves_a_complete_recoverable_snap
             .unwrap()
             .unwrap()["generation"],
         "recovered"
+    );
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn killed_writer_during_task_snapshot_transition_leaves_a_complete_resumable_task() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(
+        repo.path(),
+        "crash during task state transition",
+        contract(),
+    )
+    .unwrap();
+
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "crash_child_during_task_snapshot_transition",
+            "--nocapture",
+        ])
+        .env("ICARUS_TEST_CRASH_REPO", repo.path())
+        .env("ICARUS_TEST_CRASH_TASK", &task.task_id)
+        .env("ICARUS_TEST_CRASH_POINT", "atomic-after-rename:task.json")
+        .status()
+        .unwrap();
+    assert!(!child.success(), "crash child unexpectedly succeeded");
+
+    // This passes through the public parser, validates its immutable contract binding, and then
+    // writes the next transition. It proves a process death cannot leave a torn task state that
+    // makes a governed task permanently unreadable or unresumable.
+    assert_eq!(
+        task_status(repo.path(), &task.task_id).unwrap().status,
+        "orienting"
+    );
+    assert_eq!(
+        transition_task(repo.path(), &task.task_id, "contracted")
+            .unwrap()
+            .status,
+        "contracted"
     );
 }
 
