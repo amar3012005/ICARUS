@@ -792,6 +792,53 @@ pub struct SkillHealthReview {
     pub issues: Vec<String>,
 }
 
+/// The repository-local start marker for the release-candidate dogfood window.  It is written by
+/// Rust, rather than inferred from a Git tag, so a later checkout cannot silently back-date the
+/// required observation period.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseCandidateDogfood {
+    pub schema_version: u32,
+    pub release_id: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub completion_attestation: Option<ReleaseCandidateCompletionAttestation>,
+}
+
+/// A named owner is the only authority that can attest to the absence of incidents that are
+/// fundamentally outside a local process's view (for example, a user-reported data-loss event).
+/// ICARUS still independently verifies the elapsed window and managed-task count before it will
+/// accept this record in a ready report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseCandidateCompletionAttestation {
+    pub approval_id: String,
+    pub approver: String,
+    pub attested_at: String,
+    pub statement: String,
+}
+
+/// Deterministic local evidence for the Phase 9 dogfood gate.  `ready` is deliberately
+/// fail-closed: it cannot become true before the full observation period, 100 managed task
+/// starts, a valid runtime event chain, and an explicit incident-free owner attestation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseCandidateDogfoodReport {
+    pub schema_version: u32,
+    pub release_id: String,
+    pub started_at: String,
+    pub generated_at: String,
+    pub elapsed_days: i64,
+    pub managed_task_ids: Vec<String>,
+    pub managed_task_count: usize,
+    pub sealed_task_count: usize,
+    pub blocked_task_ids: Vec<String>,
+    pub failed_task_ids: Vec<String>,
+    pub completion_attestation: Option<ReleaseCandidateCompletionAttestation>,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Action {
     pub kind: String,
@@ -4304,6 +4351,216 @@ pub fn review_active_skills(repo_root: &Path) -> Result<SkillHealthReview> {
         demoted_skill_ids,
         issues,
     })
+}
+
+fn release_candidate_dogfood_path(root: &Path) -> PathBuf {
+    runtime_root(root).join("release-candidate-dogfood.json")
+}
+
+fn parse_release_candidate_started_at(value: &str) -> Result<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| HarnessError::invalid("release-candidate dogfood start time is invalid"))
+}
+
+fn release_candidate_dogfood(root: &Path) -> Result<ReleaseCandidateDogfood> {
+    serde_json::from_reader(File::open(release_candidate_dogfood_path(root)).map_err(|_| {
+        HarnessError::invalid(
+            "release-candidate dogfood has not started; run `icarus task dogfood start --release <version>`",
+        )
+    })?)
+    .map_err(HarnessError::from)
+}
+
+/// Begin a repository-local Phase 9 dogfood observation window.  It is idempotent for the same
+/// release candidate and refuses to overwrite another release's evidence window.
+pub fn start_release_candidate_dogfood(
+    repo_root: &Path,
+    release_id: &str,
+) -> Result<ReleaseCandidateDogfood> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let release_id = release_id.trim();
+    if release_id.is_empty()
+        || release_id.len() > 128
+        || release_id.chars().any(char::is_whitespace)
+    {
+        return Err(HarnessError::invalid(
+            "release candidate id must be a non-empty whitespace-free identifier up to 128 characters",
+        ));
+    }
+    let path = release_candidate_dogfood_path(&root);
+    if path.exists() {
+        let existing = release_candidate_dogfood(&root)?;
+        if existing.release_id == release_id {
+            return Ok(existing);
+        }
+        return Err(HarnessError::invalid(format!(
+            "release-candidate dogfood already tracks {}; do not overwrite its evidence window",
+            existing.release_id
+        )));
+    }
+    let dogfood = ReleaseCandidateDogfood {
+        schema_version: 1,
+        release_id: release_id.into(),
+        started_at: now_rfc3339(),
+        completion_attestation: None,
+    };
+    atomic_write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&dogfood)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: "release-candidate-dogfood".into(),
+            task_id: "release-candidate-dogfood".into(),
+            event_type: "release_candidate_dogfood_started".into(),
+            worktree_id: "main".into(),
+            timestamp: Some(dogfood.started_at.clone()),
+            payload: json!({"release_id": dogfood.release_id, "repo_id": manifest.repo_id}),
+        },
+    )?;
+    Ok(dogfood)
+}
+
+/// Report the exact evidence available for the 30-day/100-managed-task release-candidate gate.
+/// Missing or malformed state makes the report not-ready; it is never treated as a successful
+/// observation period.
+pub fn release_candidate_dogfood_report(repo_root: &Path) -> Result<ReleaseCandidateDogfoodReport> {
+    let root = canonical_root(repo_root)?;
+    let manifest = load_manifest(&root)?;
+    let dogfood = release_candidate_dogfood(&root)?;
+    let started = parse_release_candidate_started_at(&dogfood.started_at)?;
+    let now = time::OffsetDateTime::now_utc();
+    let elapsed_days = (now - started).whole_days().max(0);
+    let chain = verify_event_chain(&root, &manifest.repo_id)?;
+    let mut managed_task_ids: BTreeSet<String> = BTreeSet::new();
+    for event in read_events(&root)? {
+        if event.event_type != "task_created" {
+            continue;
+        }
+        let created = time::OffsetDateTime::parse(
+            &event.timestamp,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|_| HarnessError::invalid("task event has an invalid timestamp"))?;
+        if created >= started {
+            managed_task_ids.insert(event.task_id);
+        }
+    }
+    let mut sealed_task_count = 0;
+    let mut blocked_task_ids = Vec::new();
+    let mut failed_task_ids = Vec::new();
+    let mut blockers = Vec::new();
+    for task_id in &managed_task_ids {
+        match task_status(&root, task_id) {
+            Ok(task) => match task.status.as_str() {
+                "sealed" => sealed_task_count += 1,
+                "blocked" => blocked_task_ids.push(task_id.clone()),
+                "failed" => failed_task_ids.push(task_id.clone()),
+                _ => {}
+            },
+            Err(error) => blockers.push(format!("managed task {task_id} cannot be read: {error}")),
+        }
+    }
+    if !chain.valid {
+        blockers.push(format!(
+            "runtime event chain is invalid: {}",
+            chain.issues.join("; ")
+        ));
+    }
+    if elapsed_days < 30 {
+        blockers.push(format!("dogfood window is {elapsed_days}/30 full days old"));
+    }
+    if managed_task_ids.len() < 100 {
+        blockers.push(format!(
+            "dogfood window records {}/100 managed task starts",
+            managed_task_ids.len()
+        ));
+    }
+    if dogfood.completion_attestation.is_none() {
+        blockers.push(
+            "an owner attestation of no unresolved critical dogfood incidents is required".into(),
+        );
+    }
+    Ok(ReleaseCandidateDogfoodReport {
+        schema_version: 1,
+        release_id: dogfood.release_id,
+        started_at: dogfood.started_at,
+        generated_at: now_rfc3339(),
+        elapsed_days,
+        managed_task_count: managed_task_ids.len(),
+        managed_task_ids: managed_task_ids.into_iter().collect(),
+        sealed_task_count,
+        blocked_task_ids,
+        failed_task_ids,
+        completion_attestation: dogfood.completion_attestation,
+        ready: blockers.is_empty(),
+        blockers,
+    })
+}
+
+/// Record the final owner-only incident attestation after ICARUS has independently established
+/// the time, task-count, and event-chain portions of the RC gate.  This cannot be used to erase
+/// failed/blocked task history: the report always exposes those ids separately.
+pub fn attest_release_candidate_dogfood(
+    repo_root: &Path,
+    approval_id: &str,
+    approver: &str,
+) -> Result<ReleaseCandidateDogfood> {
+    let root = canonical_root(repo_root)?;
+    if approval_id.trim().is_empty() || approver.trim().is_empty() {
+        return Err(HarnessError::invalid(
+            "release-candidate dogfood attestation requires an approval id and approver",
+        ));
+    }
+    let report = release_candidate_dogfood_report(&root)?;
+    let non_attestation_blockers: Vec<String> = report
+        .blockers
+        .iter()
+        .filter(|blocker| {
+            blocker.as_str()
+                != "an owner attestation of no unresolved critical dogfood incidents is required"
+        })
+        .cloned()
+        .collect();
+    if !non_attestation_blockers.is_empty() {
+        return Err(HarnessError::invalid(format!(
+            "cannot attest release-candidate dogfood while objective gates remain open: {}",
+            non_attestation_blockers.join("; ")
+        )));
+    }
+    let mut dogfood = release_candidate_dogfood(&root)?;
+    dogfood.completion_attestation = Some(ReleaseCandidateCompletionAttestation {
+        approval_id: approval_id.trim().into(),
+        approver: approver.trim().into(),
+        attested_at: now_rfc3339(),
+        statement: "No unresolved data-loss, scope-escape, false-seal, or cross-tenant incident is known for this release-candidate dogfood window.".into(),
+    });
+    atomic_write(
+        &release_candidate_dogfood_path(&root),
+        format!("{}\n", serde_json::to_string_pretty(&dogfood)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: "release-candidate-dogfood".into(),
+            task_id: "release-candidate-dogfood".into(),
+            event_type: "release_candidate_dogfood_attested".into(),
+            worktree_id: "main".into(),
+            timestamp: dogfood
+                .completion_attestation
+                .as_ref()
+                .map(|attestation| attestation.attested_at.clone()),
+            payload: serde_json::to_value(
+                dogfood
+                    .completion_attestation
+                    .as_ref()
+                    .expect("attestation is present"),
+            )?,
+        },
+    )?;
+    Ok(dogfood)
 }
 
 pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<HarnessSkill> {

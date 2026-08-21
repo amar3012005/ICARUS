@@ -27,6 +27,9 @@ export declare function harnessRepositoryIdentity(repoRoot: string): string
 export declare function harnessPolicyExplain(repoRoot: string, denialId: string): string
 export declare function harnessStartTask(repoRoot: string, objective: string, contractJson: string): string
 export declare function harnessTaskStatus(repoRoot: string, taskId: string): string
+export declare function harnessStartReleaseCandidateDogfood(repoRoot: string, releaseId: string): string
+export declare function harnessReleaseCandidateDogfoodReport(repoRoot: string): string
+export declare function harnessAttestReleaseCandidateDogfood(repoRoot: string, approvalId: string, approver: string): string
 export declare function harnessTransitionTask(repoRoot: string, taskId: string, target: string): string
 export declare function harnessResumeTask(repoRoot: string, taskId: string): string
 export declare function harnessPrepareRun(repoRoot: string, taskId: string, agent: string, workspaceMode: string, acknowledgeDirtyCurrent: boolean): string

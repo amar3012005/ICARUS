@@ -128,6 +128,45 @@ pub fn harness_task_status(repo_root: String, task_id: String) -> Result<String>
 }
 
 #[napi]
+pub fn harness_start_release_candidate_dogfood(
+    repo_root: String,
+    release_id: String,
+) -> Result<String> {
+    let dogfood =
+        harness::start_release_candidate_dogfood(std::path::Path::new(&repo_root), &release_id)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(dogfood).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_release_candidate_dogfood_report(repo_root: String) -> Result<String> {
+    let report = harness::release_candidate_dogfood_report(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(report).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_attest_release_candidate_dogfood(
+    repo_root: String,
+    approval_id: String,
+    approver: String,
+) -> Result<String> {
+    let dogfood = harness::attest_release_candidate_dogfood(
+        std::path::Path::new(&repo_root),
+        &approval_id,
+        &approver,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(dogfood).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_transition_task(
     repo_root: String,
     task_id: String,

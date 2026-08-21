@@ -276,6 +276,37 @@ function cmdTask(flags) {
     console.log(ok(`started ${c.path(task.task_id)} · ${task.status} · contract v${task.contract_version}`));
     return;
   }
+  if (subcommand === 'dogfood') {
+    const action = taskId || 'status';
+    if (!['start', 'status', 'attest'].includes(action)) {
+      throw new Error('usage: icarus task dogfood <start|status|attest> [--release <version>] [--approval <id> --approver <name>] [--repo <dir>]');
+    }
+    if (action === 'start') {
+      if (!flags.release) throw new Error('usage: icarus task dogfood start --release <version> [--repo <dir>]');
+      const window = harness.startReleaseCandidateDogfood(repo, flags.release);
+      console.log(ok(`release-candidate dogfood started for ${c.path(window.release_id)} at ${window.started_at}`));
+      console.log(c.dim('  ICARUS will require 30 full days, 100 managed task starts, a valid event chain, and an owner incident attestation.'));
+      return;
+    }
+    if (action === 'attest') {
+      if (!flags.approval || !flags.approver) throw new Error('usage: icarus task dogfood attest --approval <id> --approver <name> [--repo <dir>]');
+      const window = harness.attestReleaseCandidateDogfood(repo, flags.approval, flags.approver);
+      console.log(ok(`dogfood completion attested by ${window.completion_attestation.approver} (${window.completion_attestation.approval_id})`));
+      return;
+    }
+    const report = harness.releaseCandidateDogfoodReport(repo);
+    console.log(`\n${heading(`release-candidate dogfood · ${report.release_id}`)}\n`);
+    console.log(`  ${c.dim('window'.padEnd(20))}${report.started_at} · ${report.elapsed_days}/30 full days`);
+    console.log(`  ${c.dim('managed tasks'.padEnd(20))}${report.managed_task_count}/100 · sealed ${report.sealed_task_count}`);
+    console.log(`  ${c.dim('task outcomes'.padEnd(20))}blocked ${report.blocked_task_ids.length} · failed ${report.failed_task_ids.length}`);
+    console.log(`  ${c.dim('incident attestation'.padEnd(20))}${report.completion_attestation ? `${report.completion_attestation.approver} · ${report.completion_attestation.approval_id}` : 'pending'}`);
+    if (report.ready) console.log(`\n  ${ok('Phase 9 dogfood evidence gate is complete.')}`);
+    else {
+      console.log(`\n  ${c.command('not ready')}`);
+      for (const blocker of report.blockers) console.log(c.dim(`  · ${blocker}`));
+    }
+    return;
+  }
   if (!taskId) throw new Error('usage: icarus task <status|resume|transition|reconcile|authorize> <TASK-ID> [state] [--repo <dir>]');
   if (subcommand === 'status') {
     const task = harness.taskStatus(repo, taskId);
@@ -374,7 +405,7 @@ function cmdTask(flags) {
     console.log(JSON.stringify(receipt, null, 2));
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|handoff|amend|checkpoint|block|authorize|verify|seal|export>');
+  throw new Error('usage: icarus task <start|dogfood|status|resume|transition|reconcile|handoff|amend|checkpoint|block|authorize|verify|seal|export>');
 }
 
 function cmdContext(flags) {

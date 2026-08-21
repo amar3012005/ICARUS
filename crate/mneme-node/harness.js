@@ -89,6 +89,18 @@ function exportTask(repoRoot, taskId, redacted) {
   return invoke('harnessExportTask', [repoRoot, taskId, !!redacted]);
 }
 
+// Phase 9 release-candidate dogfood evidence is Rust-owned. Node only renders the report and
+// cannot back-date the observation window, count tasks, or manufacture the owner attestation.
+function startReleaseCandidateDogfood(repoRoot, releaseId) {
+  return invoke('harnessStartReleaseCandidateDogfood', [repoRoot, releaseId]);
+}
+function releaseCandidateDogfoodReport(repoRoot) {
+  return invoke('harnessReleaseCandidateDogfoodReport', [repoRoot]);
+}
+function attestReleaseCandidateDogfood(repoRoot, approvalId, approver) {
+  return invoke('harnessAttestReleaseCandidateDogfood', [repoRoot, approvalId, approver]);
+}
+
 // Authority synchronization is deliberately a file/bundle boundary for now. These functions
 // never receive credentials and cannot make network calls; Rust validates scope, expiry, digest,
 // repository identity, and sealed receipt provenance before any value becomes usable.
@@ -199,6 +211,9 @@ module.exports = {
   installAuthoritySnapshotWithReplacement,
   inspectAuthoritySync,
   buildAuthoritySyncRequest,
+  startReleaseCandidateDogfood,
+  releaseCandidateDogfoodReport,
+  attestReleaseCandidateDogfood,
   proposeSkill,
   evaluateSkill,
   recordActiveSkillOutcome,

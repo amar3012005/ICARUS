@@ -1,17 +1,18 @@
 use icarus_harness::{
-    amend_task_contract, append_event, attest_task_criterion, authority_snapshot_digest,
-    authorize_action, authorize_adapter_write, bind_codex_app_server_thread,
-    build_authority_sync_request, build_context, checkpoint_task, codex_app_server_resume_session,
-    decide_codex_app_server_approval, doctor, evaluate_skill, export_task,
-    graph_source_fingerprint, handoff_managed_task, init, inspect_authority_sync,
+    amend_task_contract, append_event, attest_release_candidate_dogfood, attest_task_criterion,
+    authority_snapshot_digest, authorize_action, authorize_adapter_write,
+    bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
+    codex_app_server_resume_session, decide_codex_app_server_approval, doctor, evaluate_skill,
+    export_task, graph_source_fingerprint, handoff_managed_task, init, inspect_authority_sync,
     install_authority_snapshot, install_authority_snapshot_with_replacement,
     load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
     record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
-    record_codex_app_server_event, record_graph_receipt, render_context_markdown,
-    resume_codex_app_server_thread, resume_task, retire_skill, review_active_skills, seal_task,
-    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
-    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
+    record_codex_app_server_event, record_graph_receipt, release_candidate_dogfood_report,
+    render_context_markdown, resume_codex_app_server_thread, resume_task, retire_skill,
+    review_active_skills, seal_task, start_release_candidate_dogfood, start_task, task_status,
+    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
+    write_snapshot, Action, AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem,
+    EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -3231,4 +3232,83 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
         .path()
         .join(".icarus/skills/retired/deploy-review-v1.json")
         .exists());
+}
+
+#[test]
+fn release_candidate_dogfood_report_is_event_bound_and_cannot_be_backdated_or_attested_early() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    assert!(release_candidate_dogfood_report(repo.path()).is_err());
+
+    let started = start_release_candidate_dogfood(repo.path(), "v1.0.0-rc.1").unwrap();
+    assert_eq!(started.release_id, "v1.0.0-rc.1");
+    assert_eq!(
+        start_release_candidate_dogfood(repo.path(), "v1.0.0-rc.1")
+            .unwrap()
+            .started_at,
+        started.started_at
+    );
+    assert!(start_release_candidate_dogfood(repo.path(), "v1.0.0-rc.2").is_err());
+
+    let early = release_candidate_dogfood_report(repo.path()).unwrap();
+    assert!(!early.ready);
+    assert!(early
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("0/100 managed task starts")));
+    assert!(attest_release_candidate_dogfood(repo.path(), "APR-early", "owner").is_err());
+
+    for index in 0..100 {
+        start_task(
+            repo.path(),
+            format!("release-candidate managed task {index}"),
+            contract(),
+        )
+        .unwrap();
+    }
+    // The start marker is Rust-owned and normally immutable. This direct runtime-file mutation
+    // simulates a truly old observation window for the report test; it cannot add task-created
+    // events or forge their chained hashes, so all 100 actual managed task starts are still read
+    // from the event log.
+    let dogfood_path = repo
+        .path()
+        .join(".icarus/runtime/release-candidate-dogfood.json");
+    let mut dogfood: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&dogfood_path).unwrap()).unwrap();
+    dogfood["started_at"] = serde_json::json!("2020-01-01T00:00:00Z");
+    fs::write(
+        &dogfood_path,
+        format!("{}\n", serde_json::to_string_pretty(&dogfood).unwrap()),
+    )
+    .unwrap();
+
+    let before_attestation = release_candidate_dogfood_report(repo.path()).unwrap();
+    assert_eq!(before_attestation.managed_task_count, 100);
+    assert!(before_attestation.elapsed_days >= 30);
+    assert!(!before_attestation.ready);
+    assert_eq!(before_attestation.blockers.len(), 1);
+    assert!(before_attestation.blockers[0].contains("owner attestation"));
+
+    attest_release_candidate_dogfood(repo.path(), "APR-100", "release owner").unwrap();
+    let complete = release_candidate_dogfood_report(repo.path()).unwrap();
+    assert!(complete.ready);
+    assert_eq!(
+        complete
+            .completion_attestation
+            .as_ref()
+            .unwrap()
+            .approval_id,
+        "APR-100"
+    );
+    assert!(
+        verify_event_chain(
+            repo.path(),
+            &init(repo.path(), InitOptions::default())
+                .unwrap()
+                .manifest
+                .repo_id
+        )
+        .unwrap()
+        .valid
+    );
 }

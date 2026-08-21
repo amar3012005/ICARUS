@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   initHarness, migrateHarness, doctor, policyCheck, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
   validateAgentArguments, reconcileRun, evaluateSkill, recordActiveSkillOutcome, reviewActiveSkills,
+  startReleaseCandidateDogfood, releaseCandidateDogfoodReport, attestReleaseCandidateDogfood,
   bindCodexAppServerThread, recordCodexAppServerEvent, decideCodexAppServerApproval,
   runCodexAppServer,
   __setNativeHarnessBridgeForTest,
@@ -89,6 +90,32 @@ test('agent launch arguments are validated by Rust before Node can spawn a CLI',
   });
   validateAgentArguments('codex', ['--model', 'gpt-5']);
   assert.deepEqual(calls, [['codex', '["--model","gpt-5"]']]);
+});
+
+test('release-candidate dogfood evidence remains a thin Rust transport', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessStartReleaseCandidateDogfood(...args) {
+      calls.push(['start', args]);
+      return JSON.stringify({ release_id: 'v1.0.0-rc.1', started_at: '2026-08-21T00:00:00Z' });
+    },
+    harnessReleaseCandidateDogfoodReport(...args) {
+      calls.push(['report', args]);
+      return JSON.stringify({ release_id: 'v1.0.0-rc.1', ready: false, blockers: ['100 tasks required'] });
+    },
+    harnessAttestReleaseCandidateDogfood(...args) {
+      calls.push(['attest', args]);
+      return JSON.stringify({ release_id: 'v1.0.0-rc.1', completion_attestation: { approval_id: 'APR-100' } });
+    },
+  });
+  assert.equal(startReleaseCandidateDogfood('/repo', 'v1.0.0-rc.1').release_id, 'v1.0.0-rc.1');
+  assert.equal(releaseCandidateDogfoodReport('/repo').ready, false);
+  assert.equal(attestReleaseCandidateDogfood('/repo', 'APR-100', 'owner').completion_attestation.approval_id, 'APR-100');
+  assert.deepEqual(calls, [
+    ['start', ['/repo', 'v1.0.0-rc.1']],
+    ['report', ['/repo']],
+    ['attest', ['/repo', 'APR-100', 'owner']],
+  ]);
 });
 
 test('isolated-worktree reconciliation remains a thin native transport', () => {
