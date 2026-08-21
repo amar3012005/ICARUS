@@ -82,7 +82,19 @@ fn init_is_idempotent_and_creates_a_tracked_contract() {
     .unwrap();
     assert!(!again.created);
     assert_eq!(again.manifest.repo_id, first.manifest.repo_id);
-    assert_eq!(again.manifest.agents, vec!["claude", "codex"]);
+    assert_eq!(again.manifest.agents, vec!["claude", "codex", "grok"]);
+
+    // Re-requesting enabled adapters must remain idempotent and retain the immutable repository
+    // identity contract.
+    let idempotent = init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["claude".into(), "grok".into()],
+        },
+    )
+    .unwrap();
+    assert_eq!(idempotent.manifest.repo_id, first.manifest.repo_id);
+    assert_eq!(idempotent.manifest.agents, vec!["claude", "codex", "grok"]);
 
     fs::remove_file(repo.path().join(".icarus/schemas/policy.schema.json")).unwrap();
     let upgraded = init(repo.path(), InitOptions::default()).unwrap();

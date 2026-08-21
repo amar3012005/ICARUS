@@ -1587,9 +1587,21 @@ pub fn init(repo_root: &Path, options: InitOptions) -> Result<InitResult> {
     if manifest_file.exists() {
         ensure_schema_documents(&root)?;
         let graph_migrated = migrate_legacy_graph(&root)?;
+        let mut manifest = load_manifest(&root)?;
+        // `harness init --agent codex` is also the incremental setup path for a repository that
+        // was initialized earlier for Claude (or vice versa). Preserve repository identity and
+        // policy, but merge explicitly requested supported adapters in stable order.
+        let requested: BTreeSet<_> = options.agents.into_iter().collect();
+        let existing: BTreeSet<_> = manifest.agents.iter().cloned().collect();
+        let merged: BTreeSet<_> = existing.union(&requested).cloned().collect();
+        if merged.len() != manifest.agents.len() {
+            manifest.agents = merged.into_iter().collect();
+            manifest = validate_manifest(manifest)?;
+            atomic_write(&manifest_file, manifest_yaml(&manifest)?.as_bytes())?;
+        }
         return Ok(InitResult {
             created: false,
-            manifest: load_manifest(&root)?,
+            manifest,
             graph_migrated,
         });
     }
