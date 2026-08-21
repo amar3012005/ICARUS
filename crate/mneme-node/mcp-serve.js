@@ -726,6 +726,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_skill_authoring_brief',
+    {
+      title: 'Derive a skill-authoring brief from sealed work',
+      description: 'Call after a sealed task when you detect a reusable procedure. ICARUS returns source task evidence, exact scope, and promotion gates for you to draft a candidate with your own reasoning. It never calls an LLM, writes a skill, or activates one automatically.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try { return textResult(harnessFor().skillAuthoringBrief(repo, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_propose',
     {
       title: 'Propose a governed ICARUS harness procedure',

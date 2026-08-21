@@ -9,10 +9,10 @@ use icarus_harness::{
     record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
     record_codex_app_server_event, record_graph_receipt, release_candidate_dogfood_report,
     render_context_markdown, resume_codex_app_server_thread, resume_task, retire_skill,
-    review_active_skills, seal_task, start_release_candidate_dogfood, start_task, task_status,
-    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem,
-    EventInput, HarnessSkill, InitOptions, TaskContract,
+    review_active_skills, seal_task, skill_authoring_brief, start_release_candidate_dogfood,
+    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
+    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -1649,6 +1649,73 @@ fn graph_fingerprint_excludes_nested_agent_worktrees() {
     )
     .unwrap();
     assert_eq!(graph_source_fingerprint(repo.path()).unwrap(), fingerprint);
+}
+
+#[test]
+fn skill_authoring_brief_uses_only_matching_sealed_task_evidence() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+
+    let mut source_contract = contract();
+    source_contract.acceptance_criteria = serde_json::json!([]);
+    source_contract.task_type = Some("feature".into());
+    let source = start_task(
+        repo.path(),
+        "first reusable feature",
+        source_contract.clone(),
+    )
+    .unwrap();
+    assert!(skill_authoring_brief(repo.path(), &source.task_id).is_err());
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &source.task_id, state).unwrap();
+    }
+    assert!(seal_task(repo.path(), &source.task_id).unwrap().sealed);
+
+    let mut matching_contract = source_contract.clone();
+    let matching = start_task(
+        repo.path(),
+        "second reusable feature",
+        matching_contract.clone(),
+    )
+    .unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &matching.task_id, state).unwrap();
+    }
+    assert!(seal_task(repo.path(), &matching.task_id).unwrap().sealed);
+
+    matching_contract.allowed_paths = vec!["docs/**".into()];
+    let unrelated = start_task(repo.path(), "other feature scope", matching_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &unrelated.task_id, state).unwrap();
+    }
+    assert!(seal_task(repo.path(), &unrelated.task_id).unwrap().sealed);
+
+    let brief = skill_authoring_brief(repo.path(), &source.task_id).unwrap();
+    assert_eq!(brief.task_type, "feature");
+    assert_eq!(brief.candidate_source_task_ids.len(), 2);
+    assert!(brief.candidate_source_task_ids.contains(&source.task_id));
+    assert!(brief.candidate_source_task_ids.contains(&matching.task_id));
+    assert!(!brief.candidate_source_task_ids.contains(&unrelated.task_id));
+    assert_eq!(brief.additional_sealed_sources_required, 1);
+    assert!(brief.authoring_instructions.contains("proposed skill"));
 }
 
 #[test]

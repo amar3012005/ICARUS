@@ -287,7 +287,15 @@ function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); 
 // reuse ONE real, tested mechanism instead of three near-duplicate copies that could drift.
 function writeMarkedBlock(filePath, markStart, markEnd, block) {
   const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-  if (existing.includes(markStart)) return { installed: false, reason: 'already installed', path: filePath };
+  const start = existing.indexOf(markStart);
+  if (start !== -1) {
+    const end = existing.indexOf(markEnd, start);
+    if (end === -1) return { installed: false, reason: 'existing instructions block is malformed', path: filePath };
+    const replaced = existing.slice(0, start) + block + existing.slice(end + markEnd.length);
+    if (replaced === existing) return { installed: false, reason: 'already installed', path: filePath };
+    fs.writeFileSync(filePath, replaced);
+    return { installed: true, reason: 'updated', path: filePath };
+  }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const sep = existing && !existing.endsWith('\n\n') ? (existing.endsWith('\n') ? '\n' : '\n\n') : '';
   fs.writeFileSync(filePath, existing + sep + block + '\n');
@@ -338,7 +346,9 @@ This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icaru
 
 For "where is X" / "who calls X" / "what imports X" in this codebase: call \`icarus_graph_query\` FIRST — a cheap structural lookup (callers_of/callees_of/imports_of/find) — instead of Grep/Read over whole files. Run \`icarus_graph_build\` once for this repo if \`icarus_graph_status\` shows nothing built yet, and again after significant restructuring.
 
-For a governed coding task in a repository with \`.icarus/manifest.yaml\`: call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before ending a managed Claude session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.`;
+For a governed coding task in a repository with \`.icarus/manifest.yaml\`: call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before ending a managed Claude session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.
+
+After a sealed task reveals a reusable procedure, call \`icarus_harness_skill_authoring_brief\`. Use the returned evidence and scope to draft a narrow proposed procedure, then call \`icarus_harness_skill_propose\`. Never present a proposal as active: only ICARUS replay evaluation and promotion can place it in future context.`;
 }
 
 const PROJECT_MARK_START = '<!-- icarus:project-instructions -->';
@@ -420,7 +430,7 @@ async function run(flags) {
       else if (g.reason === 'already installed') console.log(`  · standing instructions: already in ${g.path}`);
     }
     const p = project(process.cwd());
-    if (p.installed) console.log(`  ✓ project instructions: added to ${p.path} (org: "${p.orgName}")`);
+    if (p.installed) console.log(`  ✓ project instructions: ${p.reason === 'updated' ? 'updated' : 'added to'} ${p.path} (org: "${p.orgName}")`);
     else if (p.reason === 'already installed') console.log(`  · project instructions: already in ${p.path} (org: "${p.orgName}")`);
     // Physically create the repo-local shard NOW, not lazily on first save — a real, existing
     // .icarus/data/<org> slot right after setup, matching the actual ask ("create a new .amr

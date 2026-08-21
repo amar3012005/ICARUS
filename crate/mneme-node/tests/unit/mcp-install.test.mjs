@@ -56,6 +56,7 @@ test('the project block directs governed agents to compile context before planni
     const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
     assert.ok(text.includes('icarus_context_get'));
     assert.ok(text.includes('icarus_task_verify'));
+    assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
   });
 });
 
@@ -81,6 +82,20 @@ test('re-running is IDEMPOTENT — exactly one block, never a duplicate append',
     const ends = text.split(MARK_END).length - 1;
     assert.equal(starts, 1, `expected exactly 1 start marker, found ${starts}`);
     assert.equal(ends, 1, `expected exactly 1 end marker, found ${ends}`);
+  });
+});
+
+test('re-running refreshes an older managed block while preserving surrounding user content', () => {
+  withRepo((repo) => {
+    const original = `USER PROLOGUE\n${MARK_START}\nold ICARUS instructions\n${MARK_END}\nUSER EPILOGUE\n`;
+    writeFileSync(join(repo, 'AGENTS.md'), original);
+    const result = mi.installProjectAgents(repo);
+    const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
+    assert.equal(result.reason, 'updated');
+    assert.ok(text.includes('USER PROLOGUE'));
+    assert.ok(text.includes('USER EPILOGUE'));
+    assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
+    assert.equal(text.split(MARK_START).length - 1, 1);
   });
 });
 

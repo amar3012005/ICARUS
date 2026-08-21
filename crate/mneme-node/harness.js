@@ -153,6 +153,10 @@ function graphSourceFingerprint(repoRoot) {
   return invoke('harnessGraphSourceFingerprint', [repoRoot]);
 }
 
+function skillAuthoringBrief(repoRoot, taskId) {
+  return invoke('harnessSkillAuthoringBrief', [repoRoot, taskId]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -233,6 +237,7 @@ module.exports = {
   buildContext,
   recordGraphReceipt,
   graphSourceFingerprint,
+  skillAuthoringBrief,
   authorizeAction,
   authorizeAdapterWrite,
   recordAdapterPostAction,

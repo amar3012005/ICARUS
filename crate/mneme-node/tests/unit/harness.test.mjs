@@ -10,6 +10,7 @@ const {
   bindCodexAppServerThread, recordCodexAppServerEvent, decideCodexAppServerApproval,
   runCodexAppServer,
   graphSourceFingerprint,
+  skillAuthoringBrief,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -61,6 +62,19 @@ test('graph fingerprint is supplied by the native harness authority', () => {
     },
   });
   assert.equal(graphSourceFingerprint('/repo'), 'a'.repeat(64));
+});
+
+test('skill authoring brief is a native evidence handoff, never a JavaScript-generated procedure', () => {
+  __setNativeHarnessBridgeForTest({
+    harnessSkillAuthoringBrief(repo, taskId) {
+      assert.equal(repo, '/repo');
+      assert.equal(taskId, 'TASK-ABC123456789');
+      return JSON.stringify({ source_task_id: taskId, candidate_source_task_ids: [taskId] });
+    },
+  });
+  assert.deepEqual(skillAuthoringBrief('/repo', 'TASK-ABC123456789'), {
+    source_task_id: 'TASK-ABC123456789', candidate_source_task_ids: ['TASK-ABC123456789'],
+  });
 });
 
 test('policy validation remains a native report, never a JavaScript YAML parser', () => {

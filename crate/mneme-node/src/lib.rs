@@ -518,6 +518,15 @@ pub fn harness_graph_source_fingerprint(repo_root: String) -> Result<String> {
 }
 
 #[napi]
+pub fn harness_skill_authoring_brief(repo_root: String, task_id: String) -> Result<String> {
+    let brief = harness::skill_authoring_brief(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(brief).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_authorize_action(
     repo_root: String,
     task_id: String,

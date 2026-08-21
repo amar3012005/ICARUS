@@ -95,6 +95,7 @@ test('MCP stdio server completes initialize and exposes the public tool surface'
     'icarus_save_memory',
     'icarus_task_start',
     'icarus_context_get',
+    'icarus_harness_skill_authoring_brief',
     'icarus_policy_explain',
     'icarus_task_seal',
     'icarus_task_export',

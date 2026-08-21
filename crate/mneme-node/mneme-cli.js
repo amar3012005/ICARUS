@@ -700,6 +700,12 @@ function cmdHarnessSkill(flags, command = 'harness-skill') {
   const [subcommand, skillId] = flags._;
   const repo = flags.repo || process.cwd();
   const harness = require('./harness.js');
+  if (subcommand === 'brief') {
+    const taskId = flags.task || skillId;
+    if (!taskId) throw new Error(`usage: icarus ${command} brief --task <sealed-task-id> [--repo <dir>]`);
+    console.log(JSON.stringify(harness.skillAuthoringBrief(repo, taskId), null, 2));
+    return;
+  }
   if (subcommand === 'propose') {
     if (!flags.file) throw new Error(`usage: icarus ${command} propose --file <skill.json> [--repo <dir>]`);
     const skill = JSON.parse(fs.readFileSync(flags.file, 'utf8'));
@@ -745,7 +751,7 @@ function cmdHarnessSkill(flags, command = 'harness-skill') {
     console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
     return;
   }
-  throw new Error(`usage: icarus ${command} <propose|evaluate|outcome|review|promote|retire>`);
+  throw new Error(`usage: icarus ${command} <brief|propose|evaluate|outcome|review|promote|retire>`);
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1478,6 +1484,9 @@ async function main() {
   icarus learn propose --file <skill.json> [--repo <dir>]
                                         submit a reusable, untrusted coding procedure backed by
                                         sealed governed tasks; it cannot enter agent context yet.
+  icarus learn brief --task <TASK-ID> [--repo <dir>]
+                                        derive a bounded skill-authoring brief from a sealed task;
+                                        give it to a coding agent to draft an untrusted proposal.
   icarus learn evaluate <id> --replay-task <TASK-ID> --baseline-task <TASK-ID> [--repo <dir>]
                                         compare an independently sealed replay against a distinct
                                         same-type baseline; qualifying low-risk evidence auto-promotes.

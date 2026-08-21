@@ -762,6 +762,24 @@ pub struct HarnessSkill {
     pub verification: Value,
 }
 
+/// A deterministic handoff from completed work to a coding agent that can author a skill.
+/// ICARUS does not call an LLM or manufacture a procedure here: it exposes only sealed task
+/// evidence and the remaining promotion gates so the agent can draft an auditable candidate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillAuthoringBrief {
+    pub schema_version: u32,
+    pub source_task_id: String,
+    pub task_type: String,
+    pub risk: String,
+    pub allowed_paths: Vec<String>,
+    pub candidate_source_task_ids: Vec<String>,
+    pub additional_sealed_sources_required: usize,
+    pub suggested_id: String,
+    pub authoring_instructions: String,
+    pub promotion_gates: Vec<String>,
+}
+
 /// A native record of an independently sealed task used to evaluate a proposed procedure.
 /// Candidate-provided `replay_results` remain retained for backwards-compatible display only;
 /// they never grant promotion authority.
@@ -4808,6 +4826,65 @@ pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<Harnes
         format!("{}\n", serde_json::to_string_pretty(&skill)?).as_bytes(),
     )?;
     Ok(skill)
+}
+
+/// Produce a bounded, evidence-derived brief for a coding agent to author a proposed skill after
+/// real work has completed. Similar sources deliberately share an immutable task type and exact
+/// path scope; this avoids teaching a broad procedure from superficially related tasks.
+pub fn skill_authoring_brief(repo_root: &Path, task_id: &str) -> Result<SkillAuthoringBrief> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)?;
+    let source = task_status(&root, task_id)?;
+    if source.status != "sealed" {
+        return Err(HarnessError::invalid(
+            "skill authoring requires a sealed source task; unfinished work is not learning evidence",
+        ));
+    }
+    let task_type = source.contract.task_type.clone().ok_or_else(|| {
+        HarnessError::invalid(
+            "skill authoring requires an immutable task_type on the sealed source task",
+        )
+    })?;
+    let task_directory = runtime_root(&root).join("tasks");
+    let mut candidates = Vec::new();
+    if task_directory.exists() {
+        for entry in fs::read_dir(&task_directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let candidate_id = entry.file_name().to_string_lossy().into_owned();
+            let Ok(candidate) = task_status(&root, &candidate_id) else {
+                continue;
+            };
+            if candidate.status == "sealed"
+                && candidate.contract.task_type.as_deref() == Some(task_type.as_str())
+                && candidate.contract.allowed_paths == source.contract.allowed_paths
+            {
+                candidates.push(candidate.task_id);
+            }
+        }
+    }
+    candidates.sort();
+    let additional = 3usize.saturating_sub(candidates.len());
+    let suggested_id = format!("{}-{}", task_type, source.task_id[5..].to_ascii_lowercase());
+    Ok(SkillAuthoringBrief {
+        schema_version: 1,
+        source_task_id: source.task_id,
+        task_type,
+        risk: source.contract.risk,
+        allowed_paths: source.contract.allowed_paths,
+        candidate_source_task_ids: candidates,
+        additional_sealed_sources_required: additional,
+        suggested_id,
+        authoring_instructions: "Use the sealed source receipts and bounded task context to draft a narrow repeatable procedure. State triggers, ordered instructions, allowed tools, policy requirements, and verification steps. Do not include secrets, personas, or outcome claims. Submit the result as a proposed skill only; ICARUS, not the agent, decides activation after independent replay evidence.".into(),
+        promotion_gates: vec![
+            "A proposal is untrusted and never enters agent context.".into(),
+            "Low-risk promotion needs three independent sealed sources and two successful native replays with measurable improvement over distinct baselines.".into(),
+            "High-risk procedures require attributable owner approval and a successful measured replay.".into(),
+            "Active procedures are automatically reviewed and can be demoted for failures, safety violations, incompatible policy, or stale proof.".into(),
+        ],
+    })
 }
 pub fn promote_skill(
     repo_root: &Path,

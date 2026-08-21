@@ -68,6 +68,7 @@ export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFinger
  * the one Rust verifies can never drift because of traversal or ordering differences.
  */
 export declare function harnessGraphSourceFingerprint(repoRoot: string): string
+export declare function harnessSkillAuthoringBrief(repoRoot: string, taskId: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
 /**
  * Authorize and audit a documented Claude Edit/Write PreToolUse event. The JavaScript hook

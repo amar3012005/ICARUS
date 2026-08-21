@@ -81,6 +81,28 @@ If a task is interrupted, use `icarus task status --task TASK-…` and `icarus t
 task, execution linkage, checkpoints, and event chain are persisted by Rust; a fresh agent process
 does not get to invent a completed state.
 
+## 5. Evolve a reusable procedure from sealed work
+
+ICARUS does not generate skills with its own model. After a sealed task, a coding agent can ask
+Rust for an evidence-bound authoring brief, use its own reasoning to draft a narrowly scoped
+procedure, and submit that procedure as an untrusted candidate.
+
+```bash
+icarus learn brief --task TASK-…
+```
+
+The brief contains only matching sealed task sources, immutable task type, path scope, and the
+remaining promotion gates. Give it to the coding agent to produce a `skill.json`, then submit:
+
+```bash
+icarus learn propose --file skill.json
+```
+
+A proposal is not an active skill. Low-risk skills need three independent sealed sources and two
+measurably improved native replays against separate baselines. High-risk skills additionally need
+an attributable owner approval. ICARUS automatically reviews active skills and can demote them;
+it never auto-promotes a model-written procedure.
+
 ## Optional HIVE-MIND organizational context
 
 Local use does not require an account or network. The optional authority channel is explicit:
