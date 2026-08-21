@@ -969,10 +969,23 @@ fn adapter_command(agent: &str) -> Option<&'static str> {
 
 fn adapter_available(agent: &str) -> bool {
     adapter_command(agent).is_some_and(|command| {
-        Command::new(command)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
+        #[cfg(windows)]
+        {
+            // npm commonly exposes coding CLIs as `.cmd` shims. CreateProcess does not apply
+            // PATHEXT as an interactive Windows shell does, so availability must use the same
+            // platform resolver as managed adapter launch rather than rejecting a valid shim.
+            Command::new("where")
+                .arg(command)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new(command)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        }
     })
 }
 
