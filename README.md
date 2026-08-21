@@ -52,6 +52,16 @@ On macOS Apple Silicon and Linux x64, this downloads one self-contained binary.
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
+### Verify a downloaded release
+
+`/update` validates the release checksum before replacing its executable. For a manual download,
+verify both the checksum and the build provenance (available for v0.3.60 and later):
+
+```bash
+shasum -a 256 -c icarus-darwin-arm64.sha256
+gh attestation verify ./icarus-darwin-arm64 -R amar3012005/ICARUS
+```
+
 ```bash
 # Optional: register ICARUS as an MCP server for available coding agents.
 icarus mcp install
