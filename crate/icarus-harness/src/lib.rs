@@ -2726,9 +2726,16 @@ fn bounded_excerpt(bytes: &[u8]) -> String {
     if text.len() <= MAX {
         text.into_owned()
     } else {
+        // `MAX` is a byte budget but `text` is UTF-8.  Never index directly at that byte
+        // position: command output can put a multi-byte character across the boundary, and a
+        // verifier must return a bounded receipt rather than panic while recording evidence.
+        let mut end = MAX;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
         format!(
             "{}\n… output truncated in receipt; see complete local output file …",
-            &text[..MAX]
+            &text[..end]
         )
     }
 }

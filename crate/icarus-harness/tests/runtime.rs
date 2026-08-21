@@ -2230,6 +2230,40 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
 }
 
 #[test]
+fn verifier_bounds_unicode_output_without_panicking_at_a_byte_boundary() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    // One ASCII byte plus 16,384 UTF-8 bytes makes the 16 KiB truncation point fall inside the
+    // next `é`.  This used to panic while slicing the receipt excerpt.
+    fs::write(
+        repo.path().join("unicode-output.txt"),
+        format!("x{}", "é".repeat(8_192)),
+    )
+    .unwrap();
+    let mut verified_contract = contract();
+    verified_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unicode","type":"test","command":"cat unicode-output.txt","required":true}
+    ]);
+    let task = start_task(repo.path(), "bound unicode evidence", verified_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let receipt = verify_task_criterion(repo.path(), &task.task_id, "unicode").unwrap();
+    assert_eq!(receipt.status, "pass");
+    assert!(receipt.output_excerpt.starts_with('x'));
+    assert!(receipt
+        .output_excerpt
+        .contains("output truncated in receipt"));
+    assert!(repo.path().join(&receipt.output_path).exists());
+}
+
+#[test]
 fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
