@@ -37,7 +37,7 @@ jobs:
         # Windows is a supported storage target too: its LockFileEx implementation must pass
         # the same shard-isolation suite as Unix flock. Linux/macOS retain mmap and sparse-file
         # coverage across their differing kernels/filesystems.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: crate
@@ -96,7 +96,7 @@ jobs:
       matrix:
         # The Node shell is presentation/transport only, but it is how Windows users invoke
         # the compiled CLI, updater, and installer. Run its non-native suites on every target.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -142,7 +142,7 @@ jobs:
       matrix:
         # A Windows Rust build alone cannot prove the NAPI artifact can load or that the actual
         # MCP process can open a locked local shard. Exercise the same native round-trip there.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -181,7 +181,7 @@ jobs:
       matrix:
         # This is the user-facing artifact gate. Windows must compile and execute the embedded
         # addon before it can be named as a release target.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 

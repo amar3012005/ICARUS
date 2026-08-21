@@ -51,7 +51,7 @@ test('REGRESSION: normal Node tests do not rely on shell glob expansion', () => 
 
 test('REGRESSION: public CI parses the Windows installer and runs Node tests on Windows', () => {
   const ci = workflow('ci.yml');
-  assert.match(ci, /os: \[ubuntu-latest, macos-latest, windows-latest\]/);
+  assert.match(ci, /os: \[ubuntu-latest, ubuntu-24\.04-arm, macos-latest, windows-latest\]/);
   assert.match(ci, /Windows installer syntax[\s\S]*Get-Content install\.ps1 -Raw/);
 });
 
@@ -72,6 +72,15 @@ test('REGRESSION: CLI releases publish and cold-verify a real Windows executable
   assert.match(installer, /\$Asset = 'icarus-win32-x64\.exe'/);
   assert.match(installer, /Get-FileHash -LiteralPath \$Candidate -Algorithm SHA256/);
   assert.match(installer, /Move-Item -LiteralPath \$Candidate -Destination \$Target -Force/);
+});
+
+test('REGRESSION: CLI releases publish and cold-verify a native Linux ARM executable', () => {
+  const release = workflow('release-cli.yml');
+  const ci = workflow('ci.yml');
+  assert.match(release, /host: ubuntu-24\.04-arm\s+target: aarch64-unknown-linux-gnu\s+asset: icarus-linux-arm64/);
+  assert.match(release, /cold-linux-arm:/);
+  assert.match(release, /runs-on: ubuntu-24\.04-arm/);
+  assert.match(ci, /os: \[ubuntu-latest, ubuntu-24\.04-arm, macos-latest, windows-latest\]/);
 });
 
 test('REGRESSION: CLI releases publish signed provenance for every platform binary', () => {

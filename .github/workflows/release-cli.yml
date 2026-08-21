@@ -82,17 +82,12 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: icarus-linux-x64
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: icarus-linux-arm64
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             asset: icarus-win32-x64.exe
-          # NOT YET BUILT: icarus-linux-arm64.
-          #
-          # install.sh already ASKS for linux-arm64 on such a host, gets a 404, and falls back
-          # to its documented source build (`warn "prebuilt binary not available ... building
-          # from source instead"`), so the behaviour is degraded-but-correct rather than
-          # broken. Naming the remaining gap here instead of leaving it implicit: compiling
-          # the Bun executable for aarch64 needs a real toolchain/runner story. Both are Phase 8 work
-          # ("Complete platform binaries for macOS ARM64/x64, Linux ARM64/x64, Windows x64").
     name: build-${{ matrix.asset }}
     runs-on: ${{ matrix.host }}
     steps:
@@ -252,6 +247,7 @@ jobs:
             icarus-darwin-arm64 icarus-darwin-arm64.spdx.json \
             icarus-darwin-x64 icarus-darwin-x64.spdx.json \
             icarus-linux-x64 icarus-linux-x64.spdx.json \
+            icarus-linux-arm64 icarus-linux-arm64.spdx.json \
             icarus-win32-x64.exe icarus-win32-x64.exe.spdx.json; do
             echo "$NAMES" | grep -qx "$want" || { echo "::error::missing asset $want"; exit 1; }
           done
@@ -320,3 +316,24 @@ jobs:
             throw "cold Windows binary reports '$version'"
           }
           Write-Host "cold Windows download verified: $version"
+
+  cold-linux-arm:
+    needs: [verify-version, publish]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Cold-download and verify the published Linux ARM64 asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify-version.outputs.tag }}"
+          ASSET="icarus-linux-arm64"
+          BASE="https://github.com/${{ github.repository }}/releases/download/$TAG/$ASSET"
+          curl -fSL --retry 3 --retry-delay 5 --max-time 600 "$BASE" -o cold-icarus
+          curl -fSL --retry 3 --retry-delay 5 --max-time 600 "$BASE.sha256" -o cold-icarus.sha256
+          EXPECTED="$(awk '$2 == "icarus-linux-arm64" || $2 == "*icarus-linux-arm64" { print $1 }' cold-icarus.sha256)"
+          [ "$(printf '%s\n' "$EXPECTED" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] || { echo '::error::missing or ambiguous Linux ARM checksum'; exit 1; }
+          GOT="$(shasum -a 256 cold-icarus | awk '{print $1}')"
+          [ "$GOT" = "$EXPECTED" ] || { echo "::error::cold Linux ARM download hash mismatch"; exit 1; }
+          chmod +x cold-icarus
+          [ "$(./cold-icarus --version)" = "${{ needs.verify-version.outputs.version }}" ]
+          echo "cold Linux ARM download verified"
