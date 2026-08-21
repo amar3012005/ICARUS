@@ -350,6 +350,76 @@ fn resume_preserves_task_identity_and_links_attempts() {
 }
 
 #[test]
+fn fresh_process_resume_preserves_every_nonterminal_lifecycle_phase() {
+    // `resume_task` deliberately reconstructs authority from files rather than a process-local
+    // cache. Exercise every recoverable phase so a crash cannot turn an in-flight governed task
+    // into an implicit terminal state or silently lose its immutable contract/execution link.
+    let repo = repo();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
+    let cases: &[(&str, &[&str])] = &[
+        ("created", &[]),
+        ("orienting", &["orienting"]),
+        ("contracted", &["orienting", "contracted"]),
+        ("planned", &["orienting", "contracted", "planned"]),
+        (
+            "executing",
+            &["orienting", "contracted", "planned", "executing"],
+        ),
+        (
+            "verifying",
+            &[
+                "orienting",
+                "contracted",
+                "planned",
+                "executing",
+                "verifying",
+            ],
+        ),
+        (
+            "waiting_for_approval",
+            &["orienting", "contracted", "planned", "waiting_for_approval"],
+        ),
+        (
+            "blocked",
+            &["orienting", "contracted", "planned", "blocked"],
+        ),
+    ];
+
+    for (expected_status, transitions) in cases {
+        let task = start_task(
+            repo.path(),
+            format!("recover {expected_status}"),
+            contract(),
+        )
+        .unwrap();
+        for target in *transitions {
+            transition_task(repo.path(), &task.task_id, target).unwrap();
+        }
+        assert_eq!(
+            task_status(repo.path(), &task.task_id).unwrap().status,
+            *expected_status
+        );
+
+        // Calling the public resume entrypoint after persisting the state is equivalent to a
+        // new launcher process: it receives only repo path + task id and reloads runtime files.
+        let resumed = resume_task(repo.path(), &task.task_id).unwrap();
+        assert_eq!(resumed.task_id, task.task_id);
+        assert_eq!(resumed.status, *expected_status);
+        assert_ne!(resumed.execution_id, task.execution_id);
+        assert_eq!(
+            resumed.previous_execution_id.as_deref(),
+            Some(task.execution_id.as_str())
+        );
+        assert_eq!(task_status(repo.path(), &task.task_id).unwrap(), resumed);
+    }
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+}
+
+#[test]
 fn doctor_detects_dead_stale_locks_without_flagging_a_live_writer() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
