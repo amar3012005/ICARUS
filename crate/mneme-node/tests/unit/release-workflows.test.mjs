@@ -25,3 +25,10 @@ test('REGRESSION: Node CI installs declared dependencies before running unit tes
   const ci = workflow('ci.yml');
   assert.match(ci, /working-directory: crate\/mneme-node\n\s+run: npm ci\n\n\s+- name: Node tests/);
 });
+
+test('REGRESSION: native MCP shard round-trip has its own addon-build CI gate', () => {
+  const ci = workflow('ci.yml');
+  assert.match(ci, /node-native-mcp:/, 'the real MCP shard test must not be confused with the toolchain-free framing suite');
+  assert.match(ci, /name: Build the local native addon\n\s+working-directory: crate\/mneme-node\n\s+run: npm run build:debug/);
+  assert.match(ci, /name: Native MCP shard round-trip\n\s+working-directory: crate\/mneme-node\n\s+run: npm run test:engine/);
+});

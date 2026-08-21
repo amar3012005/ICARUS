@@ -112,6 +112,43 @@ jobs:
         working-directory: crate/mneme-node
         run: npm test
 
+  # MCP framing tests above intentionally run without a native addon.  This complementary job
+  # builds the Rust addon and proves the stdio server can persist and recall from a real local
+  # shard.  It has no credentials or network dependency: lexical ingest/recall is the local-only
+  # product guarantee that must keep working for every open-source user.
+  node-native-mcp:
+    name: node native MCP (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate
+
+      - name: Install Node dependencies
+        working-directory: crate/mneme-node
+        run: npm ci
+
+      - name: Build the local native addon
+        working-directory: crate/mneme-node
+        run: npm run build:debug
+
+      - name: Native MCP shard round-trip
+        working-directory: crate/mneme-node
+        run: npm run test:engine
+
   # Separate job, not folded into `test`: mneme-python's `extension-module` pyo3 feature cannot
   # link under plain `cargo build`/`cargo test` (Python provides its own symbols at dlopen time,
   # so a maturin-style build is required) -- proved locally when adding this crate broke the
