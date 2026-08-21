@@ -31,6 +31,17 @@ export declare function harnessVerifyTaskCriterion(repoRoot: string, taskId: str
 export declare function harnessAttestTaskCriterion(repoRoot: string, taskId: string, criterionId: string, approvalId: string, approver: string, expiresAt?: string | undefined | null): string
 export declare function harnessSealTask(repoRoot: string, taskId: string): string
 export declare function harnessExportTask(repoRoot: string, taskId: string, redacted: boolean): string
+/**
+ * Install a transport-authenticated authority snapshot.  JavaScript only carries the opaque
+ * JSON document; Rust validates repository identity, scope, expiry, and digest before caching.
+ */
+export declare function harnessInstallAuthoritySnapshot(repoRoot: string, snapshotJson: string): string
+export declare function harnessInspectAuthoritySync(repoRoot: string): string
+/**
+ * Build a redacted outbound bundle.  This method deliberately cannot issue an HTTP request or
+ * receive a credential: network transport remains an explicit opt-in adapter boundary.
+ */
+export declare function harnessBuildAuthoritySyncRequest(repoRoot: string, taskId: string, scopeJson: string): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
 export declare function harnessEvaluateSkill(repoRoot: string, skillId: string, replayTaskId: string): string
 export declare function harnessRecordActiveSkillOutcome(repoRoot: string, skillId: string, taskId: string): string

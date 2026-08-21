@@ -85,6 +85,21 @@ function exportTask(repoRoot, taskId, redacted) {
   return invoke('harnessExportTask', [repoRoot, taskId, !!redacted]);
 }
 
+// Authority synchronization is deliberately a file/bundle boundary for now. These functions
+// never receive credentials and cannot make network calls; Rust validates scope, expiry, digest,
+// repository identity, and sealed receipt provenance before any value becomes usable.
+function installAuthoritySnapshot(repoRoot, snapshotJson) {
+  return invoke('harnessInstallAuthoritySnapshot', [repoRoot, snapshotJson]);
+}
+
+function inspectAuthoritySync(repoRoot) {
+  return invoke('harnessInspectAuthoritySync', [repoRoot]);
+}
+
+function buildAuthoritySyncRequest(repoRoot, taskId, scope) {
+  return invoke('harnessBuildAuthoritySyncRequest', [repoRoot, taskId, JSON.stringify(scope)]);
+}
+
 function proposeSkill(repoRoot, skill) { return invoke('harnessProposeSkill', [repoRoot, JSON.stringify(skill)]); }
 function evaluateSkill(repoRoot, skillId, replayTaskId) { return invoke('harnessEvaluateSkill', [repoRoot, skillId, replayTaskId]); }
 function recordActiveSkillOutcome(repoRoot, skillId, taskId) { return invoke('harnessRecordActiveSkillOutcome', [repoRoot, skillId, taskId]); }
@@ -171,6 +186,9 @@ module.exports = {
   attestTaskCriterion,
   sealTask,
   exportTask,
+  installAuthoritySnapshot,
+  inspectAuthoritySync,
+  buildAuthoritySyncRequest,
   proposeSkill,
   evaluateSkill,
   recordActiveSkillOutcome,

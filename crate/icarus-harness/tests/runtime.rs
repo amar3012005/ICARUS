@@ -1,5 +1,5 @@
 use icarus_harness::{
-    amend_task_contract, append_event, attest_task_criterion, authorize_action,
+    amend_task_contract, append_event, attest_task_criterion, authority_snapshot_digest, authorize_action,
     authorize_adapter_write, bind_codex_app_server_thread, build_context, checkpoint_task,
     codex_app_server_resume_session, decide_codex_app_server_approval, doctor, evaluate_skill,
     export_task, graph_source_fingerprint, handoff_managed_task, init, load_repository_policy,
@@ -7,8 +7,9 @@ use icarus_harness::{
     record_adapter_lifecycle, record_adapter_post_action, record_codex_app_server_event,
     record_graph_receipt, render_context_markdown, resume_codex_app_server_thread, resume_task,
     retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
+    build_authority_sync_request, install_authority_snapshot, inspect_authority_sync,
     validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
-    ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
+    AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -2317,6 +2318,93 @@ fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
         .as_str()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn authority_sync_is_scoped_fresh_and_exports_only_a_redacted_sealed_receipt() {
+    let repo = repo();
+    let manifest = init(repo.path(), InitOptions::default()).unwrap().manifest;
+    fs::write(repo.path().join("README.md"), "authority fixture\n").unwrap();
+    let mut scoped_contract = contract();
+    scoped_contract.acceptance_criteria = serde_json::json!([
+        {"id":"artifact","type":"artifact","path":"README.md","required":true}
+    ]);
+    scoped_contract.decision_references = vec!["decision-42".into()];
+    let task = start_task(repo.path(), "seal an authority fixture", scoped_contract).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing", "verifying"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap();
+    assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
+
+    let scope = AuthorityScope {
+        user_id: "user-1".into(),
+        org_id: "org-1".into(),
+        project_id: "project-1".into(),
+    };
+    let mut snapshot = AuthoritySnapshot {
+        schema_version: 1,
+        scope: scope.clone(),
+        repo_id: manifest.repo_id,
+        revision: "revision-1".into(),
+        issued_at: "2026-08-21T00:00:00Z".into(),
+        expires_at: "2099-01-01T00:00:00Z".into(),
+        decisions: vec![AuthorityDecision {
+            id: "decision-42".into(),
+            revision: "revision-1".into(),
+            status: "approved".into(),
+            summary: "Approved fixture decision".into(),
+            tags: vec!["fixture".into()],
+        }],
+        approvals: vec![],
+        team_skills: vec![],
+        digest: String::new(),
+    };
+    snapshot.digest = authority_snapshot_digest(&snapshot).unwrap();
+    install_authority_snapshot(repo.path(), &serde_json::to_string(&snapshot).unwrap()).unwrap();
+    let inspection = inspect_authority_sync(repo.path()).unwrap();
+    assert!(inspection.usable_for_local_tasks);
+    assert!(!inspection.usable_for_external_actions);
+    let pack = build_context(repo.path(), &task.task_id, 20_000).unwrap();
+    assert!(pack.items.iter().any(|item| {
+        item.kind == "decision_reference"
+            && item.freshness == "cached_unexpired_snapshot"
+            && item.content.contains("Approved fixture decision")
+    }));
+
+    let request = build_authority_sync_request(repo.path(), &task.task_id, scope.clone()).unwrap();
+    assert_eq!(request.scope, scope);
+    assert_eq!(request.decision_references, vec!["decision-42"]);
+    assert!(request.sealed_receipt.redacted);
+    assert!(request.sealed_receipt.objective.is_none());
+    assert!(request.sealed_receipt.final_receipt_path.is_none());
+    assert!(build_authority_sync_request(
+        repo.path(),
+        &task.task_id,
+        AuthorityScope { project_id: "other-project".into(), ..scope }
+    ).is_err());
+}
+
+#[test]
+fn authority_sync_rejects_expired_or_tampered_snapshots() {
+    let repo = repo();
+    let manifest = init(repo.path(), InitOptions::default()).unwrap().manifest;
+    let mut snapshot = AuthoritySnapshot {
+        schema_version: 1,
+        scope: AuthorityScope { user_id: "user-1".into(), org_id: "org-1".into(), project_id: "project-1".into() },
+        repo_id: manifest.repo_id,
+        revision: "revision-1".into(),
+        issued_at: "2020-01-01T00:00:00Z".into(),
+        expires_at: "2020-01-02T00:00:00Z".into(),
+        decisions: vec![],
+        approvals: vec![],
+        team_skills: vec![],
+        digest: String::new(),
+    };
+    snapshot.digest = authority_snapshot_digest(&snapshot).unwrap();
+    assert!(install_authority_snapshot(repo.path(), &serde_json::to_string(&snapshot).unwrap()).is_err());
+    snapshot.expires_at = "2099-01-01T00:00:00Z".into();
+    assert!(install_authority_snapshot(repo.path(), &serde_json::to_string(&snapshot).unwrap()).is_err());
 }
 
 #[cfg(unix)]

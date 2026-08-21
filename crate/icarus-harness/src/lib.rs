@@ -626,6 +626,85 @@ pub struct TaskExport {
     pub final_receipt_path: Option<String>,
 }
 
+/// The identity tuple that scopes every optional ICARUS authority exchange.  It is deliberately
+/// more specific than an organization: a decision valid for one project must never become
+/// ambient context for another project in the same tenant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityScope {
+    pub user_id: String,
+    pub org_id: String,
+    pub project_id: String,
+}
+
+/// A narrow, versioned authority record supplied by a remote control plane.  It contains only
+/// already-approved decision metadata and references; it is not a vector-search response and
+/// intentionally has no place for embeddings, credentials, transcripts, or repository files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityDecision {
+    pub id: String,
+    pub revision: String,
+    pub status: String,
+    pub summary: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Cached remote authority.  ICARUS validates this document before it can affect a task and
+/// keeps it repository-local under Rust's atomic-write authority.  Network transport is left to
+/// an opt-in adapter; this type is the stable cross-process contract that adapter must satisfy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritySnapshot {
+    pub schema_version: u32,
+    pub scope: AuthorityScope,
+    pub repo_id: String,
+    pub revision: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    #[serde(default)]
+    pub decisions: Vec<AuthorityDecision>,
+    #[serde(default)]
+    pub approvals: Vec<Value>,
+    #[serde(default)]
+    pub team_skills: Vec<Value>,
+    pub digest: String,
+}
+
+/// A redacted, manually transportable sync request.  The first remote adapter will POST this
+/// exact value; until then `icarus sync push --file` is intentionally an explicit file export,
+/// never an implicit network call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritySyncRequest {
+    pub schema_version: u32,
+    pub scope: AuthorityScope,
+    pub repo_id: String,
+    pub worktree_id: String,
+    pub task_id: String,
+    pub execution_id: String,
+    pub snapshot_revision: String,
+    pub decision_references: Vec<String>,
+    pub sealed_receipt: TaskExport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritySyncInspection {
+    pub schema_version: u32,
+    pub configured: bool,
+    pub usable_for_local_tasks: bool,
+    pub usable_for_external_actions: bool,
+    pub reason: String,
+    pub scope: Option<AuthorityScope>,
+    pub repo_id: Option<String>,
+    pub revision: Option<String>,
+    pub expires_at: Option<String>,
+    pub decision_count: usize,
+    pub team_skill_count: usize,
+}
+
 /// A harness procedure, never a chat persona. Candidates have no execution authority until the
 /// Rust promotion gate places them in `.icarus/skills/active`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1264,6 +1343,28 @@ fn harness_schema_documents() -> Vec<(&'static str, Value)> {
                     "confidence": {"type":"number","exclusiveMinimum":0},
                     "replay_results": {"type":"array"},
                     "verification": {}
+                }),
+            ),
+        ),
+        (
+            "authority-snapshot.schema.json",
+            object_schema(
+                "ICARUS Authority Snapshot",
+                &[
+                    "schema_version", "scope", "repo_id", "revision", "issued_at",
+                    "expires_at", "decisions", "approvals", "team_skills", "digest",
+                ],
+                json!({
+                    "schema_version": {"type":"integer","const":1},
+                    "scope": {"type":"object", "additionalProperties":false, "required":["user_id","org_id","project_id"], "properties": {
+                        "user_id":{"type":"string","minLength":1}, "org_id":{"type":"string","minLength":1}, "project_id":{"type":"string","minLength":1}
+                    }},
+                    "repo_id":{"type":"string","pattern":"^repo-[a-f0-9]{16}$"},
+                    "revision":{"type":"string","minLength":1},
+                    "issued_at":{"type":"string","format":"date-time"},
+                    "expires_at":{"type":"string","format":"date-time"},
+                    "decisions":{"type":"array"}, "approvals":{"type":"array"}, "team_skills":{"type":"array"},
+                    "digest":{"type":"string","pattern":"^[a-f0-9]{64}$"}
                 }),
             ),
         ),
@@ -3377,6 +3478,192 @@ pub fn export_task(repo_root: &Path, task_id: &str, redacted: bool) -> Result<Ta
     })
 }
 
+fn authority_snapshot_path(root: &Path) -> PathBuf {
+    runtime_root(root).join("authority/snapshot.json")
+}
+
+fn task_worktree_id(root: &Path, task_id: &str) -> String {
+    read_snapshot(root, &format!("state/run-{task_id}.json"))
+        .ok()
+        .flatten()
+        .and_then(|run| run.get("worktree_id").and_then(Value::as_str).map(ToOwned::to_owned))
+        .unwrap_or_else(|| "main".into())
+}
+
+fn authority_identifier_valid(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 160
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | '@')
+        })
+}
+
+/// Canonical digest required on an authority snapshot. Remote adapters must calculate this over
+/// the exact document with `digest` set to the empty string before returning it to ICARUS.
+pub fn authority_snapshot_digest(snapshot: &AuthoritySnapshot) -> Result<String> {
+    let mut value = serde_json::to_value(snapshot)?;
+    value["digest"] = Value::String(String::new());
+    Ok(sha256(stable_json(&value)?.as_bytes()))
+}
+
+fn authority_snapshot_is_fresh(snapshot: &AuthoritySnapshot) -> bool {
+    time::OffsetDateTime::parse(
+        &snapshot.expires_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .map(|expiry| expiry > time::OffsetDateTime::now_utc())
+    .unwrap_or(false)
+}
+
+fn validate_authority_snapshot(root: &Path, snapshot: AuthoritySnapshot) -> Result<AuthoritySnapshot> {
+    let manifest = load_manifest(root)?;
+    if snapshot.schema_version != 1
+        || snapshot.repo_id != manifest.repo_id
+        || !authority_identifier_valid(&snapshot.scope.user_id)
+        || !authority_identifier_valid(&snapshot.scope.org_id)
+        || !authority_identifier_valid(&snapshot.scope.project_id)
+        || !authority_identifier_valid(&snapshot.revision)
+    {
+        return Err(HarnessError::invalid(
+            "authority snapshot has an unsupported schema, identity, scope, or revision",
+        ));
+    }
+    if time::OffsetDateTime::parse(
+        &snapshot.issued_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .is_err()
+        || !authority_snapshot_is_fresh(&snapshot)
+    {
+        return Err(HarnessError::invalid(
+            "authority snapshot must have valid issued_at and unexpired expires_at timestamps",
+        ));
+    }
+    if snapshot.decisions.iter().any(|decision| {
+        !authority_identifier_valid(&decision.id)
+            || !authority_identifier_valid(&decision.revision)
+            || decision.status != "approved"
+            || decision.summary.len() > 8_192
+    }) {
+        return Err(HarnessError::invalid(
+            "authority snapshot contains an invalid or non-approved decision",
+        ));
+    }
+    if snapshot.digest != authority_snapshot_digest(&snapshot)? {
+        return Err(HarnessError::invalid(
+            "authority snapshot digest does not match its content",
+        ));
+    }
+    Ok(snapshot)
+}
+
+/// Install a remote authority response after transport authentication has already happened.
+/// This is intentionally the only cache-write entry point: a caller cannot smuggle a stale,
+/// cross-repository, or mutable authority object into managed context.
+pub fn install_authority_snapshot(repo_root: &Path, snapshot_json: &str) -> Result<AuthoritySnapshot> {
+    let root = canonical_root(repo_root)?;
+    let _lock = RuntimeLock::acquire(&root, "authority-sync")?;
+    let snapshot: AuthoritySnapshot = serde_json::from_str(snapshot_json)
+        .map_err(|error| HarnessError::invalid(format!("invalid authority snapshot JSON: {error}")))?;
+    let snapshot = validate_authority_snapshot(&root, snapshot)?;
+    atomic_write(
+        &authority_snapshot_path(&root),
+        format!("{}\n", serde_json::to_string_pretty(&snapshot)?).as_bytes(),
+    )?;
+    Ok(snapshot)
+}
+
+fn load_authority_snapshot(root: &Path) -> Result<AuthoritySnapshot> {
+    let snapshot: AuthoritySnapshot = serde_json::from_reader(
+        File::open(authority_snapshot_path(root)).map_err(|_| {
+            HarnessError::invalid(
+                "no authority snapshot is cached; run `icarus sync pull --file <snapshot.json>` while connected",
+            )
+        })?,
+    )?;
+    validate_authority_snapshot(root, snapshot)
+}
+
+/// Report cache state without reaching a remote service.  A missing or expired cache is enough
+/// for ordinary local work, but never enough to authorize an external mutation.
+pub fn inspect_authority_sync(repo_root: &Path) -> Result<AuthoritySyncInspection> {
+    let root = canonical_root(repo_root)?;
+    match load_authority_snapshot(&root) {
+        Ok(snapshot) => Ok(AuthoritySyncInspection {
+            schema_version: 1,
+            configured: true,
+            usable_for_local_tasks: true,
+            usable_for_external_actions: false,
+            reason: "cached authority is valid for local context only; external actions require a live remote approval".into(),
+            scope: Some(snapshot.scope),
+            repo_id: Some(snapshot.repo_id),
+            revision: Some(snapshot.revision),
+            expires_at: Some(snapshot.expires_at),
+            decision_count: snapshot.decisions.len(),
+            team_skill_count: snapshot.team_skills.len(),
+        }),
+        Err(error) => Ok(AuthoritySyncInspection {
+            schema_version: 1,
+            configured: authority_snapshot_path(&root).exists(),
+            usable_for_local_tasks: false,
+            usable_for_external_actions: false,
+            reason: error.to_string(),
+            scope: None,
+            repo_id: None,
+            revision: None,
+            expires_at: None,
+            decision_count: 0,
+            team_skill_count: 0,
+        }),
+    }
+}
+
+/// Construct the only data eligible for an outbound ICARUS authority exchange.  It binds the
+/// current repository, worktree, task, and execution, and exports a redacted sealed receipt.
+/// The function does no I/O outside the repository; a transport adapter must explicitly carry
+/// this request and obtain any live approval before an external mutation.
+pub fn build_authority_sync_request(
+    repo_root: &Path,
+    task_id: &str,
+    scope: AuthorityScope,
+) -> Result<AuthoritySyncRequest> {
+    let root = canonical_root(repo_root)?;
+    let snapshot = load_authority_snapshot(&root)?;
+    if snapshot.scope != scope {
+        return Err(HarnessError::invalid(
+            "authority scope mismatch; cross-user, cross-org, and cross-project sync is denied",
+        ));
+    }
+    let task = task_status(&root, task_id)?;
+    let receipt = export_task(&root, task_id, true)?;
+    let allowed_decisions: BTreeSet<_> = snapshot
+        .decisions
+        .iter()
+        .map(|decision| decision.id.as_str())
+        .collect();
+    if task
+        .contract
+        .decision_references
+        .iter()
+        .any(|reference| !allowed_decisions.contains(reference.as_str()))
+    {
+        return Err(HarnessError::invalid(
+            "task references a decision absent from the current scoped authority snapshot",
+        ));
+    }
+    Ok(AuthoritySyncRequest {
+        schema_version: 1,
+        scope,
+        repo_id: snapshot.repo_id,
+        worktree_id: task_worktree_id(&root, task_id),
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        snapshot_revision: snapshot.revision,
+        decision_references: task.contract.decision_references,
+        sealed_receipt: receipt,
+    })
+}
+
 fn skill_id_valid(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 96
@@ -4496,7 +4783,21 @@ fn referenced_decisions(
     references: &[String],
 ) -> Vec<(String, String, String, String)> {
     let mut items = Vec::new();
+    // Authority snapshots are an allow-list, never a search index.  Resolve only the immutable
+    // references bound into this task contract and only while the cached snapshot remains fresh.
+    let authority_snapshot = load_authority_snapshot(root).ok();
     for reference in references {
+        if let Some(snapshot) = authority_snapshot.as_ref() {
+            if let Some(decision) = snapshot.decisions.iter().find(|decision| decision.id == *reference) {
+                items.push((
+                    format!(".icarus/runtime/authority/snapshot.json#decision:{reference}"),
+                    "cached_unexpired_snapshot".into(),
+                    format!("scoped organizational decision {}@{}", snapshot.scope.org_id, snapshot.revision),
+                    serde_json::to_string_pretty(decision).unwrap_or_default(),
+                ));
+                continue;
+            }
+        }
         let candidates = [
             (
                 root.join(".icarus/decisions")

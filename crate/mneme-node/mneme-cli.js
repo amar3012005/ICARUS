@@ -407,6 +407,49 @@ function cmdContext(flags) {
   }
 }
 
+// Optional authority synchronization.  v1 intentionally uses explicit JSON bundles rather than
+// an ambient background client: a user can inspect exactly what crosses the boundary, and no
+// credential or network permission is ever needed by this CLI command.  A future HIVE-MIND
+// transport will carry these Rust-validated documents unchanged.
+function cmdSync(flags) {
+  const [subcommand] = flags._;
+  const repo = flags.repo || process.cwd();
+  const harness = require('./harness.js');
+  if (subcommand === 'inspect') {
+    const inspection = harness.inspectAuthoritySync(repo);
+    console.log(c.bold('authority sync'));
+    console.log(`  cache: ${inspection.configured ? c.success('configured') : c.dim('not configured')}`);
+    console.log(`  local context: ${inspection.usable_for_local_tasks ? c.success('usable') : c.error('blocked')}`);
+    console.log(`  external actions: ${c.error('always require live remote approval')}`);
+    if (inspection.scope) console.log(`  scope: ${c.path(`${inspection.scope.user_id} / ${inspection.scope.org_id} / ${inspection.scope.project_id}`)}`);
+    if (inspection.revision) console.log(`  revision: ${inspection.revision}  expires: ${inspection.expires_at}`);
+    if (inspection.configured) console.log(`  approved decisions: ${inspection.decision_count}  team skills: ${inspection.team_skill_count}`);
+    console.log(c.dim(`  ${inspection.reason}`));
+    return;
+  }
+  if (subcommand === 'pull') {
+    if (!flags.file) throw new Error('usage: icarus sync pull --file <authority-snapshot.json> [--repo <dir>]');
+    const snapshot = fs.readFileSync(path.resolve(flags.file), 'utf8');
+    const installed = harness.installAuthoritySnapshot(repo, snapshot);
+    return console.log(ok(`installed authority snapshot ${installed.revision} for ${installed.scope.org_id}/${installed.scope.project_id} (expires ${installed.expires_at}).`));
+  }
+  if (subcommand === 'push') {
+    if (!flags.task || !flags.file || !flags.user || !flags.org || !flags.project) {
+      throw new Error('usage: icarus sync push --task <TASK-ID> --user <user-id> --org <org-id> --project <project-id> --file <request.json> [--repo <dir>]');
+    }
+    const request = harness.buildAuthoritySyncRequest(repo, flags.task, {
+      user_id: flags.user,
+      org_id: flags.org,
+      project_id: flags.project,
+    });
+    const output = path.resolve(flags.file);
+    if (fs.existsSync(output) && !flags.force) throw new Error(`refusing to overwrite ${output}; choose a new --file or pass --force`);
+    fs.writeFileSync(output, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
+    return console.log(ok(`wrote redacted sealed authority request to ${c.path(output)}.`));
+  }
+  throw new Error('usage: icarus sync <inspect|pull|push> [--repo <dir>]');
+}
+
 function commandOnPath(command) {
   const locator = process.platform === 'win32' ? 'where' : 'command';
   const args = process.platform === 'win32' ? [command] : ['-v', command];
@@ -1314,6 +1357,7 @@ async function main() {
       case 'policy': cmdPolicy(flags); break;
       case 'task': cmdTask(flags); break;
       case 'context': cmdContext(flags); break;
+      case 'sync': cmdSync(flags); break;
       case 'run': await cmdRun(flags); break;
       case 'harness-skill': cmdHarnessSkill(flags); break;
       case 'learn': cmdHarnessSkill(flags, 'learn'); break;
@@ -1461,6 +1505,13 @@ async function main() {
   icarus context inspect --task <TASK-ID> [--budget <tokens>] [--format json] [--repo <dir>]
                                         inspect the Rust-selected context sources, authority,
                                         freshness, reasons, and digests without printing content.
+  icarus sync inspect [--repo <dir>]    inspect the opt-in cached authority boundary. It never
+                                        contacts a remote service or authorizes external actions.
+  icarus sync pull --file <snapshot.json> [--repo <dir>]
+                                        validate and cache a scoped, unexpired authority snapshot.
+  icarus sync push --task <TASK-ID> --user <id> --org <id> --project <id> --file <request.json>
+                                        export only a sealed task's redacted receipt for an
+                                        explicit remote transport; no network call is made.
   icarus policy explain <DENIAL-ID> [--repo <dir>]
                                         read the exact Rust-recorded reason for an actual adapter
                                         write denial; it never reconstructs a decision from prose.

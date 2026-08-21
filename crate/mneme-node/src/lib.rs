@@ -227,6 +227,44 @@ pub fn harness_export_task(repo_root: String, task_id: String, redacted: bool) -
     )
 }
 
+/// Install a transport-authenticated authority snapshot.  JavaScript only carries the opaque
+/// JSON document; Rust validates repository identity, scope, expiry, and digest before caching.
+#[napi]
+pub fn harness_install_authority_snapshot(repo_root: String, snapshot_json: String) -> Result<String> {
+    let snapshot = harness::install_authority_snapshot(
+        std::path::Path::new(&repo_root),
+        &snapshot_json,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(snapshot).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+#[napi]
+pub fn harness_inspect_authority_sync(repo_root: String) -> Result<String> {
+    let inspection = harness::inspect_authority_sync(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(inspection).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
+/// Build a redacted outbound bundle.  This method deliberately cannot issue an HTTP request or
+/// receive a credential: network transport remains an explicit opt-in adapter boundary.
+#[napi]
+pub fn harness_build_authority_sync_request(
+    repo_root: String,
+    task_id: String,
+    scope_json: String,
+) -> Result<String> {
+    let scope: harness::AuthorityScope = serde_json::from_str(&scope_json)
+        .map_err(|error| Error::from_reason(format!("invalid authority scope JSON: {error}")))?;
+    let request = harness::build_authority_sync_request(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        scope,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::to_value(request).map_err(|error| Error::from_reason(error.to_string()))?)
+}
+
 #[napi]
 pub fn harness_propose_skill(repo_root: String, skill_json: String) -> Result<String> {
     let skill = serde_json::from_str(&skill_json)
