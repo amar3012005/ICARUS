@@ -95,8 +95,11 @@ while [ "$#" -gt 0 ]; do
 done
 task=$(grep -o -- '--task [^ ]*' "$settings" | head -n 1 | sed 's/--task //')
 [ -n "$task" ]
-repo=$(pwd -W 2>/dev/null || pwd)
-# Adapter tool events may use a workspace-relative path. That avoids leaking Git Bash's `/c/...`
+repo="$PWD"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) repo=$(pwd -W) ;;
+esac
+# Adapter tool events may use a workspace-relative path. That avoids leaking Git Bash's /c path
 # presentation into the Windows-native Rust authority while exercising the same scoped write.
 printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/fake-agent.txt"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$repo"
 if printf '%s\\n' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"README.md"}}' | node "$ICARUS_TEST_CLI" harness hook --task "$task" --event pre-tool --repo "$repo"; then
