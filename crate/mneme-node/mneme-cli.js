@@ -420,7 +420,10 @@ function commandOnPath(command) {
   // exact discovered executable to the managed launch. This is transport only;
   // Rust still owns the task, approval, lifecycle, and sealing authority.
   if (process.platform === 'win32') {
-    return String(result.stdout || '').split(/\r?\n/).map((value) => value.trim()).find(Boolean) || null;
+    const candidates = String(result.stdout || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    // `where` can also list an extensionless POSIX fixture before its `.cmd` bridge. Only hand
+    // Node a path Windows can actually launch, rather than depending on shell/PATHEXT magic.
+    return candidates.find((value) => /\.(?:exe|cmd|bat|com)$/i.test(value)) || null;
   }
   return command;
 }

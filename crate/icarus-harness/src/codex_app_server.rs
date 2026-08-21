@@ -132,14 +132,24 @@ fn resolve_executable(command: &str) -> Result<String> {
                 "Codex app-server program `{command}` is not available on PATH"
             )));
         }
-        String::from_utf8_lossy(&output.stdout)
+        let candidates = String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(str::trim)
-            .find(|value| !value.is_empty())
+            .filter(|value| !value.is_empty())
             .map(str::to_owned)
+            .collect::<Vec<_>>();
+        candidates
+            .into_iter()
+            .find(|value| {
+                let lower = value.to_ascii_lowercase();
+                lower.ends_with(".exe")
+                    || lower.ends_with(".cmd")
+                    || lower.ends_with(".bat")
+                    || lower.ends_with(".com")
+            })
             .ok_or_else(|| {
                 HarnessError::invalid(format!(
-                    "Codex app-server program `{command}` was not returned by where"
+                    "Codex app-server program `{command}` was not returned by where as a Windows executable"
                 ))
             })
     }
