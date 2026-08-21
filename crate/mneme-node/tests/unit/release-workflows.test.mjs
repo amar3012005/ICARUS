@@ -57,3 +57,13 @@ test('REGRESSION: every CLI release binary carries a published SPDX SBOM and SBO
   assert.match(release, /sbom-path: crate\/mneme-node\/\$\{\{ matrix\.asset \}\}\.spdx\.json/);
   assert.match(release, /icarus-linux-x64\.spdx\.json/);
 });
+
+test('REGRESSION: first-time binary install verifies the exact platform checksum before execution', () => {
+  const installer = readFileSync(join(ROOT, 'install.sh'), 'utf8');
+  assert.match(installer, /release_asset_checksum\(\)/);
+  assert.match(installer, /"\$\{url\}\.sha256"/);
+  assert.match(installer, /name == wanted/);
+  assert.match(installer, /downloaded binary failed SHA-256 verification/);
+  assert.match(installer, /chmod \+x "\$BIN_DIR\/icarus\.tmp"/);
+  assert.ok(installer.indexOf('downloaded binary failed SHA-256 verification') < installer.indexOf('chmod +x "$BIN_DIR/icarus.tmp"'));
+});

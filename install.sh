@@ -108,8 +108,34 @@ binary_asset_name() {
   echo "icarus-${os}-${arch}"
 }
 
+sha256_file() {
+  # macOS ships `shasum`; most Linux systems ship `sha256sum`. Do not silently skip verification
+  # when one is absent: callers treat an unavailable checksum tool as a binary-install failure.
+  if need shasum; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif need sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+release_asset_checksum() {
+  local sidecar="$1" asset="$2"
+  # Sidecars are untrusted input until parsed. Require exactly one 64-hex digest whose filename
+  # is exactly the requested asset; a digest for another platform must never authorize a binary.
+  awk -v wanted="$asset" '
+    {
+      digest=$1; name=$2; sub(/^\*/, "", name)
+      if (length(digest) == 64 && digest ~ /^[0-9A-Fa-f]+$/ && name == wanted) {
+        print tolower(digest)
+      }
+    }
+  ' "$sidecar"
+}
+
 try_binary_install() {
-  local asset url
+  local asset url expected actual matches
   asset="$(binary_asset_name)" || { warn "no prebuilt binary for $(uname -s)/$(uname -m) — building from source"; return 1; }
   if [ "$RELEASE_TAG" = "latest" ]; then
     url="${REPO}/releases/latest/download/${asset}"
@@ -128,6 +154,24 @@ try_binary_install() {
     rm -f "$BIN_DIR/icarus.tmp"
     return 1
   fi
+  if ! curl -fSL --progress-bar "${url}.sha256" -o "$BIN_DIR/icarus.tmp.sha256"; then
+    warn "release checksum unavailable — keeping any existing install and building from source instead"
+    rm -f "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus.tmp.sha256"
+    return 1
+  fi
+  matches="$(release_asset_checksum "$BIN_DIR/icarus.tmp.sha256" "$asset")"
+  if [ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')" != "1" ]; then
+    warn "release checksum is missing or ambiguous for $asset — keeping any existing install and building from source instead"
+    rm -f "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus.tmp.sha256"
+    return 1
+  fi
+  expected="$matches"
+  if ! actual="$(sha256_file "$BIN_DIR/icarus.tmp")" || [ "$actual" != "$expected" ]; then
+    warn "downloaded binary failed SHA-256 verification — keeping any existing install and building from source instead"
+    rm -f "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus.tmp.sha256"
+    return 1
+  fi
+  rm -f "$BIN_DIR/icarus.tmp.sha256"
   chmod +x "$BIN_DIR/icarus.tmp"
   # sanity check before committing to this path — a corrupt/incompatible download must not
   # silently replace a working install

@@ -115,6 +115,9 @@ jobs:
         working-directory: crate/mneme-node
         run: npm test
 
+      - name: Installer shell syntax
+        run: bash -n install.sh
+
   # MCP framing tests above intentionally run without a native addon.  This complementary job
   # builds the Rust addon and proves the stdio server can persist and recall from a real local
   # shard.  It has no credentials or network dependency: lexical ingest/recall is the local-only
