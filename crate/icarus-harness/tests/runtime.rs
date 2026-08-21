@@ -3190,6 +3190,7 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
         active.verification["promotion"]["measurably_improved_native_replay_count"],
         2
     );
+    assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
     for index in 0..3 {
         let failed = blocked_skill_task(
             repo.path(),

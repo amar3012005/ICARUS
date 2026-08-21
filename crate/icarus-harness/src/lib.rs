@@ -4294,7 +4294,10 @@ pub fn evaluate_skill(
             payload: serde_json::to_value(&evaluation)?,
         },
     )?;
-    if evaluation.status == "pass" && !is_high_risk_skill(&skill) {
+    if evaluation.status == "pass"
+        && !is_high_risk_skill(&skill)
+        && !active_skill_path(&root, skill_id).exists()
+    {
         let evaluations = native_skill_evaluations(&root, &skill)?;
         let low_risk_ready = evaluations
             .iter()
@@ -4821,6 +4824,11 @@ pub fn promote_skill(
         )));
     }
     let proposed = proposed_skill_path(&root, skill_id);
+    if active_skill_path(&root, skill_id).exists() {
+        return Err(HarnessError::invalid(
+            "skill is already active; retire it before proposing a new version",
+        ));
+    }
     let mut skill: HarnessSkill = serde_json::from_reader(
         File::open(&proposed)
             .map_err(|_| HarnessError::invalid("proposed skill does not exist"))?,
