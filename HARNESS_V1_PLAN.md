@@ -426,7 +426,9 @@ Exit gate:
 Target: v0.9.x.
 
 - Migrate v0.3 users through `icarus migrate --dry-run` followed by explicit migration. Preserve `.amr` format and shard contents unchanged.
-- Add schema migration fixtures from every public preview version.
+- Add schema migration fixtures from every public preview version. **Implemented:** the public
+  `v0.3.*` corpus exercises the legacy graph contract for every published v0.3 tag and proves
+  dry-run non-mutation, copy-only graph migration, and byte-for-byte shard preservation.
 - Complete platform binaries for macOS ARM64/x64, Linux ARM64/x64, and Windows x64.
 - Add:
 

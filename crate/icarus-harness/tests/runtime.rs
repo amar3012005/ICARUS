@@ -135,6 +135,81 @@ fn migration_dry_run_is_non_mutating_and_apply_preserves_amr_bytes() {
 }
 
 #[test]
+fn published_v03_migration_corpus_preserves_memory_bytes_and_legacy_graph() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct MigrationCorpus {
+        schema_version: u32,
+        source: String,
+        legacy_graph_path: String,
+        shard_files: Vec<String>,
+        tags: Vec<String>,
+    }
+
+    let corpus: MigrationCorpus = serde_json::from_str(include_str!(
+        "../../../docs/evals/migration-corpus-v0.3.json"
+    ))
+    .unwrap();
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(corpus.source, "public ICARUS git tags");
+    assert!(!corpus.tags.is_empty());
+
+    for tag in corpus.tags {
+        let fixture = repo();
+        let legacy = fixture.path().join(&corpus.legacy_graph_path);
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let legacy_bytes = format!("legacy graph from {tag}").into_bytes();
+        fs::write(&legacy, &legacy_bytes).unwrap();
+
+        let shard_root = fixture.path().join(".icarus/data/default");
+        fs::create_dir_all(&shard_root).unwrap();
+        let shard_bytes: Vec<_> = corpus
+            .shard_files
+            .iter()
+            .map(|name| {
+                let path = shard_root.join(name);
+                let bytes = format!("opaque {name} bytes from {tag}").into_bytes();
+                fs::write(&path, &bytes).unwrap();
+                (path, bytes)
+            })
+            .collect();
+
+        let preview = migrate(fixture.path(), true, InitOptions::default()).unwrap();
+        assert!(
+            preview.dry_run && preview.needed && !preview.applied,
+            "{tag}"
+        );
+        assert!(
+            !fixture.path().join(".icarus/manifest.yaml").exists(),
+            "{tag}"
+        );
+        assert!(
+            !fixture
+                .path()
+                .join(".icarus/runtime/graph/graph.db")
+                .exists(),
+            "{tag}"
+        );
+        assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes, "{tag}");
+        for (path, bytes) in &shard_bytes {
+            assert_eq!(fs::read(path).unwrap(), *bytes, "{tag}: {}", path.display());
+        }
+
+        let applied = migrate(fixture.path(), false, InitOptions::default()).unwrap();
+        assert!(applied.needed && applied.applied, "{tag}");
+        let copied = fixture.path().join(".icarus/runtime/graph/graph.db");
+        assert_eq!(fs::read(&copied).unwrap(), legacy_bytes, "{tag}");
+        assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes, "{tag}");
+        for (path, bytes) in &shard_bytes {
+            assert_eq!(fs::read(path).unwrap(), *bytes, "{tag}: {}", path.display());
+        }
+
+        let rerun = migrate(fixture.path(), false, InitOptions::default()).unwrap();
+        assert!(!rerun.needed && !rerun.applied, "{tag}");
+    }
+}
+
+#[test]
 fn malformed_repository_policy_fails_closed_and_doctor_reports_it() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
