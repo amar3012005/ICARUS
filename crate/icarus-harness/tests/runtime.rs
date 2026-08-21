@@ -1636,6 +1636,22 @@ fn graph_receipt_is_atomically_bound_to_source_and_database() {
 }
 
 #[test]
+fn graph_fingerprint_excludes_nested_agent_worktrees() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "pub fn stable() {}\n").unwrap();
+    let fingerprint = graph_source_fingerprint(repo.path()).unwrap();
+    fs::create_dir_all(repo.path().join(".claude/worktrees/copied/src")).unwrap();
+    fs::write(
+        repo.path().join(".claude/worktrees/copied/src/lib.rs"),
+        "pub fn duplicate() {}\n",
+    )
+    .unwrap();
+    assert_eq!(graph_source_fingerprint(repo.path()).unwrap(), fingerprint);
+}
+
+#[test]
 fn context_compiler_reads_a_bounded_current_graph_slice_in_rust() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();

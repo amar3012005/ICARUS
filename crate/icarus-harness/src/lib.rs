@@ -5028,7 +5028,7 @@ fn collect_graph_sources(root: &Path, directory: &Path, files: &mut Vec<PathBuf>
         if entry.file_type()?.is_dir() {
             if matches!(
                 name.as_ref(),
-                "node_modules" | ".git" | "target" | ".icarus-graph" | "dist" | "build"
+                "node_modules" | ".git" | "target" | ".icarus-graph" | ".claude" | "dist" | "build"
             ) {
                 continue;
             }

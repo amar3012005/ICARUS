@@ -58,7 +58,10 @@ async function loadLanguage(name) {
 
 function walkFiles(dir) {
   const out = [];
-  const skip = new Set(['node_modules', '.git', 'target', '.icarus-graph', 'dist', 'build']);
+  // Nested worktrees are agent execution state, not part of the repository being indexed. In
+  // particular, Claude stores copies below `.claude/worktrees`; including them duplicates every
+  // symbol and makes a repository's graph depend on whatever sessions happen to be open.
+  const skip = new Set(['node_modules', '.git', 'target', '.icarus-graph', '.claude', 'dist', 'build']);
   (function rec(d) {
     let entries;
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
