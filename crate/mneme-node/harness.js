@@ -114,6 +114,20 @@ function recordAdapterPostAction(repoRoot, taskId, agent, toolName, path) {
   return invoke('harnessRecordAdapterPostAction', [repoRoot, taskId, agent, toolName, path]);
 }
 
+// These are deliberately transparent protocol transports. The native harness, not this module,
+// binds Codex's thread id, validates its event vocabulary, and decides every approval request.
+function bindCodexAppServerThread(repoRoot, taskId, threadId) {
+  return invoke('harnessBindCodexAppServerThread', [repoRoot, taskId, threadId]);
+}
+
+function recordCodexAppServerEvent(repoRoot, taskId, method, params) {
+  return invoke('harnessRecordCodexAppServerEvent', [repoRoot, taskId, method, JSON.stringify(params)]);
+}
+
+function decideCodexAppServerApproval(repoRoot, taskId, method, params) {
+  return invoke('harnessDecideCodexAppServerApproval', [repoRoot, taskId, method, JSON.stringify(params)]);
+}
+
 function handoffManagedTask(repoRoot, taskId) {
   return invoke('harnessHandoffManagedTask', [repoRoot, taskId]);
 }
@@ -156,6 +170,9 @@ module.exports = {
   authorizeAction,
   authorizeAdapterWrite,
   recordAdapterPostAction,
+  bindCodexAppServerThread,
+  recordCodexAppServerEvent,
+  decideCodexAppServerApproval,
   handoffManagedTask,
   recordAdapterLifecycle,
   __setNativeHarnessBridgeForTest,

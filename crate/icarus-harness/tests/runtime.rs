@@ -1,9 +1,10 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action,
-    authorize_adapter_write, build_context, checkpoint_task, doctor, evaluate_skill,
-    graph_source_fingerprint, handoff_managed_task, init, load_repository_policy, migrate,
-    prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
-    record_adapter_lifecycle, record_adapter_post_action, record_graph_receipt, resume_task,
+    authorize_adapter_write, bind_codex_app_server_thread, build_context, checkpoint_task,
+    decide_codex_app_server_approval, doctor, evaluate_skill, graph_source_fingerprint,
+    handoff_managed_task, init, load_repository_policy, migrate, prepare_run, read_snapshot,
+    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
+    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt, resume_task,
     retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
     validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
     EventInput, HarnessSkill, InitOptions, TaskContract,
@@ -711,6 +712,105 @@ fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
     let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
     assert!(events.contains("managed_task_handed_off"));
     assert!(events.contains("agent_requested_verification"));
+}
+
+#[test]
+fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_closed() {
+    let repo = repo();
+    let initialized = init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["codex".into()],
+        },
+    )
+    .unwrap();
+    let task = start_task(repo.path(), "Codex protocol boundary", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+
+    let session = bind_codex_app_server_thread(repo.path(), &task.task_id, "thread-123").unwrap();
+    assert_eq!(session.thread_id, "thread-123");
+    assert_eq!(
+        bind_codex_app_server_thread(repo.path(), &task.task_id, "thread-123")
+            .unwrap()
+            .execution_id,
+        session.execution_id
+    );
+    assert!(bind_codex_app_server_thread(repo.path(), &task.task_id, "thread-other").is_err());
+
+    let started = record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "turn/started",
+        &serde_json::json!({"threadId": "thread-123", "turnId": "turn-1"}),
+    )
+    .unwrap();
+    assert_eq!(started.thread_id, "thread-123");
+    assert_eq!(started.turn_id.as_deref(), Some("turn-1"));
+    let completed = record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/completed",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "item": {"id": "item-1", "type": "agentMessage"},
+        }),
+    )
+    .unwrap();
+    assert_eq!(completed.item_id.as_deref(), Some("item-1"));
+    assert!(record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/started",
+        &serde_json::json!({"threadId": "thread-other", "turnId": "turn-1", "item": {"id": "item-2"}}),
+    )
+    .is_err());
+
+    let file_change = decide_codex_app_server_approval(
+        repo.path(),
+        &task.task_id,
+        "item/fileChange/requestApproval",
+        &serde_json::json!({"threadId": "thread-123", "turnId": "turn-1", "itemId": "item-1"}),
+    )
+    .unwrap();
+    assert_eq!(file_change.decision, "decline");
+    assert!(file_change.reason.contains("individual file paths"));
+    let command = decide_codex_app_server_approval(
+        repo.path(),
+        &task.task_id,
+        "item/commandExecution/requestApproval",
+        &serde_json::json!({"threadId": "thread-123", "turnId": "turn-1", "itemId": "item-2", "command": "echo unsafe"}),
+    )
+    .unwrap();
+    assert_eq!(command.decision, "decline");
+    assert!(command.event_sequence > file_change.event_sequence);
+    assert!(decide_codex_app_server_approval(
+        repo.path(),
+        &task.task_id,
+        "item/fileChange/requestApproval",
+        &serde_json::json!({"threadId": "thread-other", "turnId": "turn-1", "itemId": "item-3"}),
+    )
+    .is_err());
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("codex_app_server_thread_bound"));
+    assert!(events.contains("codex_app_server_turn_started"));
+    assert!(events.contains("codex_app_server_approval_declined"));
 }
 
 #[test]

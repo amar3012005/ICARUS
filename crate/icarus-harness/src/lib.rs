@@ -714,6 +714,54 @@ pub struct AdapterPostActionReceipt {
     pub event_sequence: u64,
 }
 
+/// A Rust-owned binding between a governed ICARUS execution and a Codex app-server thread.
+///
+/// The thread id is supplied by Codex, but it is never trusted merely because it is well-formed:
+/// every later app-server event must match this persisted binding before ICARUS will record it or
+/// make an approval decision. This keeps stable session identity out of the Node/TUI layer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexAppServerSession {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub thread_id: String,
+    pub worktree_id: String,
+}
+
+/// A receipt for a structured Codex app-server boundary. It intentionally excludes model text,
+/// command bodies and patches: those are untrusted presentation data. The durable event chain
+/// stores only the protocol fact and stable identifiers needed for later audit and resume.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexAppServerEventReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub item_id: Option<String>,
+    pub method: String,
+    pub event_sequence: u64,
+}
+
+/// A fail-closed reply to a Codex app-server approval request. `decision` is deliberately the
+/// exact app-server vocabulary (currently `decline`) so a transport can forward it verbatim
+/// without interpreting policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexAppServerApproval {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub thread_id: String,
+    pub method: String,
+    pub decision: String,
+    pub reason: String,
+    pub event_sequence: u64,
+}
+
 /// A Rust-owned boundary between an agent's implementation session and deterministic
 /// verification. It records no claim that tests passed; it merely prevents a managed adapter
 /// from treating an ordinary conversational stop as task completion.
@@ -4682,6 +4730,283 @@ pub fn authorize_action(repo_root: &Path, task_id: &str, action: Action) -> Resu
     Ok(Authorization {
         allowed: true,
         reason: "write is authorized by the executing task contract".into(),
+    })
+}
+
+fn codex_session_path(task_id: &str) -> String {
+    format!("state/codex-app-server-{task_id}.json")
+}
+
+fn codex_required_string<'a>(params: &'a Value, field: &str) -> Result<&'a str> {
+    params
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            HarnessError::invalid(format!("Codex app-server event requires non-empty {field}"))
+        })
+}
+
+fn codex_notification_thread_id(params: &Value) -> Result<&str> {
+    params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            HarnessError::invalid("Codex app-server notification requires non-empty thread id")
+        })
+}
+
+fn codex_optional_identifier(params: &Value, direct: &str, nested: &str) -> Option<String> {
+    params
+        .get(direct)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get(nested)
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn prepared_codex_run(root: &Path, task_id: &str) -> Result<(TaskRecord, RunPreparation)> {
+    let task = task_status(root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "Codex app-server events require an executing task",
+        ));
+    }
+    let run_value = read_snapshot(root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id || run.agent != "codex"
+    {
+        return Err(HarnessError::invalid(
+            "Codex app-server event does not match the prepared Codex execution",
+        ));
+    }
+    Ok((task, run))
+}
+
+fn load_bound_codex_session(
+    root: &Path,
+    task_id: &str,
+    thread_id: &str,
+) -> Result<CodexAppServerSession> {
+    let session_value = read_snapshot(root, &codex_session_path(task_id))?
+        .ok_or_else(|| HarnessError::invalid("Codex app-server thread has not been bound"))?;
+    let session: CodexAppServerSession = serde_json::from_value(session_value)?;
+    if session.task_id != task_id || session.agent != "codex" || session.thread_id != thread_id {
+        return Err(HarnessError::invalid(
+            "Codex app-server event thread does not match the governed execution",
+        ));
+    }
+    Ok(session)
+}
+
+/// Bind the thread returned by Codex's documented `thread/start` response to the active Rust
+/// execution. A second, different thread is never allowed to overwrite the original binding.
+pub fn bind_codex_app_server_thread(
+    repo_root: &Path,
+    task_id: &str,
+    thread_id: &str,
+) -> Result<CodexAppServerSession> {
+    if thread_id.trim().is_empty() || thread_id.contains(['\n', '\r', '\0']) {
+        return Err(HarnessError::invalid("invalid Codex app-server thread id"));
+    }
+    let root = canonical_root(repo_root)?;
+    let (task, run) = prepared_codex_run(&root, task_id)?;
+    let path = codex_session_path(&task.task_id);
+    if let Some(existing) = read_snapshot(&root, &path)? {
+        let session: CodexAppServerSession = serde_json::from_value(existing)?;
+        if session.task_id == task.task_id
+            && session.execution_id == task.execution_id
+            && session.agent == "codex"
+            && session.thread_id == thread_id
+        {
+            return Ok(session);
+        }
+        return Err(HarnessError::invalid(
+            "a different Codex app-server thread is already bound to this execution",
+        ));
+    }
+    let session = CodexAppServerSession {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        agent: "codex".into(),
+        thread_id: thread_id.into(),
+        worktree_id: run.worktree_id.clone(),
+    };
+    write_snapshot(&root, &path, serde_json::to_value(&session)?)?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "codex_app_server_thread_bound".into(),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "agent": "codex",
+                "thread_id": thread_id,
+            }),
+        },
+    )?;
+    Ok(session)
+}
+
+/// Record a bounded set of documented Codex app-server notifications. The native core validates
+/// the persisted thread binding and identifiers before appending an event; callers cannot use a
+/// formatted model transcript as evidence or inject an arbitrary event type.
+pub fn record_codex_app_server_event(
+    repo_root: &Path,
+    task_id: &str,
+    method: &str,
+    params: &Value,
+) -> Result<CodexAppServerEventReceipt> {
+    let allowed = [
+        "thread/started",
+        "turn/started",
+        "item/started",
+        "item/completed",
+        "turn/completed",
+    ];
+    if !allowed.contains(&method) {
+        return Err(HarnessError::invalid(
+            "unsupported Codex app-server notification",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let (task, run) = prepared_codex_run(&root, task_id)?;
+    let thread_id = codex_notification_thread_id(params)?;
+    let session = load_bound_codex_session(&root, task_id, thread_id)?;
+    if session.execution_id != task.execution_id || session.worktree_id != run.worktree_id {
+        return Err(HarnessError::invalid(
+            "Codex app-server session does not match the active execution",
+        ));
+    }
+    let turn_id = codex_optional_identifier(params, "turnId", "turn");
+    let item_id = codex_optional_identifier(params, "itemId", "item");
+    if matches!(method, "turn/started" | "item/started" | "item/completed") && turn_id.is_none() {
+        return Err(HarnessError::invalid(
+            "Codex app-server notification requires turnId",
+        ));
+    }
+    if matches!(method, "item/started" | "item/completed") && item_id.is_none() {
+        return Err(HarnessError::invalid(
+            "Codex app-server item notification requires item id",
+        ));
+    }
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: format!("codex_app_server_{}", method.replace('/', "_")),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "agent": "codex",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "item_id": item_id,
+                "method": method,
+            }),
+        },
+    )?;
+    Ok(CodexAppServerEventReceipt {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        thread_id: thread_id.into(),
+        turn_id,
+        item_id,
+        method: method.into(),
+        event_sequence: event.sequence,
+    })
+}
+
+/// Decide a Codex app-server approval request in the Rust authority.
+///
+/// The current upstream file-change request lacks the individual paths it would authorize, and
+/// command actions are explicitly best-effort display data. Therefore no request can be safely
+/// authorized yet. Returning `decline` (and recording it) is intentional: it is a real
+/// interception boundary, not a compatibility-mode pretend approval. A later implementation may
+/// allow a request only after Codex exposes canonical individual paths and a command policy that
+/// ICARUS can validate independently.
+pub fn decide_codex_app_server_approval(
+    repo_root: &Path,
+    task_id: &str,
+    method: &str,
+    params: &Value,
+) -> Result<CodexAppServerApproval> {
+    let allowed = [
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/permissions/requestApproval",
+    ];
+    if !allowed.contains(&method) {
+        return Err(HarnessError::invalid(
+            "unsupported Codex app-server approval request",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let (task, run) = prepared_codex_run(&root, task_id)?;
+    let thread_id = codex_required_string(params, "threadId")?;
+    let turn_id = codex_required_string(params, "turnId")?;
+    let item_id = codex_required_string(params, "itemId")?;
+    let session = load_bound_codex_session(&root, task_id, thread_id)?;
+    if session.execution_id != task.execution_id || session.worktree_id != run.worktree_id {
+        return Err(HarnessError::invalid(
+            "Codex app-server approval request does not match the active execution",
+        ));
+    }
+    let reason = match method {
+        "item/fileChange/requestApproval" => "ICARUS declined: Codex did not provide canonical individual file paths for this change request.",
+        "item/commandExecution/requestApproval" => "ICARUS declined: command approval requires a native, independently validated command policy.",
+        "item/permissions/requestApproval" => "ICARUS declined: additional sandbox or network permissions require explicit task-contract support.",
+        _ => unreachable!(),
+    };
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "codex_app_server_approval_declined".into(),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "agent": "codex",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "item_id": item_id,
+                "method": method,
+                "decision": "decline",
+                "reason": reason,
+            }),
+        },
+    )?;
+    Ok(CodexAppServerApproval {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        thread_id: thread_id.into(),
+        method: method.into(),
+        decision: "decline".into(),
+        reason: reason.into(),
+        event_sequence: event.sequence,
     })
 }
 

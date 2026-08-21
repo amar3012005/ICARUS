@@ -438,6 +438,73 @@ pub fn harness_record_adapter_post_action(
     )
 }
 
+/// Bind the stable thread returned by Codex app-server to a prepared Codex execution. Node may
+/// transport the response, but the native harness persists and validates the binding.
+#[napi]
+pub fn harness_bind_codex_app_server_thread(
+    repo_root: String,
+    task_id: String,
+    thread_id: String,
+) -> Result<String> {
+    let session = harness::bind_codex_app_server_thread(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &thread_id,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(session).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+/// Record a bounded structured Codex app-server notification. The native core rejects unknown
+/// event vocabularies and mismatched threads rather than accepting arbitrary JSON-RPC payloads.
+#[napi]
+pub fn harness_record_codex_app_server_event(
+    repo_root: String,
+    task_id: String,
+    method: String,
+    params_json: String,
+) -> Result<String> {
+    let params = serde_json::from_str(&params_json).map_err(|error| {
+        Error::from_reason(format!("invalid Codex app-server params JSON: {error}"))
+    })?;
+    let receipt = harness::record_codex_app_server_event(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &method,
+        &params,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+/// Decide a Codex app-server approval request in Rust. Current decisions intentionally fail
+/// closed until the protocol exposes canonical per-file write paths and a native command policy.
+#[napi]
+pub fn harness_decide_codex_app_server_approval(
+    repo_root: String,
+    task_id: String,
+    method: String,
+    params_json: String,
+) -> Result<String> {
+    let params = serde_json::from_str(&params_json).map_err(|error| {
+        Error::from_reason(format!("invalid Codex app-server params JSON: {error}"))
+    })?;
+    let decision = harness::decide_codex_app_server_approval(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &method,
+        &params,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(decision).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// Hand a prepared managed execution to ICARUS verification. This does not accept an agent
 /// result or seal a task; it only records the durable execution-to-verification boundary.
 #[napi]
