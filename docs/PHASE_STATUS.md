@@ -7,7 +7,7 @@ Rule for this file: an item is **DONE** only when its verification is real — a
 against the unfixed code, an observed command output, a cold-verified artifact. "Implemented"
 is not "done". Anything unverified says so.
 
-Last updated at CLI version **0.3.46**.
+Last updated at CLI version **0.3.57** (in progress).
 
 ---
 
@@ -20,8 +20,8 @@ Target: v0.3.47–v0.3.x
 | Public repo canonical; monorepo no longer overwrites public development | **DONE** | `scripts/sync-icarus.sh` rewritten in the monorepo (commit `90def98`). Six properties tested live: dirty-clone abort preserves work; blanket `add -A` removed (untracked local files survive a full sync unstaged); digest-based divergence detection aborts naming the file; a public-only edit is KEPT and skipped rather than overwritten; `--force-monorepo` overrides; `pull-icarus.sh` reports 15 added / 1 modified in dry run and writes nothing. |
 | Private-to-public scanner preserved as a pre-publish security check | **DONE** | Retained and made *correct*: it scanned the whole tree including `node_modules/` (false positives from `jose`'s literal `-----BEGIN PRIVATE KEY-----` and `sql.js`'s base64 blob), which forced a manual "move node_modules aside" step every publish. Now scans exactly the tracked publish set — 170 files, clean, no stash. |
 | Root `VERSION` source used by binary, tags, update checks | **DONE** | `VERSION` + `scripts/version.mjs` (print / `--check` / `--write` / `--set`). 12 tests in `tests/unit/version.test.mjs` run against sandboxed copies. Engine package `singulance-amr` deliberately keeps its own version, per plan. |
-| Node-layer CI (CLI, TUI, MCP, installers, recall, ingestion, skills, binary smoke) | **PARTIAL** | 82 tests green in ~0.55s, no toolchain required: `args`, `tui-render`, `cli-lib`, `mcp-install`, `version`, `smoke/cli`. A `node` job on ubuntu + macos is wired into `ci.yml`. **Not yet covered:** shard-backed ingest/recall/save round-trips (needs a `napi build` in CI → `tests/engine/`), MCP stdio protocol conformance, and compiled-binary smoke. |
-| Automated release: asset naming, checksums, draft detection, cold download, version execution | **IMPLEMENTED, UNVERIFIED** | `.github/workflows/release-cli.yml`: version/tag agreement gate before any build minutes; per-platform build; asserts the built binary executes and reports the expected version; sha256; uploads by path only (never `path#label`); asserts `isDraft == false`; asserts exact asset names exist; cold-downloads through the public URL and compares digest + runs it; asserts `releases/latest` resolves to this tag. **Cannot be executed** — see the blocker below. |
+| Node-layer CI (CLI, TUI, MCP, installers, recall, ingestion, skills, binary smoke) | **PARTIAL** | Public CI runs on macOS and Linux; run `32434961725` passed for v0.3.56. The local combined suite currently has 100 Node tests. **Still missing:** shard-backed ingest/recall/save round-trips in CI, MCP stdio protocol conformance, and independent compiled-binary smoke outside the release workflow. |
+| Automated release: asset naming, checksums, draft detection, cold download, version execution | **DONE for v0.3.56** | Public release run `32434963782` passed version validation, Linux x64 + macOS ARM64/x64 builds, exact binary version execution, checksums, non-draft publishing, expected asset checks, cold download/hash/execution, and `releases/latest` routing. |
 | Contributor docs, governance, security reporting, code of conduct, RFC template | **DONE** | `GOVERNANCE.md` (new), `.github/ISSUE_TEMPLATE/rfc.md` (new), plus existing `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, PR template. |
 | Record v0.3.46 as the compatibility baseline | **DONE** | `COMPATIBILITY.md`, written from a live install and the real on-disk shard set — not from source. Includes the sparse-file accounting rule, the `flock`-not-`fcntl` decision, org-name charset, the local-recall-always guarantee, exit codes, and two honestly-recorded baseline defects. |
 
@@ -40,32 +40,22 @@ Target: v0.3.47–v0.3.x
 | Gate | State |
 |---|---|
 | A public PR can be merged without being overwritten by private synchronization | **PASS** — proven by test, including a simulated contributor edit surviving a full sync. |
-| CI is green on macOS and Linux | **BLOCKED** — not a code failure. See below. |
-| A release is built from the public commit and cold-verified automatically | **BLOCKED** by the same cause; the workflow exists and is complete. |
+| CI is green on macOS and Linux | **PASS** — public CI `32434961725` is green. |
+| A release is built from the public commit and cold-verified automatically | **PASS** — release run `32434963782` built and cold-verified v0.3.56. |
 | Existing shards open without migration | **PASS** — `icarus status` on a live v0.3.46 install opens the real shard set (`shard.amr/.vec/.txt/.edg/.mnsw/.lock` + `audit.jsonl` + `signatures.jsonl`) with signing and audit active. |
-
-### 🚫 Blocker: GitHub Actions is disabled at the account level
-
-Every job across all six matrix entries fails in ~2 seconds with **zero steps executed**. The
-run annotation gives the exact cause:
-
-> `The job was not started because your account is locked due to a billing issue.`
-
-This predates the Phase 0 work (runs `d611da5` and `d800234` failed identically before any of
-it landed). It is not fixable from the repository — it needs the account owner to resolve
-GitHub billing. Until then:
-
-- The CI workflows are authored and structurally valid (`ci.yml`, `release.yml`,
-  `release-cli.yml` all parse; job graphs verified).
-- The Node suite is the interim gate and is run locally before every commit
-  (`npm --prefix crate/mneme-node test`, plus `node scripts/version.mjs --check`).
-- **No release should be cut until the release workflow has actually executed once.** Cutting
-  one by hand is precisely what produced the wrong-asset-name and orphaned-draft failures this
-  workflow exists to prevent.
 
 ---
 
-## Phases 1–9
+## Current harness phases
 
-Not started. Phase 1 (`icarus harness init`, manifest + schemas, hash-chained runtime event
-log, `icarus doctor`) is next once the Phase 0 gate can close.
+| Phase | State | Current evidence and remaining gate |
+|---|---|---|
+| 1 — identity, policy, events, doctor | **IMPLEMENTED** | Rust-owned manifest, policy validation, append-only hash-chained events, runtime snapshots, migration, and doctor have runtime coverage. Full migration fixtures from every public preview remain a Phase 8 requirement. |
+| 2 — task contracts and lifecycle | **IMPLEMENTED** | Immutable contracts, amendments, approvals, checkpoints, transitions, resume divergence checks, and task-scoped context have Rust tests. Crash/restart coverage for every lifecycle phase remains open. |
+| 3 — context compiler | **IMPLEMENTED, PARTIAL GATE** | Deterministic, bounded JSON/Markdown packs, graph freshness and delta context are tested. The published evaluation corpus and measured 50% startup-token reduction are not yet proven. |
+| 4 — managed launcher and adapters | **IMPLEMENTED, COMPATIBILITY ONLY** | Isolated worktrees by default, current-workspace acknowledgement/baselines, Rust scope reconciliation, wall-time deadlines, and Claude edit/stop hooks are covered. Claude and Codex are **not certified**: Codex structured app-server capture and complete pre-action/stop enforcement are still unfinished. |
+| 5 — deterministic verification and sealing | **IMPLEMENTED, HARDENING IN PROGRESS** | Machine receipts, required criteria, expiry-bound approvals, stale-evidence invalidation, scope checks and final receipts are tested. NUL-delimited Git path enforcement is being added in v0.3.57. |
+| 6 — governed skills | **IMPLEMENTED, PARTIAL GATE** | Proposed/verified/active/retired lifecycle, secret scan, source-task linkage, replay evidence, and demotion are implemented. Three independent source runs, replay comparison baselines, and the full auto-promotion proof remain open. |
+| 7 — optional HIVE-MIND authority | **NOT STARTED** | Local-only behavior is the current authority boundary; no remote sync may be represented as production-ready. |
+| 8 — production hardening / RC | **NOT STARTED** | Requires the public corpus, conformance, crash, path, installer rollback, SBOM/provenance/signature, and threat-model gates. |
+| 9 — v1.0 | **NOT STARTED** | Requires certified Claude + Codex, all open gates, and the 30-day/100-managed-task dogfood record. |

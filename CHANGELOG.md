@@ -9,6 +9,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **NUL-delimited Git scope proofs:** Rust now derives changed-path lists for checkpoints,
+  current-workspace reconciliation, and sealing from `git status --porcelain=v1 -z`, including
+  both sides of renames/copies. A forbidden source cannot be hidden by renaming it to an allowed
+  destination, and whitespace/newline filenames are never reinterpreted by line parsing.
 - **Rust-owned current-workspace scope reconciliation:** managed runs now snapshot only the
   hashes of pre-existing dirty/untracked Git entries at launch, then compare the post-run delta
   in Rust. Existing user work remains untouched; a newly changed out-of-contract path is

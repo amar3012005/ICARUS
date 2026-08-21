@@ -1241,6 +1241,84 @@ fn current_workspace_reconciliation_preserves_baseline_and_blocks_scope_escape()
 }
 
 #[test]
+fn seal_uses_nul_delimited_git_paths_for_scope_enforcement() {
+    let repo = initialized_git_repo();
+    let mut no_receipt_contract = contract();
+    no_receipt_contract.acceptance_criteria = serde_json::json!([]);
+    let task = start_task(repo.path(), "do not modify secrets", no_receipt_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    // Porcelain's line-oriented representation quotes or splits this path. A NUL-delimited
+    // collector must preserve it exactly before matching the forbidden `secrets/**` contract.
+    let escaped_path = "secrets/owner\nnotes.txt";
+    fs::create_dir_all(repo.path().join("secrets")).unwrap();
+    fs::write(repo.path().join(escaped_path), "must not seal\n").unwrap();
+    let result = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(!result.sealed);
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue == &format!("out-of-scope changed file: {escaped_path}")));
+}
+
+#[test]
+fn seal_checks_both_sides_of_a_git_rename() {
+    let repo = initialized_git_repo();
+    fs::create_dir_all(repo.path().join("secrets")).unwrap();
+    fs::write(repo.path().join("secrets/owner.txt"), "protected\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "secrets/owner.txt"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "add protected fixture"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let mut no_receipt_contract = contract();
+    no_receipt_contract.acceptance_criteria = serde_json::json!([]);
+    let task = start_task(
+        repo.path(),
+        "rename only a permitted source file",
+        no_receipt_contract,
+    )
+    .unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    // The destination matches `src/**`; the source is forbidden. Seal must inspect both
+    // NUL-delimited paths in Git's rename record rather than accepting destination-only output.
+    assert!(Command::new("git")
+        .args(["mv", "secrets/owner.txt", "src/renamed-owner.txt"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let result = seal_task(repo.path(), &task.task_id).unwrap();
+    assert!(!result.sealed);
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue == "out-of-scope changed file: secrets/owner.txt"));
+}
+
+#[test]
 fn agent_arguments_cannot_weaken_rust_selected_launch_controls() {
     assert!(validate_agent_arguments("codex", &["--model".into(), "gpt-5".into()]).is_ok());
     assert!(validate_agent_arguments("claude", &["--model".into(), "sonnet".into()]).is_ok());

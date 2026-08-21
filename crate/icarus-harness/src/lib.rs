@@ -1893,19 +1893,41 @@ fn nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
         .collect()
 }
 
-/// Return every tracked or untracked path whose working-tree state differs from `HEAD`.
-/// Git's `diff HEAD` deliberately covers both staged and unstaged tracked changes.
+/// Return every tracked or untracked path Git reports as changed. Porcelain v1 with `-z` is
+/// machine-readable even for spaces, quotes, renames, and newlines, and also works before the
+/// first commit (where `git diff HEAD` has no revision to compare against).
 fn workspace_changed_paths(root: &Path) -> Result<BTreeSet<String>> {
-    let tracked_paths = nul_paths(&git_checked_bytes(
+    let bytes = git_checked_bytes(
         root,
-        &["diff", "--name-only", "-z", "HEAD", "--"],
-    )?)?;
-    let untracked_paths = nul_paths(&git_checked_bytes(
-        root,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-    )?)?;
-    let mut paths: BTreeSet<String> = tracked_paths.into_iter().collect();
-    paths.extend(untracked_paths);
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let mut entries = bytes
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty());
+    let mut paths = BTreeSet::new();
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || entry[2] != b' ' {
+            return Err(HarnessError::invalid(
+                "Git returned malformed porcelain status",
+            ));
+        }
+        let status = &entry[..2];
+        let path = String::from_utf8(entry[3..].to_vec())
+            .map_err(|_| HarnessError::invalid("Git returned a non-UTF-8 path"))?;
+        paths.insert(path);
+        // With `-z`, Git emits the destination first and the source second for rename/copy
+        // records. Both paths must be checked: an agent must not hide a scope escape behind a
+        // rename whose destination alone happens to match the contract.
+        if matches!(status[0], b'R' | b'C') || matches!(status[1], b'R' | b'C') {
+            let source = entries
+                .next()
+                .ok_or_else(|| HarnessError::invalid("Git returned a truncated rename status"))?;
+            paths.insert(
+                String::from_utf8(source.to_vec())
+                    .map_err(|_| HarnessError::invalid("Git returned a non-UTF-8 path"))?,
+            );
+        }
+    }
     for path in &paths {
         checked_repo_relative_path(path)?;
     }
@@ -2327,10 +2349,11 @@ pub fn checkpoint_task(
     }
     let existing = read_checkpoints(&root, task_id)?;
     let status = git_output(&root, &["status", "--porcelain=v1"]);
-    let files_touched = status
-        .as_deref()
-        .map(parse_status_paths)
-        .unwrap_or_default();
+    let files_touched = if git_repository(&root) {
+        workspace_changed_paths(&root)?.into_iter().collect()
+    } else {
+        Vec::new()
+    };
     let dirty_state_fingerprint = sha256(status.unwrap_or_default().as_bytes());
     let checkpoint = Checkpoint {
         schema_version: 1,
@@ -2881,8 +2904,16 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
             Some(_) => {}
         }
     }
-    let changed =
-        parse_status_paths(&git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default());
+    // Never derive a seal-time scope decision from human-oriented porcelain lines: quoted,
+    // renamed, and newline-containing paths can be represented ambiguously there. The shared
+    // NUL-delimited collector covers staged plus unstaged tracked changes and untracked files.
+    // On a non-Git compatibility workspace there is no trustworthy source-scope proof, so the
+    // existing receipt/workspace checks still apply but no fabricated path list is produced.
+    let changed = if git_repository(&root) {
+        workspace_changed_paths(&root)?.into_iter().collect()
+    } else {
+        BTreeSet::new()
+    };
     let allowed = build_globset(&task.contract.allowed_paths)?;
     let forbidden = build_globset(&task.contract.forbidden_paths)?;
     let mut issues: Vec<String> = changed
@@ -3533,19 +3564,6 @@ fn git_output(root: &Path, args: &[&str]) -> Option<String> {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|text| text.trim().to_owned())
-}
-
-fn parse_status_paths(status: &str) -> Vec<String> {
-    status
-        .lines()
-        .filter_map(|line| line.get(3..))
-        .map(|path| {
-            path.rsplit_once(" -> ")
-                .map(|(_, new)| new)
-                .unwrap_or(path)
-                .to_owned()
-        })
-        .collect()
 }
 
 fn graph_digest(root: &Path) -> Option<String> {
