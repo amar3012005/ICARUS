@@ -1,14 +1,14 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action,
     authorize_adapter_write, bind_codex_app_server_thread, build_context, checkpoint_task,
-    decide_codex_app_server_approval, doctor, evaluate_skill, export_task,
-    graph_source_fingerprint, handoff_managed_task, init, load_repository_policy, migrate,
-    prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
+    codex_app_server_resume_session, decide_codex_app_server_approval, doctor, evaluate_skill,
+    export_task, graph_source_fingerprint, handoff_managed_task, init, load_repository_policy,
+    migrate, prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
     record_adapter_lifecycle, record_adapter_post_action, record_codex_app_server_event,
-    record_graph_receipt, render_context_markdown, resume_task, retire_skill, review_active_skills,
-    seal_task, start_task, task_status, transition_task, validate_agent_arguments,
-    verify_event_chain, verify_task_criterion, write_snapshot, Action, ContextItem, EventInput,
-    HarnessSkill, InitOptions, TaskContract,
+    record_graph_receipt, render_context_markdown, resume_codex_app_server_thread, resume_task,
+    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
+    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
+    ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -1194,6 +1194,57 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
     assert!(events.contains("codex_app_server_turn_started"));
     assert!(events.contains("codex_app_server_approval_declined"));
     assert!(events.contains("codex_app_server_approval_authorized"));
+}
+
+#[test]
+fn codex_app_server_resume_rebinds_only_the_immediately_prior_execution() {
+    let repo = repo();
+    init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["codex".into()],
+        },
+    )
+    .unwrap();
+    let task = start_task(repo.path(), "Codex stable resume", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+    let first = bind_codex_app_server_thread(repo.path(), &task.task_id, "thread-resume").unwrap();
+
+    transition_task(repo.path(), &task.task_id, "blocked").unwrap();
+    let resumed_task = resume_task(repo.path(), &task.task_id).unwrap();
+    transition_task(repo.path(), &task.task_id, "planned").unwrap();
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+
+    let persisted = codex_app_server_resume_session(repo.path(), &task.task_id)
+        .unwrap()
+        .expect("the original bound thread must be the only resume candidate");
+    assert_eq!(persisted.thread_id, "thread-resume");
+    assert_eq!(persisted.execution_id, first.execution_id);
+    let rebound =
+        resume_codex_app_server_thread(repo.path(), &task.task_id, "thread-resume").unwrap();
+    assert_eq!(rebound.execution_id, resumed_task.execution_id);
+    assert!(rebound.pending_file_changes.is_empty());
+    assert!(rebound.approved_file_changes.is_empty());
+    assert!(resume_codex_app_server_thread(repo.path(), &task.task_id, "thread-other").is_err());
 }
 
 #[cfg(unix)]

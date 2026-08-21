@@ -5138,6 +5138,32 @@ pub fn codex_app_server_run(repo_root: &Path, task_id: &str) -> Result<RunPrepar
     Ok(prepared_codex_run(&root, task_id)?.1)
 }
 
+/// Return the only thread that a fresh app-server transport may resume for this Rust-prepared
+/// execution.  A task can have at most one persisted Codex thread; a caller can neither choose a
+/// different thread nor reuse pending one-shot approvals from an earlier transport.
+pub fn codex_app_server_resume_session(
+    repo_root: &Path,
+    task_id: &str,
+) -> Result<Option<CodexAppServerSession>> {
+    let root = canonical_root(repo_root)?;
+    let (task, run) = prepared_codex_run(&root, task_id)?;
+    let Some(value) = read_snapshot(&root, &codex_session_path(task_id))? else {
+        return Ok(None);
+    };
+    let session: CodexAppServerSession = serde_json::from_value(value)?;
+    if session.task_id != task.task_id || session.agent != "codex" {
+        return Err(HarnessError::invalid(
+            "persisted Codex app-server session does not belong to this task",
+        ));
+    }
+    if session.worktree_id != run.worktree_id {
+        return Err(HarnessError::invalid(
+            "persisted Codex app-server session does not match the prepared workspace",
+        ));
+    }
+    Ok(Some(session))
+}
+
 fn load_bound_codex_session(
     root: &Path,
     task_id: &str,
@@ -5300,6 +5326,62 @@ pub fn bind_codex_app_server_thread(
                 "schema_version": 1,
                 "agent": "codex",
                 "thread_id": thread_id,
+            }),
+        },
+    )?;
+    Ok(session)
+}
+
+/// Advance an already-bound Codex thread to the current Rust execution after the app-server has
+/// confirmed `thread/resume` returned the exact same thread id.  Approvals are intentionally
+/// process/turn scoped: they are discarded rather than surviving a crash or a new execution.
+pub fn resume_codex_app_server_thread(
+    repo_root: &Path,
+    task_id: &str,
+    thread_id: &str,
+) -> Result<CodexAppServerSession> {
+    let root = canonical_root(repo_root)?;
+    let (task, run) = prepared_codex_run(&root, task_id)?;
+    let path = codex_session_path(&task.task_id);
+    let value = read_snapshot(&root, &path)?.ok_or_else(|| {
+        HarnessError::invalid("Codex app-server thread has not been bound for resume")
+    })?;
+    let mut session: CodexAppServerSession = serde_json::from_value(value)?;
+    if session.task_id != task.task_id
+        || session.agent != "codex"
+        || session.thread_id != thread_id
+        || session.worktree_id != run.worktree_id
+    {
+        return Err(HarnessError::invalid(
+            "Codex app-server resume response does not match the governed thread binding",
+        ));
+    }
+    if session.execution_id == task.execution_id {
+        return Ok(session);
+    }
+    if task.previous_execution_id.as_deref() != Some(session.execution_id.as_str()) {
+        return Err(HarnessError::invalid(
+            "Codex app-server session may only resume the immediately preceding governed execution",
+        ));
+    }
+    let previous_execution_id = session.execution_id.clone();
+    session.execution_id = task.execution_id.clone();
+    session.pending_file_changes.clear();
+    session.approved_file_changes.clear();
+    persist_codex_session(&root, task_id, &session)?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "codex_app_server_thread_resumed".into(),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "agent": "codex",
+                "thread_id": thread_id,
+                "previous_execution_id": previous_execution_id,
             }),
         },
     )?;

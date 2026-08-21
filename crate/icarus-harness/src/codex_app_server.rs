@@ -229,16 +229,31 @@ pub fn run(
             &mut stdin,
             &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
         )?;
-        write_message(
-            &mut stdin,
-            // `on-request` permits ordinary workspace file changes without emitting a request,
-            // which cannot satisfy a pre-action governed adapter. The documented `untrusted`
-            // mode asks the Rust bridge before every action that needs authorization.
-            &json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {"cwd": workspace, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "workspace-write", "developerInstructions": "This is a governed ICARUS task. The Rust harness controls authorization, verification, and sealing."}}),
-        )?;
+        let existing = codex_app_server_resume_session(repo_root, task_id)?;
+        // `on-request` permits ordinary workspace file changes without emitting a request,
+        // which cannot satisfy a pre-action governed adapter. The documented `untrusted`
+        // mode asks the Rust bridge before every action that needs authorization.
+        let request = match existing.as_ref() {
+            Some(session) => {
+                json!({"jsonrpc": "2.0", "id": 2, "method": "thread/resume", "params": {"threadId": session.thread_id, "cwd": workspace, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "workspace-write", "developerInstructions": "This is a governed ICARUS task. The Rust harness controls authorization, verification, and sealing."}})
+            }
+            None => {
+                json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {"cwd": workspace, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "workspace-write", "developerInstructions": "This is a governed ICARUS task. The Rust harness controls authorization, verification, and sealing."}})
+            }
+        };
+        write_message(&mut stdin, &request)?;
+        // A resume notification can arrive before its response. Do not accept it as evidence
+        // until the Rust binding verifies that Codex returned the persisted thread id.
         let started = wait_for_response(&mut stdout, &mut stdin, repo_root, task_id, 2, false)?;
         let thread_id = thread_id_from_start(&started)?.to_owned();
-        bind_codex_app_server_thread(repo_root, task_id, &thread_id)?;
+        match existing {
+            Some(_) => {
+                resume_codex_app_server_thread(repo_root, task_id, &thread_id)?;
+            }
+            None => {
+                bind_codex_app_server_thread(repo_root, task_id, &thread_id)?;
+            }
+        }
         write_message(
             &mut stdin,
             &json!({"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": {"threadId": thread_id, "approvalPolicy": "untrusted", "approvalsReviewer": "user", "cwd": workspace, "input": [{"type": "text", "text": prompt}]}}),
