@@ -208,6 +208,15 @@ pub fn harness_seal_task(repo_root: String, task_id: String) -> Result<String> {
 }
 
 #[napi]
+pub fn harness_export_task(repo_root: String, task_id: String, redacted: bool) -> Result<String> {
+    let receipt = harness::export_task(std::path::Path::new(&repo_root), &task_id, redacted)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
 pub fn harness_propose_skill(repo_root: String, skill_json: String) -> Result<String> {
     let skill = serde_json::from_str(&skill_json)
         .map_err(|error| Error::from_reason(format!("invalid harness skill JSON: {error}")))?;

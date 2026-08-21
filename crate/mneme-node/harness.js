@@ -77,6 +77,10 @@ function sealTask(repoRoot, taskId) {
   return invoke('harnessSealTask', [repoRoot, taskId]);
 }
 
+function exportTask(repoRoot, taskId, redacted) {
+  return invoke('harnessExportTask', [repoRoot, taskId, !!redacted]);
+}
+
 function proposeSkill(repoRoot, skill) { return invoke('harnessProposeSkill', [repoRoot, JSON.stringify(skill)]); }
 function evaluateSkill(repoRoot, skillId, replayTaskId) { return invoke('harnessEvaluateSkill', [repoRoot, skillId, replayTaskId]); }
 function recordActiveSkillOutcome(repoRoot, skillId, taskId) { return invoke('harnessRecordActiveSkillOutcome', [repoRoot, skillId, taskId]); }
@@ -161,6 +165,7 @@ module.exports = {
   verifyTaskCriterion,
   attestTaskCriterion,
   sealTask,
+  exportTask,
   proposeSkill,
   evaluateSkill,
   recordActiveSkillOutcome,

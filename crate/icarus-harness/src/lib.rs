@@ -598,6 +598,28 @@ pub struct SealResult {
     pub final_receipt_path: Option<String>,
 }
 
+/// A shareable view of a sealed task's deterministic receipt. It is constructed on demand from
+/// the final receipt rather than copying private runtime logs into a new long-lived artifact.
+/// With `redacted`, free text, paths, attestation identities, and tool output are omitted while
+/// content digests and pass/fail evidence remain independently reviewable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskExport {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub status: String,
+    pub redacted: bool,
+    pub git_sha: Option<String>,
+    pub dirty_state_fingerprint: String,
+    pub diff_digest: String,
+    pub criteria: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_receipt_path: Option<String>,
+}
+
 /// A harness procedure, never a chat persona. Candidates have no execution authority until the
 /// Rust promotion gate places them in `.icarus/skills/active`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3139,6 +3161,99 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
     atomic_write(&final_path, format!("{}\n", serde_json::to_string_pretty(&json!({"seal": result, "git_sha": current_sha, "dirty_state_fingerprint": current_dirty, "diff_digest": sha256(diff.as_bytes()), "receipts": receipts}))?).as_bytes())?;
     transition_task(&root, task_id, "sealed")?;
     Ok(result)
+}
+
+/// Export only a sealed task's final, machine-produced receipt. The raw runtime directory can
+/// contain command output, paths, and agent-supplied checkpoint prose, so it is never exported
+/// wholesale. `redacted` retains cryptographic evidence identifiers but removes content that can
+/// disclose repository structure or people.
+pub fn export_task(repo_root: &Path, task_id: &str, redacted: bool) -> Result<TaskExport> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "sealed" {
+        return Err(HarnessError::invalid(
+            "only a sealed task has a final receipt eligible for export",
+        ));
+    }
+    let final_path = runtime_root(&root)
+        .join("tasks")
+        .join(task_id)
+        .join("final-result.json");
+    let final_receipt: Value = serde_json::from_reader(
+        File::open(&final_path)
+            .map_err(|_| HarnessError::invalid("sealed task is missing its final receipt"))?,
+    )?;
+    if final_receipt
+        .pointer("/seal/sealed")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(HarnessError::invalid(
+            "final receipt does not prove a sealed task",
+        ));
+    }
+    let receipts = final_receipt
+        .get("receipts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HarnessError::invalid("final receipt is missing verification receipts"))?;
+    let criteria = receipts
+        .iter()
+        .map(|receipt| {
+            let mut exported = json!({
+                "criterion_type": receipt.get("criterion_type"),
+                "status": receipt.get("status"),
+                "output_digest": receipt.get("output_digest"),
+                "expires_at": receipt.get("expires_at"),
+            });
+            if !redacted {
+                exported["criterion_id"] =
+                    receipt.get("criterion_id").cloned().unwrap_or(Value::Null);
+                exported["artifacts"] = receipt
+                    .get("artifacts")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
+                exported["output_excerpt"] = receipt
+                    .get("output_excerpt")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                exported["attestation"] =
+                    receipt.get("attestation").cloned().unwrap_or(Value::Null);
+            }
+            exported
+        })
+        .collect();
+    Ok(TaskExport {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        status: task.status,
+        redacted,
+        git_sha: final_receipt
+            .get("git_sha")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        dirty_state_fingerprint: final_receipt
+            .get("dirty_state_fingerprint")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                HarnessError::invalid("final receipt is missing its dirty-state fingerprint")
+            })?
+            .to_owned(),
+        diff_digest: final_receipt
+            .get("diff_digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HarnessError::invalid("final receipt is missing its diff digest"))?
+            .to_owned(),
+        criteria,
+        objective: (!redacted).then_some(task.objective),
+        final_receipt_path: (!redacted).then(|| {
+            final_path
+                .strip_prefix(&root)
+                .unwrap_or(&final_path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        }),
+    })
 }
 
 fn skill_id_valid(id: &str) -> bool {

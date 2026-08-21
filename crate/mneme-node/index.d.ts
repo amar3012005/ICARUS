@@ -25,6 +25,7 @@ export declare function harnessValidateAgentArguments(agent: string, argumentsJs
 export declare function harnessVerifyTaskCriterion(repoRoot: string, taskId: string, criterionId: string): string
 export declare function harnessAttestTaskCriterion(repoRoot: string, taskId: string, criterionId: string, approvalId: string, approver: string, expiresAt?: string | undefined | null): string
 export declare function harnessSealTask(repoRoot: string, taskId: string): string
+export declare function harnessExportTask(repoRoot: string, taskId: string, redacted: boolean): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
 export declare function harnessEvaluateSkill(repoRoot: string, skillId: string, replayTaskId: string): string
 export declare function harnessRecordActiveSkillOutcome(repoRoot: string, skillId: string, taskId: string): string

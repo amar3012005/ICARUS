@@ -1,14 +1,14 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action,
     authorize_adapter_write, bind_codex_app_server_thread, build_context, checkpoint_task,
-    decide_codex_app_server_approval, doctor, evaluate_skill, graph_source_fingerprint,
-    handoff_managed_task, init, load_repository_policy, migrate, prepare_run, read_snapshot,
-    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
-    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
-    render_context_markdown, resume_task, retire_skill, review_active_skills, seal_task,
-    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, ContextItem, EventInput, HarnessSkill,
-    InitOptions, TaskContract,
+    decide_codex_app_server_approval, doctor, evaluate_skill, export_task,
+    graph_source_fingerprint, handoff_managed_task, init, load_repository_policy, migrate,
+    prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
+    record_adapter_lifecycle, record_adapter_post_action, record_codex_app_server_event,
+    record_graph_receipt, render_context_markdown, resume_task, retire_skill, review_active_skills,
+    seal_task, start_task, task_status, transition_task, validate_agent_arguments,
+    verify_event_chain, verify_task_criterion, write_snapshot, Action, ContextItem, EventInput,
+    HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -1909,6 +1909,57 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
         .path()
         .join(sealed.final_receipt_path.unwrap())
         .exists());
+}
+
+#[test]
+fn sealed_task_export_is_receipt_bound_and_can_remove_sensitive_fields() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    fs::write(repo.path().join("README.md"), "exportable artifact\n").unwrap();
+    let mut export_contract = contract();
+    export_contract.acceptance_criteria = serde_json::json!([
+        {"id":"artifact","type":"artifact","path":"README.md","required":true}
+    ]);
+    let task = start_task(
+        repo.path(),
+        "export a sensitive task objective",
+        export_contract,
+    )
+    .unwrap();
+    assert!(export_task(repo.path(), &task.task_id, true).is_err());
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap();
+    assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
+
+    let full = export_task(repo.path(), &task.task_id, false).unwrap();
+    assert_eq!(full.status, "sealed");
+    assert_eq!(
+        full.objective.as_deref(),
+        Some("export a sensitive task objective")
+    );
+    assert!(full.final_receipt_path.is_some());
+    assert_eq!(full.criteria[0]["criterion_id"], "artifact");
+    assert_eq!(full.criteria[0]["artifacts"][0], "README.md");
+
+    let redacted = export_task(repo.path(), &task.task_id, true).unwrap();
+    assert!(redacted.objective.is_none());
+    assert!(redacted.final_receipt_path.is_none());
+    assert!(redacted.criteria[0].get("criterion_id").is_none());
+    assert!(redacted.criteria[0].get("artifacts").is_none());
+    assert!(redacted.criteria[0].get("output_excerpt").is_none());
+    assert!(redacted.criteria[0].get("attestation").is_none());
+    assert!(!redacted.criteria[0]["output_digest"]
+        .as_str()
+        .unwrap()
+        .is_empty());
 }
 
 #[cfg(unix)]

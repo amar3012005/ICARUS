@@ -33,7 +33,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -358,7 +358,12 @@ function cmdTask(flags) {
     console.log(ok(`${c.path(taskId)} sealed · ${result.final_receipt_path}`));
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|handoff|amend|checkpoint|block|authorize|verify|seal>');
+  if (subcommand === 'export') {
+    const receipt = harness.exportTask(repo, taskId, !!flags.redact);
+    console.log(JSON.stringify(receipt, null, 2));
+    return;
+  }
+  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|handoff|amend|checkpoint|block|authorize|verify|seal|export>');
 }
 
 function cmdContext(flags) {
@@ -1382,6 +1387,9 @@ async function main() {
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]
   icarus task attest <TASK-ID> --criterion <id> --approval <id> --approver <name> [--expires-at <rfc3339>]
+  icarus task export <TASK-ID> [--redact] [--repo <dir>]
+                                        print a sealed task's deterministic final receipt; --redact
+                                        removes objective, paths, output excerpts, and attestations.
                                         record a manual/external approval receipt. External
                                         approvals expire and must remain valid when sealing.
   icarus context build --task <TASK-ID> [--budget <tokens>] [--since-checkpoint <n>] [--format json|markdown] [--repo <dir>]
