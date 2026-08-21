@@ -141,7 +141,7 @@ fn resolve_executable(command: &str) -> Result<String> {
                 HarnessError::invalid(format!(
                     "Codex app-server program `{command}` was not returned by where"
                 ))
-            });
+            })
     }
     #[cfg(not(windows))]
     {
