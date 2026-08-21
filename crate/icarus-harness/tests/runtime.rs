@@ -330,7 +330,8 @@ fn crash_child_during_task_snapshot_transition() {
         return;
     };
     let task_id = std::env::var("ICARUS_TEST_CRASH_TASK").unwrap();
-    transition_task(Path::new(&root), &task_id, "orienting").unwrap();
+    let target = std::env::var("ICARUS_TEST_CRASH_TARGET").unwrap();
+    transition_task(Path::new(&root), &task_id, &target).unwrap();
 }
 
 #[cfg(feature = "test-failpoints")]
@@ -430,6 +431,7 @@ fn killed_writer_during_task_snapshot_transition_leaves_a_complete_resumable_tas
         ])
         .env("ICARUS_TEST_CRASH_REPO", repo.path())
         .env("ICARUS_TEST_CRASH_TASK", &task.task_id)
+        .env("ICARUS_TEST_CRASH_TARGET", "orienting")
         .env("ICARUS_TEST_CRASH_POINT", "atomic-after-rename:task.json")
         .status()
         .unwrap();
@@ -450,6 +452,118 @@ fn killed_writer_during_task_snapshot_transition_leaves_a_complete_resumable_tas
     );
     let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
     assert!(events.contains("task_transition_recovered"));
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn killed_writer_recovers_every_nonterminal_lifecycle_transition() {
+    // Exercise every recoverable source state with a real child process that exits after the
+    // atomic task replacement, before its corresponding lifecycle event can be appended. The
+    // next process must accept the complete snapshot, append the one explicit recovery event,
+    // and then continue through a legal subsequent transition.
+    let repo = repo();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("created", &[], "orienting", "contracted"),
+        ("orienting", &["orienting"], "contracted", "planned"),
+        (
+            "contracted",
+            &["orienting", "contracted"],
+            "planned",
+            "executing",
+        ),
+        (
+            "planned",
+            &["orienting", "contracted", "planned"],
+            "executing",
+            "verifying",
+        ),
+        (
+            "executing",
+            &["orienting", "contracted", "planned", "executing"],
+            "verifying",
+            "executing",
+        ),
+        (
+            "verifying",
+            &[
+                "orienting",
+                "contracted",
+                "planned",
+                "executing",
+                "verifying",
+            ],
+            "executing",
+            "verifying",
+        ),
+        (
+            "waiting_for_approval",
+            &["orienting", "contracted", "planned", "waiting_for_approval"],
+            "executing",
+            "verifying",
+        ),
+        (
+            "blocked",
+            &["orienting", "contracted", "planned", "blocked"],
+            "planned",
+            "executing",
+        ),
+    ];
+
+    for (source, setup, target, next) in cases {
+        let task = start_task(
+            repo.path(),
+            format!("crash recovery from {source}"),
+            contract(),
+        )
+        .unwrap();
+        for transition in *setup {
+            transition_task(repo.path(), &task.task_id, transition).unwrap();
+        }
+        assert_eq!(
+            task_status(repo.path(), &task.task_id).unwrap().status,
+            *source
+        );
+
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "crash_child_during_task_snapshot_transition",
+                "--nocapture",
+            ])
+            .env("ICARUS_TEST_CRASH_REPO", repo.path())
+            .env("ICARUS_TEST_CRASH_TASK", &task.task_id)
+            .env("ICARUS_TEST_CRASH_TARGET", target)
+            .env("ICARUS_TEST_CRASH_POINT", "atomic-after-rename:task.json")
+            .status()
+            .unwrap();
+        assert!(
+            !child.success(),
+            "{source}: crash child unexpectedly succeeded"
+        );
+        assert_eq!(
+            task_status(repo.path(), &task.task_id).unwrap().status,
+            *target
+        );
+        assert_eq!(
+            transition_task(repo.path(), &task.task_id, next)
+                .unwrap()
+                .status,
+            *next,
+            "{source}: fresh process could not continue after recovery"
+        );
+    }
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert_eq!(
+        events.matches("task_transition_recovered").count(),
+        cases.len(),
+        "every interrupted transition needs an explicit audit repair"
+    );
     assert!(
         verify_event_chain(repo.path(), &initialized.manifest.repo_id)
             .unwrap()

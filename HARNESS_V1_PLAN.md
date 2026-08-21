@@ -438,7 +438,9 @@ Target: v0.9.x.
     checked-in Node TUI under an actual pseudo-terminal and proves alternate-screen entry, raw
     interactive input, `/help`, and clean `/quit` on macOS and Linux CI.
   - Fake-agent adapter conformance tests.
-  - Crash/restart tests for every task phase.
+  - Crash/restart tests for every task phase. **Implemented:** a child process dies after the
+    task snapshot rename for every recoverable lifecycle state; a fresh process must repair the
+    missing audit transition and continue through a legal next state.
   - Permission and path-escape tests.
   - Symlink, worktree, submodule, and nested-repository tests.
   - Secret-redaction tests.
