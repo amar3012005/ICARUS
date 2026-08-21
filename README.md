@@ -60,6 +60,9 @@ verify both the checksum and the build provenance (available for v0.3.60 and lat
 ```bash
 shasum -a 256 -c icarus-darwin-arm64.sha256
 gh attestation verify ./icarus-darwin-arm64 -R amar3012005/ICARUS
+# Verify the signed SPDX SBOM predicate for the same binary.
+gh attestation verify ./icarus-darwin-arm64 -R amar3012005/ICARUS \
+  --predicate-type https://spdx.dev/Document/v2.3
 ```
 
 ```bash

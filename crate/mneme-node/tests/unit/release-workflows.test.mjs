@@ -48,3 +48,12 @@ test('REGRESSION: CLI releases publish signed provenance for every platform bina
   assert.match(release, /uses: actions\/attest@v4/);
   assert.match(release, /subject-path: crate\/mneme-node\/\$\{\{ matrix\.asset \}\}/);
 });
+
+test('REGRESSION: every CLI release binary carries a published SPDX SBOM and SBOM attestation', () => {
+  const release = workflow('release-cli.yml');
+  assert.match(release, /uses: anchore\/sbom-action@e22c389904149dbc22b58101806040fa8d37a610/);
+  assert.match(release, /format: spdx-json/);
+  assert.match(release, /output-file: crate\/mneme-node\/\$\{\{ matrix\.asset \}\}\.spdx\.json/);
+  assert.match(release, /sbom-path: crate\/mneme-node\/\$\{\{ matrix\.asset \}\}\.spdx\.json/);
+  assert.match(release, /icarus-linux-x64\.spdx\.json/);
+});

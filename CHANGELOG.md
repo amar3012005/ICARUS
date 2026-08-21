@@ -13,7 +13,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   a GitHub/Sigstore build-provenance attestation bound to its exact digest, public source commit,
   and release workflow. Consumers can independently inspect it with
   `gh attestation verify <binary> -R amar3012005/ICARUS`; this is intentionally additive to the
-  published SHA-256 sidecar, not a claim that SBOM or offline signature verification is complete.
+  published SHA-256 sidecar, not a claim that offline signature verification is complete.
+- **Signed SPDX SBOMs:** every published CLI platform binary now has a platform-named SPDX JSON
+  release asset and a GitHub/Sigstore SBOM attestation bound to that binary. Consumers can verify
+  the SBOM predicate with `gh attestation verify <binary> -R amar3012005/ICARUS --predicate-type
+  https://spdx.dev/Document/v2.3`.
 - **Update checksum enforcement:** `/update` now fetches the release `.sha256` sidecar and refuses
   a missing, ambiguous, wrong-platform, or mismatched digest before executing or atomically
   replacing the current binary.

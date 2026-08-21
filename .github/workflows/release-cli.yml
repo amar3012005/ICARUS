@@ -146,6 +146,18 @@ jobs:
         working-directory: crate/mneme-node
         run: shasum -a 256 "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
 
+      # The binary is Bun-compiled from this exact checkout and includes the native Rust addon.
+      # Generate an SPDX SBOM from that complete source tree, retain it as a release asset, then
+      # bind the resulting dependency inventory to this particular platform binary below.
+      - name: Generate SPDX SBOM for the release binary
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          format: spdx-json
+          output-file: crate/mneme-node/${{ matrix.asset }}.spdx.json
+          artifact-name: ${{ matrix.asset }}-sbom
+          upload-artifact: false
+          upload-release-assets: false
+
       # A checksum proves byte integrity only after a consumer obtains it from a trusted channel.
       # This signed SLSA provenance statement binds this exact binary digest to the public source,
       # workflow and commit that produced it. Consumers can check it with:
@@ -155,12 +167,22 @@ jobs:
         with:
           subject-path: crate/mneme-node/${{ matrix.asset }}
 
+      # The SBOM is a different signed predicate, not a substitute for provenance. It lets a
+      # consumer verify the exact component inventory bound to this executable with:
+      # `gh attestation verify <binary> -R owner/repo --predicate-type https://spdx.dev/Document/v2.3`.
+      - name: Attest binary SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: crate/mneme-node/${{ matrix.asset }}
+          sbom-path: crate/mneme-node/${{ matrix.asset }}.spdx.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: |
             crate/mneme-node/${{ matrix.asset }}
             crate/mneme-node/${{ matrix.asset }}.sha256
+            crate/mneme-node/${{ matrix.asset }}.spdx.json
           if-no-files-found: error
 
   publish:
@@ -216,7 +238,10 @@ jobs:
           TAG="${{ needs.verify-version.outputs.tag }}"
           NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           echo "$NAMES"
-          for want in icarus-darwin-arm64 icarus-darwin-x64 icarus-linux-x64; do
+          for want in \
+            icarus-darwin-arm64 icarus-darwin-arm64.spdx.json \
+            icarus-darwin-x64 icarus-darwin-x64.spdx.json \
+            icarus-linux-x64 icarus-linux-x64.spdx.json; do
             echo "$NAMES" | grep -qx "$want" || { echo "::error::missing asset $want"; exit 1; }
           done
 
