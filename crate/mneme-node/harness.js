@@ -114,6 +114,10 @@ function recordAdapterPostAction(repoRoot, taskId, agent, toolName, path) {
   return invoke('harnessRecordAdapterPostAction', [repoRoot, taskId, agent, toolName, path]);
 }
 
+function handoffManagedTask(repoRoot, taskId) {
+  return invoke('harnessHandoffManagedTask', [repoRoot, taskId]);
+}
+
 // A bounded receipt created by the local launcher, not a model-reported event. Rust restricts
 // the event vocabulary and binds it to the prepared execution before appending it to the chain.
 function recordAdapterLifecycle(repoRoot, taskId, eventType, exitCode) {
@@ -152,6 +156,7 @@ module.exports = {
   authorizeAction,
   authorizeAdapterWrite,
   recordAdapterPostAction,
+  handoffManagedTask,
   recordAdapterLifecycle,
   __setNativeHarnessBridgeForTest,
 };

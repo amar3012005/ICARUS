@@ -438,6 +438,17 @@ pub fn harness_record_adapter_post_action(
     )
 }
 
+/// Hand a prepared managed execution to ICARUS verification. This does not accept an agent
+/// result or seal a task; it only records the durable execution-to-verification boundary.
+#[napi]
+pub fn harness_handoff_managed_task(repo_root: String, task_id: String) -> Result<String> {
+    let receipt = harness::handoff_managed_task(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// Record a typed adapter process boundary observed by the local managed launcher. This bridge
 /// exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
 /// chain, so a presentation client cannot turn model prose into trusted execution evidence.

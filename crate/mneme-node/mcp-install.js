@@ -338,7 +338,7 @@ This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icaru
 
 For "where is X" / "who calls X" / "what imports X" in this codebase: call \`icarus_graph_query\` FIRST — a cheap structural lookup (callers_of/callees_of/imports_of/find) — instead of Grep/Read over whole files. Run \`icarus_graph_build\` once for this repo if \`icarus_graph_status\` shows nothing built yet, and again after significant restructuring.
 
-For a governed coding task in a repository with \`.icarus/manifest.yaml\`: call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Use \`icarus_task_checkpoint\` before ending a session; do not claim verification without \`icarus_task_verify\` receipts.`;
+For a governed coding task in a repository with \`.icarus/manifest.yaml\`: call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before ending a managed Claude session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.`;
 }
 
 const PROJECT_MARK_START = '<!-- icarus:project-instructions -->';

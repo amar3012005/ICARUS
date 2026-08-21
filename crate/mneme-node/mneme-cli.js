@@ -153,13 +153,22 @@ async function cmdHarness(flags) {
     const harness = require('./harness.js');
     if (event === 'stop') {
       if (!['Stop', 'stop'].includes(input.hook_event_name)) {
-        console.error('ICARUS hook error: expected a Claude Stop event');
-        process.exitCode = 1;
+        // Claude Code treats ordinary non-zero hook exits as non-blocking for many events.
+        // Return the documented Stop decision instead, so malformed hook input fails closed.
+        process.stdout.write(`${JSON.stringify({ decision: 'block', reason: 'ICARUS rejected an invalid Claude Stop hook payload.' })}\n`);
         return;
       }
-      try { harness.recordAdapterLifecycle(repo, taskId, 'adapter_stop_observed'); } catch (error) {
-        console.error(`ICARUS hook error: ${error.message}`);
-        process.exitCode = 1;
+      try {
+        harness.recordAdapterLifecycle(repo, taskId, 'adapter_stop_observed');
+        const task = harness.taskStatus(repo, taskId);
+        if (task.status !== 'verifying') {
+          process.stdout.write(`${JSON.stringify({
+            decision: 'block',
+            reason: `ICARUS task ${taskId} is still ${task.status}. Call icarus_task_handoff after checkpointing; verification and seal remain separate.`,
+          })}\n`);
+        }
+      } catch (error) {
+        process.stdout.write(`${JSON.stringify({ decision: 'block', reason: `ICARUS could not record this Stop boundary: ${error.message}` })}\n`);
       }
       return;
     }
@@ -281,6 +290,11 @@ function cmdTask(flags) {
     else console.log(c.dim(`${c.path(taskId)} has no isolated worktree delta to reconcile`));
     return;
   }
+  if (subcommand === 'handoff') {
+    const receipt = harness.handoffManagedTask(repo, taskId);
+    console.log(ok(`${c.path(receipt.task_id)} handed off to verification; ICARUS receipts are required before sealing.`));
+    return;
+  }
   if (subcommand === 'amend') {
     if (!flags.contract || !flags.reason) throw new Error('usage: icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>] [--repo <dir>]');
     let contract;
@@ -339,7 +353,7 @@ function cmdTask(flags) {
     console.log(ok(`${c.path(taskId)} sealed · ${result.final_receipt_path}`));
     return;
   }
-  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|amend|checkpoint|block|authorize|verify|seal>');
+  throw new Error('usage: icarus task <start|status|resume|transition|reconcile|handoff|amend|checkpoint|block|authorize|verify|seal>');
 }
 
 function cmdContext(flags) {
@@ -462,7 +476,9 @@ async function cmdRun(flags) {
       process.exitCode = 3;
       return;
     }
-    harness.transitionTask(repo, task.task_id, 'verifying');
+    const current = harness.taskStatus(repo, task.task_id);
+    if (current.status === 'executing') harness.transitionTask(repo, task.task_id, 'verifying');
+    else if (current.status !== 'verifying') throw new Error(`managed ${agent} exit left task in unexpected ${current.status} state`);
     console.log(ok(`${c.path(task.task_id)} → verifying; run icarus task verify before sealing.`));
   } else {
     harness.transitionTask(repo, task.task_id, 'blocked');
@@ -1303,6 +1319,9 @@ async function main() {
   icarus task <status|resume> <TASK-ID> [--repo <dir>]
   icarus task transition <TASK-ID> <state> [--repo <dir>]
   icarus task reconcile <TASK-ID> [--repo <dir>]
+  icarus task handoff <TASK-ID> [--repo <dir>]
+                                        move a prepared managed execution into verification;
+                                        this is not a verification receipt or a seal.
   icarus task amend <TASK-ID> --contract <contract.json> --reason <text> [--approval <id>]
   icarus task checkpoint <TASK-ID> --phase <name> [--input <json-file>]
   icarus task block <TASK-ID> --reason <text> [--repo <dir>]

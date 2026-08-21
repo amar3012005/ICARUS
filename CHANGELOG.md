@@ -9,6 +9,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Managed Claude completion gate:** an executing managed task must explicitly hand off to
+  Rust-owned verification before Claude's documented `Stop` hook can end the session. The
+  handoff is audited and does not claim successful verification or permit sealing; current
+  ICARUS receipts remain required.
 - **Claude managed-run evidence hooks:** task-scoped Claude settings now capture completed
   `Edit`/`Write` calls (`PostToolUse`) and stop requests (`Stop`) in ICARUS's Rust-owned,
   tamper-evident audit chain. Pre-action authorization remains the only blocking hook; post and

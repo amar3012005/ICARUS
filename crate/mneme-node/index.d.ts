@@ -49,6 +49,11 @@ export declare function harnessAuthorizeAdapterWrite(repoRoot: string, taskId: s
  */
 export declare function harnessRecordAdapterPostAction(repoRoot: string, taskId: string, agent: string, toolName: string, path: string): string
 /**
+ * Hand a prepared managed execution to ICARUS verification. This does not accept an agent
+ * result or seal a task; it only records the durable execution-to-verification boundary.
+ */
+export declare function harnessHandoffManagedTask(repoRoot: string, taskId: string): string
+/**
  * Record a typed adapter process boundary observed by the local managed launcher. This bridge
  * exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
  * chain, so a presentation client cannot turn model prose into trusted execution evidence.

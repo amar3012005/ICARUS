@@ -704,6 +704,21 @@ pub struct AdapterPostActionReceipt {
     pub event_sequence: u64,
 }
 
+/// A Rust-owned boundary between an agent's implementation session and deterministic
+/// verification. It records no claim that tests passed; it merely prevents a managed adapter
+/// from treating an ordinary conversational stop as task completion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedTaskHandoffReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub worktree_id: String,
+    pub status: String,
+    pub event_sequence: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
@@ -4562,6 +4577,55 @@ pub fn record_adapter_post_action(
     })
 }
 
+/// Move one prepared managed execution into verification. This is an explicit handoff, not a
+/// completion claim: it is intentionally unavailable before execution and it never seals a
+/// task. Adapters that can intercept a conversational stop may use it as the only route that
+/// permits the session to end cleanly.
+pub fn handoff_managed_task(repo_root: &Path, task_id: &str) -> Result<ManagedTaskHandoffReceipt> {
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "managed task handoff requires an executing task",
+        ));
+    }
+    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id {
+        return Err(HarnessError::invalid(
+            "managed task handoff does not match the prepared execution",
+        ));
+    }
+    let transitioned = transition_task(&root, task_id, "verifying")?;
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: transitioned.execution_id.clone(),
+            task_id: transitioned.task_id.clone(),
+            event_type: "managed_task_handed_off".into(),
+            worktree_id: run.worktree_id.clone(),
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "observation": "agent_requested_verification",
+                "agent": run.agent.clone(),
+                "from": "executing",
+                "to": "verifying",
+            }),
+        },
+    )?;
+    Ok(ManagedTaskHandoffReceipt {
+        schema_version: 1,
+        task_id: transitioned.task_id,
+        execution_id: transitioned.execution_id,
+        agent: run.agent,
+        worktree_id: run.worktree_id,
+        status: transitioned.status,
+        event_sequence: event.sequence,
+    })
+}
+
 /// Record an adapter process lifecycle fact observed by the managed launcher.
 ///
 /// This is intentionally narrow. Session start/end prove launcher-observed local process
@@ -4592,9 +4656,16 @@ pub fn record_adapter_lifecycle(
     }
     let root = canonical_root(repo_root)?;
     let task = task_status(&root, task_id)?;
-    if task.status != "executing" {
+    let allowed_status = match event_type {
+        "adapter_session_started" => task.status == "executing",
+        "adapter_session_ended" | "adapter_stop_observed" => {
+            matches!(task.status.as_str(), "executing" | "verifying")
+        }
+        _ => false,
+    };
+    if !allowed_status {
         return Err(HarnessError::invalid(
-            "adapter lifecycle receipts require an executing task",
+            "adapter lifecycle receipt is not valid for the active task state",
         ));
     }
     let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?

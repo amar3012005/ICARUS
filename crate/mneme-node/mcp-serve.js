@@ -609,6 +609,18 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_handoff',
+    {
+      title: 'Hand a managed implementation session to ICARUS verification',
+      description: 'Call after checkpointing when implementation is ready for deterministic verification. It moves only the prepared executing task to verifying and records an audit boundary; it does not assert tests passed, accept model prose, or seal the task.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try { return textResult(harnessFor().handoffManagedTask(repo, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_task_resume',
     {
       title: 'Resume a governed task in a new agent session',

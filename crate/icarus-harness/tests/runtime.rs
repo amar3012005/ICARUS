@@ -1,10 +1,10 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action,
     authorize_adapter_write, build_context, checkpoint_task, doctor, evaluate_skill,
-    graph_source_fingerprint, init, load_repository_policy, migrate, prepare_run, read_snapshot,
-    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
-    record_adapter_post_action, record_graph_receipt, resume_task, retire_skill,
-    review_active_skills, seal_task, start_task, task_status, transition_task,
+    graph_source_fingerprint, handoff_managed_task, init, load_repository_policy, migrate,
+    prepare_run, read_snapshot, reconcile_run, record_active_skill_outcome,
+    record_adapter_lifecycle, record_adapter_post_action, record_graph_receipt, resume_task,
+    retire_skill, review_active_skills, seal_task, start_task, task_status, transition_task,
     validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
     EventInput, HarnessSkill, InitOptions, TaskContract,
 };
@@ -427,14 +427,22 @@ fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
             .unwrap();
     assert_eq!(started.agent, "codex");
     assert_eq!(started.worktree_id, "current");
-    let ended =
-        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_ended", Some(0))
-            .unwrap();
-    assert!(ended.event_sequence > started.event_sequence);
+    let handoff = handoff_managed_task(repo.path(), &task.task_id).unwrap();
+    assert_eq!(handoff.status, "verifying");
+    assert_eq!(
+        task_status(repo.path(), &task.task_id).unwrap().status,
+        "verifying"
+    );
+    assert!(handoff.event_sequence > started.event_sequence);
+    assert!(handoff_managed_task(repo.path(), &task.task_id).is_err());
     let stopped =
         record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_stop_observed", None)
             .unwrap();
-    assert!(stopped.event_sequence > ended.event_sequence);
+    assert!(stopped.event_sequence > handoff.event_sequence);
+    let ended =
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_ended", Some(0))
+            .unwrap();
+    assert!(ended.event_sequence > stopped.event_sequence);
     assert!(
         record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_stop_observed", Some(0),)
             .is_err()
@@ -448,6 +456,9 @@ fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
             .unwrap()
             .valid
     );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("managed_task_handed_off"));
+    assert!(events.contains("agent_requested_verification"));
 }
 
 #[test]
