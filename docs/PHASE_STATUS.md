@@ -7,7 +7,7 @@ Rule for this file: an item is **DONE** only when its verification is real — a
 against the unfixed code, an observed command output, a cold-verified artifact. "Implemented"
 is not "done". Anything unverified says so.
 
-Last updated at CLI version **0.3.57** (in progress).
+Last updated at CLI version **0.3.58** (release in progress).
 
 ---
 
@@ -20,7 +20,7 @@ Target: v0.3.47–v0.3.x
 | Public repo canonical; monorepo no longer overwrites public development | **DONE** | `scripts/sync-icarus.sh` rewritten in the monorepo (commit `90def98`). Six properties tested live: dirty-clone abort preserves work; blanket `add -A` removed (untracked local files survive a full sync unstaged); digest-based divergence detection aborts naming the file; a public-only edit is KEPT and skipped rather than overwritten; `--force-monorepo` overrides; `pull-icarus.sh` reports 15 added / 1 modified in dry run and writes nothing. |
 | Private-to-public scanner preserved as a pre-publish security check | **DONE** | Retained and made *correct*: it scanned the whole tree including `node_modules/` (false positives from `jose`'s literal `-----BEGIN PRIVATE KEY-----` and `sql.js`'s base64 blob), which forced a manual "move node_modules aside" step every publish. Now scans exactly the tracked publish set — 170 files, clean, no stash. |
 | Root `VERSION` source used by binary, tags, update checks | **DONE** | `VERSION` + `scripts/version.mjs` (print / `--check` / `--write` / `--set`). 12 tests in `tests/unit/version.test.mjs` run against sandboxed copies. Engine package `singulance-amr` deliberately keeps its own version, per plan. |
-| Node-layer CI (CLI, TUI, MCP, installers, recall, ingestion, skills, binary smoke) | **PARTIAL** | Public CI runs on macOS and Linux; run `32434961725` passed for v0.3.56. The local combined suite currently has 100 Node tests. **Still missing:** shard-backed ingest/recall/save round-trips in CI, MCP stdio protocol conformance, and independent compiled-binary smoke outside the release workflow. |
+| Node-layer CI (CLI, TUI, MCP, installers, recall, ingestion, skills, binary smoke) | **PARTIAL** | Public CI runs on macOS and Linux; run `32434961725` passed for v0.3.56. The local combined suite includes a real MCP stdio subprocess conformance smoke (initialize, initialized notification, tools/list, JSON-only stdout). **Still missing:** shard-backed ingest/recall/save round-trips in CI and independent compiled-binary smoke outside the release workflow. |
 | Automated release: asset naming, checksums, draft detection, cold download, version execution | **DONE for v0.3.56** | Public release run `32434963782` passed version validation, Linux x64 + macOS ARM64/x64 builds, exact binary version execution, checksums, non-draft publishing, expected asset checks, cold download/hash/execution, and `releases/latest` routing. |
 | Contributor docs, governance, security reporting, code of conduct, RFC template | **DONE** | `GOVERNANCE.md` (new), `.github/ISSUE_TEMPLATE/rfc.md` (new), plus existing `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, PR template. |
 | Record v0.3.46 as the compatibility baseline | **DONE** | `COMPATIBILITY.md`, written from a live install and the real on-disk shard set — not from source. Includes the sparse-file accounting rule, the `flock`-not-`fcntl` decision, org-name charset, the local-recall-always guarantee, exit codes, and two honestly-recorded baseline defects. |
@@ -57,5 +57,5 @@ Target: v0.3.47–v0.3.x
 | 5 — deterministic verification and sealing | **IMPLEMENTED, HARDENING IN PROGRESS** | Machine receipts, required criteria, expiry-bound approvals, stale-evidence invalidation, scope checks and final receipts are tested. NUL-delimited Git path enforcement is being added in v0.3.57. |
 | 6 — governed skills | **IMPLEMENTED, PARTIAL GATE** | Proposed/verified/active/retired lifecycle, secret scan, source-task linkage, replay evidence, and demotion are implemented. Three independent source runs, replay comparison baselines, and the full auto-promotion proof remain open. |
 | 7 — optional HIVE-MIND authority | **NOT STARTED** | Local-only behavior is the current authority boundary; no remote sync may be represented as production-ready. |
-| 8 — production hardening / RC | **NOT STARTED** | Requires the public corpus, conformance, crash, path, installer rollback, SBOM/provenance/signature, and threat-model gates. |
+| 8 — production hardening / RC | **PARTIAL HARDENING** | NUL-path, rename, symlink-artifact, and MCP-stdio regressions are covered. It still requires the public corpus, full fake-agent conformance, crash/restart, installer rollback, SBOM/provenance/signature, and release-candidate gates. |
 | 9 — v1.0 | **NOT STARTED** | Requires certified Claude + Codex, all open gates, and the 30-day/100-managed-task dogfood record. |
