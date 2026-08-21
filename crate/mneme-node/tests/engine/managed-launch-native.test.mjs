@@ -153,11 +153,12 @@ while IFS= read -r line; do
       echo '{"id":2,"result":{"thread":{"id":"thread-native"}}}' ;;
     *'"method":"turn/start"'*)
       echo '{"id":3,"result":{"turn":{"id":"turn-native"}}}'
+      echo '{"method":"item/started","params":{"threadId":"thread-native","turnId":"turn-native","item":{"id":"item-native","type":"fileChange","status":"inProgress","changes":[{"path":"src/native.rs","diff":"@@","kind":{"type":"add"}}]}}}'
       echo '{"id":90,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-native","turnId":"turn-native","itemId":"item-native","startedAtMs":1}}'
       IFS= read -r approval
-      case "${'$'}approval" in *'"decision":"decline"'*) ;; *) exit 72 ;; esac
+      case "${'$'}approval" in *'"decision":"accept"'*) ;; *) exit 72 ;; esac
       echo '{"method":"turn/started","params":{"threadId":"thread-native","turnId":"turn-native","startedAtMs":2}}'
-      echo '{"method":"item/completed","params":{"threadId":"thread-native","turnId":"turn-native","completedAtMs":3,"item":{"id":"item-native","type":"agentMessage"}}}'
+      echo '{"method":"item/completed","params":{"threadId":"thread-native","turnId":"turn-native","completedAtMs":3,"item":{"id":"item-native","type":"fileChange","status":"completed","changes":[{"path":"src/native.rs","diff":"@@","kind":{"type":"add"}}]}}}'
       echo '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native"}}}'
       exit 0 ;;
   esac
@@ -170,7 +171,7 @@ exit 73
     });
     assert.match(launched.output, /→ verifying/);
     const events = readFileSync(join(repo, '.icarus/runtime/logs/events.jsonl'), 'utf8');
-    for (const eventType of ['codex_app_server_thread_bound', 'codex_app_server_approval_declined', 'codex_app_server_turn_completed', 'adapter_session_ended']) {
+    for (const eventType of ['codex_app_server_thread_bound', 'codex_app_server_approval_authorized', 'codex_app_server_turn_completed', 'adapter_session_ended']) {
       assert.match(events, new RegExp(eventType));
     }
   } finally {

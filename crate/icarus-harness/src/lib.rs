@@ -752,6 +752,15 @@ pub struct CodexAppServerSession {
     pub agent: String,
     pub thread_id: String,
     pub worktree_id: String,
+    /// Proposed file paths observed in a structured `item/started` file-change item. They are
+    /// held only until the matching item is approved/completed; an approval request that arrives
+    /// without this prior evidence fails closed.
+    #[serde(default)]
+    pub pending_file_changes: BTreeMap<String, Vec<String>>,
+    /// Paths that passed the task contract and received a one-shot approval. Completion must
+    /// report this exact path set before the bridge treats the write as observed.
+    #[serde(default)]
+    pub approved_file_changes: BTreeMap<String, Vec<String>>,
 }
 
 /// A receipt for a structured Codex app-server boundary. It intentionally excludes model text,
@@ -4844,6 +4853,55 @@ fn load_bound_codex_session(
     Ok(session)
 }
 
+fn codex_file_change_paths(params: &Value) -> Result<Option<(String, Vec<String>)>> {
+    let Some(item) = params.get("item").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    if item.get("type").and_then(Value::as_str) != Some("fileChange") {
+        return Ok(None);
+    }
+    let item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| HarnessError::invalid("Codex file-change item requires an id"))?
+        .to_owned();
+    let changes = item
+        .get("changes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HarnessError::invalid("Codex file-change item requires changes"))?;
+    if changes.is_empty() {
+        return Err(HarnessError::invalid(
+            "Codex file-change item must name at least one path",
+        ));
+    }
+    let mut paths = BTreeSet::new();
+    for change in changes {
+        let path = change
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .ok_or_else(|| HarnessError::invalid("Codex file-change item has a pathless change"))?;
+        let normalized = checked_repo_relative_path(path)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        paths.insert(normalized);
+    }
+    Ok(Some((item_id, paths.into_iter().collect())))
+}
+
+fn persist_codex_session(
+    root: &Path,
+    task_id: &str,
+    session: &CodexAppServerSession,
+) -> Result<()> {
+    write_snapshot(
+        root,
+        &codex_session_path(task_id),
+        serde_json::to_value(session)?,
+    )
+}
+
 /// Bind the thread returned by Codex's documented `thread/start` response to the active Rust
 /// execution. A second, different thread is never allowed to overwrite the original binding.
 pub fn bind_codex_app_server_thread(
@@ -4877,6 +4935,8 @@ pub fn bind_codex_app_server_thread(
         agent: "codex".into(),
         thread_id: thread_id.into(),
         worktree_id: run.worktree_id.clone(),
+        pending_file_changes: BTreeMap::new(),
+        approved_file_changes: BTreeMap::new(),
     };
     write_snapshot(&root, &path, serde_json::to_value(&session)?)?;
     append_event(
@@ -4921,7 +4981,7 @@ pub fn record_codex_app_server_event(
     let root = canonical_root(repo_root)?;
     let (task, run) = prepared_codex_run(&root, task_id)?;
     let thread_id = codex_notification_thread_id(params)?;
-    let session = load_bound_codex_session(&root, task_id, thread_id)?;
+    let mut session = load_bound_codex_session(&root, task_id, thread_id)?;
     if session.execution_id != task.execution_id || session.worktree_id != run.worktree_id {
         return Err(HarnessError::invalid(
             "Codex app-server session does not match the active execution",
@@ -4939,6 +4999,47 @@ pub fn record_codex_app_server_event(
             "Codex app-server item notification requires item id",
         ));
     }
+    let file_change_paths = codex_file_change_paths(params)?;
+    if method == "item/started" {
+        if let Some((file_change_id, paths)) = file_change_paths.clone() {
+            if item_id.as_deref() != Some(file_change_id.as_str()) {
+                return Err(HarnessError::invalid(
+                    "Codex file-change item id does not match the notification item",
+                ));
+            }
+            for path in &paths {
+                validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
+            }
+            session.pending_file_changes.insert(file_change_id, paths);
+            persist_codex_session(&root, task_id, &session)?;
+        }
+    }
+    if method == "item/completed" {
+        if let Some((file_change_id, paths)) = file_change_paths.clone() {
+            if item_id.as_deref() != Some(file_change_id.as_str()) {
+                return Err(HarnessError::invalid(
+                    "Codex completed file-change item id does not match the notification item",
+                ));
+            }
+            let approved = session
+                .approved_file_changes
+                .remove(&file_change_id)
+                .ok_or_else(|| {
+                    HarnessError::invalid(
+                        "Codex completed a file change without a matching ICARUS approval",
+                    )
+                })?;
+            if approved != paths {
+                return Err(HarnessError::invalid(
+                    "Codex completed file-change paths differ from the approved path set",
+                ));
+            }
+            for path in &paths {
+                validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
+            }
+            persist_codex_session(&root, task_id, &session)?;
+        }
+    }
     let event = append_event(
         &root,
         EventInput {
@@ -4954,6 +5055,7 @@ pub fn record_codex_app_server_event(
                 "turn_id": turn_id,
                 "item_id": item_id,
                 "method": method,
+                "file_change_paths": file_change_paths.map(|(_, paths)| paths),
             }),
         },
     )?;
@@ -4971,12 +5073,10 @@ pub fn record_codex_app_server_event(
 
 /// Decide a Codex app-server approval request in the Rust authority.
 ///
-/// The current upstream file-change request lacks the individual paths it would authorize, and
-/// command actions are explicitly best-effort display data. Therefore no request can be safely
-/// authorized yet. Returning `decline` (and recording it) is intentional: it is a real
-/// interception boundary, not a compatibility-mode pretend approval. A later implementation may
-/// allow a request only after Codex exposes canonical individual paths and a command policy that
-/// ICARUS can validate independently.
+/// A direct Codex file-change request does not itself contain paths. ICARUS accepts one only
+/// after the matching structured `item/started` file-change event supplied canonical paths, and
+/// only if every path satisfies the Rust task contract. Command and permission requests remain
+/// fail-closed because their display data is not an independently validated action description.
 pub fn decide_codex_app_server_approval(
     repo_root: &Path,
     task_id: &str,
@@ -4998,16 +5098,49 @@ pub fn decide_codex_app_server_approval(
     let thread_id = codex_required_string(params, "threadId")?;
     let turn_id = codex_required_string(params, "turnId")?;
     let item_id = codex_required_string(params, "itemId")?;
-    let session = load_bound_codex_session(&root, task_id, thread_id)?;
+    let mut session = load_bound_codex_session(&root, task_id, thread_id)?;
     if session.execution_id != task.execution_id || session.worktree_id != run.worktree_id {
         return Err(HarnessError::invalid(
             "Codex app-server approval request does not match the active execution",
         ));
     }
-    let reason = match method {
-        "item/fileChange/requestApproval" => "ICARUS declined: Codex did not provide canonical individual file paths for this change request.",
-        "item/commandExecution/requestApproval" => "ICARUS declined: command approval requires a native, independently validated command policy.",
-        "item/permissions/requestApproval" => "ICARUS declined: additional sandbox or network permissions require explicit task-contract support.",
+    let (decision, reason) = match method {
+        "item/fileChange/requestApproval" => {
+            let decision = match session.pending_file_changes.remove(item_id) {
+                None => (
+                    "decline",
+                    "ICARUS declined: Codex did not provide a prior structured file-change item with canonical paths.".into(),
+                ),
+                Some(paths) => {
+                    let mut denied_reason = None;
+                    for path in &paths {
+                        validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
+                        let authorization =
+                            authorize_action(&root, &task.task_id, Action::write(path.clone()))?;
+                        if !authorization.allowed {
+                            denied_reason =
+                                Some(format!("ICARUS declined `{path}`: {}", authorization.reason));
+                            break;
+                        }
+                    }
+                    match denied_reason {
+                        Some(reason) => ("decline", reason),
+                        None => {
+                            session.approved_file_changes.insert(item_id.into(), paths);
+                            (
+                                "accept",
+                                "ICARUS authorized every canonical file path in the structured change item."
+                                    .into(),
+                            )
+                        }
+                    }
+                }
+            };
+            persist_codex_session(&root, task_id, &session)?;
+            decision
+        }
+        "item/commandExecution/requestApproval" => ("decline", "ICARUS declined: command approval requires a native, independently validated command policy.".into()),
+        "item/permissions/requestApproval" => ("decline", "ICARUS declined: additional sandbox or network permissions require explicit task-contract support.".into()),
         _ => unreachable!(),
     };
     let event = append_event(
@@ -5015,7 +5148,11 @@ pub fn decide_codex_app_server_approval(
         EventInput {
             execution_id: task.execution_id.clone(),
             task_id: task.task_id.clone(),
-            event_type: "codex_app_server_approval_declined".into(),
+            event_type: if decision == "accept" {
+                "codex_app_server_approval_authorized".into()
+            } else {
+                "codex_app_server_approval_declined".into()
+            },
             worktree_id: run.worktree_id,
             timestamp: None,
             payload: json!({
@@ -5025,7 +5162,7 @@ pub fn decide_codex_app_server_approval(
                 "turn_id": turn_id,
                 "item_id": item_id,
                 "method": method,
-                "decision": "decline",
+                "decision": decision,
                 "reason": reason,
             }),
         },
@@ -5036,8 +5173,8 @@ pub fn decide_codex_app_server_approval(
         execution_id: task.execution_id,
         thread_id: thread_id.into(),
         method: method.into(),
-        decision: "decline".into(),
-        reason: reason.into(),
+        decision: decision.into(),
+        reason,
         event_sequence: event.sequence,
     })
 }

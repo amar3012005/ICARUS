@@ -785,7 +785,76 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
     )
     .unwrap();
     assert_eq!(file_change.decision, "decline");
-    assert!(file_change.reason.contains("individual file paths"));
+    assert!(file_change.reason.contains("prior structured file-change"));
+    record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/started",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "startedAtMs": 2,
+            "item": {
+                "id": "item-allowed",
+                "type": "fileChange",
+                "status": "inProgress",
+                "changes": [{"path": "src/allowed.rs", "diff": "@@", "kind": {"type": "add"}}],
+            },
+        }),
+    )
+    .unwrap();
+    let allowed_file_change = decide_codex_app_server_approval(
+        repo.path(),
+        &task.task_id,
+        "item/fileChange/requestApproval",
+        &serde_json::json!({"threadId": "thread-123", "turnId": "turn-1", "itemId": "item-allowed"}),
+    )
+    .unwrap();
+    assert_eq!(allowed_file_change.decision, "accept");
+    record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/completed",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "item": {
+                "id": "item-allowed",
+                "type": "fileChange",
+                "status": "completed",
+                "changes": [{"path": "src/allowed.rs", "diff": "@@", "kind": {"type": "add"}}],
+            },
+        }),
+    )
+    .unwrap();
+    record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/started",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "startedAtMs": 3,
+            "item": {
+                "id": "item-forbidden",
+                "type": "fileChange",
+                "status": "inProgress",
+                "changes": [{"path": "README.md", "diff": "@@", "kind": {"type": "update"}}],
+            },
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        decide_codex_app_server_approval(
+            repo.path(),
+            &task.task_id,
+            "item/fileChange/requestApproval",
+            &serde_json::json!({"threadId": "thread-123", "turnId": "turn-1", "itemId": "item-forbidden"}),
+        )
+        .unwrap()
+        .decision,
+        "decline"
+    );
     let command = decide_codex_app_server_approval(
         repo.path(),
         &task.task_id,
@@ -811,6 +880,7 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
     assert!(events.contains("codex_app_server_thread_bound"));
     assert!(events.contains("codex_app_server_turn_started"));
     assert!(events.contains("codex_app_server_approval_declined"));
+    assert!(events.contains("codex_app_server_approval_authorized"));
 }
 
 #[cfg(unix)]
@@ -855,14 +925,15 @@ while IFS= read -r line; do
       ;;
     *'"method":"turn/start"'*)
       echo '{"id":3,"result":{"turn":{"id":"turn-fixture"}}}'
+      echo '{"method":"item/started","params":{"threadId":"thread-fixture","turnId":"turn-fixture","item":{"id":"item-fixture","type":"fileChange","status":"inProgress","changes":[{"path":"src/fixture.rs","diff":"@@","kind":{"type":"add"}}]}}}'
       echo '{"id":90,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-fixture","turnId":"turn-fixture","itemId":"item-fixture","startedAtMs":1}}'
       IFS= read -r approval
       case "$approval" in
-        *'"decision":"decline"'*) ;;
+        *'"decision":"accept"'*) ;;
         *) exit 91 ;;
       esac
       echo '{"method":"turn/started","params":{"threadId":"thread-fixture","turnId":"turn-fixture","startedAtMs":2}}'
-      echo '{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":3,"item":{"id":"item-fixture","type":"agentMessage"}}}'
+      echo '{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":3,"item":{"id":"item-fixture","type":"fileChange","status":"completed","changes":[{"path":"src/fixture.rs","diff":"@@","kind":{"type":"add"}}]}}}'
       echo '{"method":"turn/completed","params":{"threadId":"thread-fixture","turn":{"id":"turn-fixture"}}}'
       exit 0
       ;;
@@ -897,7 +968,7 @@ exit 92
     );
     let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
     assert!(events.contains("codex_app_server_thread_bound"));
-    assert!(events.contains("codex_app_server_approval_declined"));
+    assert!(events.contains("codex_app_server_approval_authorized"));
     assert!(events.contains("codex_app_server_turn_completed"));
     assert!(events.contains("adapter_session_ended"));
 }
