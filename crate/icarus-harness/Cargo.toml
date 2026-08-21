@@ -7,6 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Durable, offline ICARUS coding-agent harness core"
 
+[features]
+# Test-only crash points exercise recovery after a real process abort. They are never enabled in
+# release artifacts, so runtime environment variables cannot alter production persistence.
+test-failpoints = []
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"

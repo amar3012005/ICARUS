@@ -4999,6 +4999,7 @@ fn append_event_locked(root: &Path, input: EventInput) -> Result<RuntimeEvent> {
     writeln!(log, "{}", serde_json::to_string(&event)?)?;
     log.sync_all()?;
     sync_directory(event_path.parent().expect("event log has a parent"))?;
+    crash_after_event_log_sync_if_requested();
     write_snapshot(
         root,
         "state/event-head.json",
@@ -5006,6 +5007,18 @@ fn append_event_locked(root: &Path, input: EventInput) -> Result<RuntimeEvent> {
     )?;
     Ok(event)
 }
+
+#[cfg(feature = "test-failpoints")]
+fn crash_after_event_log_sync_if_requested() {
+    if std::env::var("ICARUS_TEST_CRASH_POINT").ok().as_deref() == Some("event-after-log-sync") {
+        // Deliberately bypass destructors, just as SIGKILL/power loss would. This path exists
+        // only in the explicit test feature and is exercised from a separate child process.
+        std::process::abort();
+    }
+}
+
+#[cfg(not(feature = "test-failpoints"))]
+fn crash_after_event_log_sync_if_requested() {}
 
 /// Recover the only safe interrupted-append state: the event log contains fully valid events
 /// beyond the durable head. This occurs if a process is killed after append+fsync but before the
@@ -5396,31 +5409,55 @@ impl RuntimeLock {
     fn acquire(root: &Path, name: &str) -> Result<Self> {
         let path = locks_dir(root).join(format!("{}.lock", name));
         fs::create_dir_all(path.parent().unwrap())?;
-        match fs::create_dir(&path) {
-            Ok(()) => {
-                atomic_write(
-                    &path.join("owner.json"),
-                    format!(
-                        "{{\"pid\":{},\"acquired_at_unix_seconds\":{}}}\n",
-                        std::process::id(),
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs()
-                    )
-                    .as_bytes(),
-                )?;
-                Ok(Self { path })
+        for _ in 0..2 {
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    atomic_write(
+                        &path.join("owner.json"),
+                        format!(
+                            "{{\"pid\":{},\"acquired_at_unix_seconds\":{}}}\n",
+                            std::process::id(),
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                        )
+                        .as_bytes(),
+                    )?;
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // A kill after writing owner.json must not permanently wedge the runtime.
+                    // Only reclaim a lock when its recorded owner is definitely dead; a missing
+                    // or malformed owner remains fail-closed because another writer may still
+                    // be completing lock creation.
+                    if stale_lock_owner_is_dead(&path) {
+                        if let Err(error) = fs::remove_dir_all(&path) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                return Err(error.into());
+                            }
+                        }
+                        continue;
+                    }
+                    return Err(HarnessError::invalid(format!(
+                        "active runtime lock {}; run `icarus doctor` before retrying",
+                        name
+                    )));
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(HarnessError::invalid(format!(
-                    "active runtime lock {}; run `icarus doctor` before retrying",
-                    name
-                )))
-            }
-            Err(error) => Err(error.into()),
         }
+        Err(HarnessError::invalid(format!(
+            "could not reclaim stale runtime lock {name}"
+        )))
     }
+}
+
+fn stale_lock_owner_is_dead(path: &Path) -> bool {
+    File::open(path.join("owner.json"))
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, LockOwner>(file).ok())
+        .is_some_and(|owner| !process_is_alive(owner.pid))
 }
 
 impl Drop for RuntimeLock {

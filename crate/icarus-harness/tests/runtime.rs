@@ -10,6 +10,8 @@ use icarus_harness::{
 };
 use rusqlite::Connection;
 use std::fs;
+#[cfg(feature = "test-failpoints")]
+use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
 
@@ -215,6 +217,50 @@ fn next_append_repairs_only_a_valid_stale_event_head_after_an_interrupted_append
     let report = verify_event_chain(repo.path(), &initialized.manifest.repo_id).unwrap();
     assert!(report.valid, "{:#?}", report.issues);
     assert_eq!(report.events, 3);
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn crash_child_after_event_log_sync() {
+    let Ok(root) = std::env::var("ICARUS_TEST_CRASH_REPO") else {
+        return;
+    };
+    append_event(
+        Path::new(&root),
+        EventInput::new("exec-crash", "TASK-CRASH", "crash-point"),
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn killed_writer_reclaims_its_dead_lock_and_recovers_the_durable_event_log() {
+    let repo = repo();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
+    append_event(repo.path(), EventInput::new("exec-1", "TASK-1", "created")).unwrap();
+
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "crash_child_after_event_log_sync", "--nocapture"])
+        .env("ICARUS_TEST_CRASH_REPO", repo.path())
+        .env("ICARUS_TEST_CRASH_POINT", "event-after-log-sync")
+        .status()
+        .unwrap();
+    assert!(!child.success(), "crash child unexpectedly succeeded");
+    assert!(repo
+        .path()
+        .join(".icarus/runtime/locks/events.lock")
+        .exists());
+
+    // This acquires the dead writer's lock, repairs the one valid stale-head state, and appends
+    // without truncating either durable event.
+    append_event(repo.path(), EventInput::new("exec-1", "TASK-1", "resumed")).unwrap();
+    let report = verify_event_chain(repo.path(), &initialized.manifest.repo_id).unwrap();
+    assert!(report.valid, "{:#?}", report.issues);
+    assert_eq!(report.events, 3);
+    assert!(!repo
+        .path()
+        .join(".icarus/runtime/locks/events.lock")
+        .exists());
 }
 
 #[test]

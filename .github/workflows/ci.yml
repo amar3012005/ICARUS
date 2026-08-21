@@ -69,6 +69,9 @@ jobs:
       - name: Durability suite (crash safety, compaction, invariants)
         run: cargo test -p mseg --test crash_safety --test compact --test invariants
 
+      - name: Harness killed-writer recovery
+        run: cargo test -p icarus-harness --features test-failpoints --test runtime killed_writer_reclaims_its_dead_lock_and_recovers_the_durable_event_log
+
   # The Rust job above protects the storage engine. This one protects everything a USER
   # actually touches: the CLI's argument parsing and exit codes, the TUI's rendering and
   # scrollback, the project-instruction installers that edit files in someone else's
