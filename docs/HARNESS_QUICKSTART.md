@@ -71,13 +71,13 @@ An agent exit is not proof. Run each immutable acceptance criterion, then seal o
 receipts satisfy the contract.
 
 ```bash
-icarus task verify TASK-… --criterion unit
 icarus task handoff TASK-…
+icarus task verify TASK-… --criterion unit
 icarus task seal TASK-…
 icarus task export TASK-… --redact
 ```
 
-If a task is interrupted, use `icarus task status TASK-…` and `icarus task resume TASK-…`. The
+If a task is interrupted, use `icarus task status --task TASK-…` and `icarus task resume --task TASK-…`. The
 task, execution linkage, checkpoints, and event chain are persisted by Rust; a fresh agent process
 does not get to invent a completed state.
 
