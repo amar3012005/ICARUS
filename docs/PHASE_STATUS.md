@@ -7,7 +7,7 @@ Rule for this file: an item is **DONE** only when its verification is real — a
 against the unfixed code, an observed command output, a cold-verified artifact. "Implemented"
 is not "done". Anything unverified says so.
 
-Last updated at CLI version **0.3.58** (release in progress).
+Last updated at CLI version **0.3.59** (release in progress).
 
 ---
 

@@ -9,6 +9,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Independent binary and MCP acceptance gates:** normal public CI now builds the Rust addon
+  and drives the real MCP stdio process through local evidence ingest, structured memory save,
+  lexical recall, and get-by-ID against a disposable shard with no network or credentials. A
+  separate macOS/Linux job compiles the Bun executable outside the release workflow, then proves
+  that the resulting binary can open its embedded native shard, save a memory, and recall it.
 - **Artifact-evidence containment:** Rust now validates artifact criteria through the managed
   workspace containment check before probing existence. An in-repository symlink to a path
   outside the checkout cannot create a criterion receipt or be used as sealing evidence.
