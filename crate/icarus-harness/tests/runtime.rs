@@ -240,6 +240,58 @@ fn contract() -> TaskContract {
     }
 }
 
+fn initialized_git_repo() -> tempfile::TempDir {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "pub fn before() {}\n").unwrap();
+    fs::write(repo.path().join("README.md"), "documented baseline\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "fixture"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["codex".into()],
+        },
+    )
+    .unwrap();
+    assert!(Command::new("git")
+        .args(["add", ".icarus", ".gitignore"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "initialize harness"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    repo
+}
+
 #[test]
 fn lifecycle_keeps_immutable_contracts_and_scoped_writes() {
     let repo = repo();
@@ -1134,6 +1186,58 @@ fn isolated_run_reconciliation_imports_only_contract_scoped_regular_files() {
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn current_workspace_reconciliation_preserves_baseline_and_blocks_scope_escape() {
+    let repo = initialized_git_repo();
+    // This is user work that predates the managed run and is deliberately outside the contract.
+    fs::write(repo.path().join("README.md"), "user draft before launch\n").unwrap();
+    let task = start_task(repo.path(), "change only the library", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let prepared = prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        true,
+    )
+    .unwrap();
+    assert!(prepared
+        .current_workspace_baseline
+        .contains_key("README.md"));
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "pub fn after() {}\n").unwrap();
+    let result = reconcile_run(repo.path(), &task.task_id).unwrap();
+    assert!(!result.reconciled);
+    assert_eq!(result.changed_files, vec!["src/lib.rs"]);
+    assert!(result.patch_digest.is_some());
+
+    let second = start_task(repo.path(), "must not touch documentation", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &second.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &second.task_id,
+        "codex".into(),
+        "current".into(),
+        true,
+    )
+    .unwrap();
+    transition_task(repo.path(), &second.task_id, "executing").unwrap();
+    fs::write(
+        repo.path().join("README.md"),
+        "adapter changed user draft\n",
+    )
+    .unwrap();
+    let error = reconcile_run(repo.path(), &second.task_id).unwrap_err();
+    assert!(error.to_string().contains("outside the task contract"));
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("current_workspace_scope_checked"));
+    assert!(events.contains("README.md"));
 }
 
 #[test]

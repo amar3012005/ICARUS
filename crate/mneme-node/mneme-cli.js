@@ -287,7 +287,12 @@ function cmdTask(flags) {
   if (subcommand === 'reconcile') {
     const result = harness.reconcileRun(repo, taskId);
     if (result.reconciled) console.log(ok(`${c.path(taskId)} reconciled ${result.changed_files.length} file(s) from the isolated worktree`));
-    else console.log(c.dim(`${c.path(taskId)} has no isolated worktree delta to reconcile`));
+    else if (result.workspace_mode === 'current') {
+      const detail = result.changed_files.length
+        ? `observed ${result.changed_files.length} contract-scoped post-launch file change(s)`
+        : 'found no post-launch file delta';
+      console.log(ok(`${c.path(taskId)} current-workspace scope check ${detail}.`));
+    } else console.log(c.dim(`${c.path(taskId)} has no isolated worktree delta to reconcile`));
     return;
   }
   if (subcommand === 'handoff') {
@@ -498,9 +503,15 @@ async function cmdRun(flags) {
     try {
       const reconciliation = harness.reconcileRun(repo, task.task_id);
       if (reconciliation.reconciled) console.log(ok(`reconciled ${reconciliation.changed_files.length} contract-scoped file(s) from the isolated worktree.`));
+      else if (reconciliation.workspace_mode === 'current') {
+        const detail = reconciliation.changed_files.length
+          ? `observed ${reconciliation.changed_files.length} contract-scoped post-launch file change(s)`
+          : 'found no post-launch file delta';
+        console.log(ok(`current-workspace scope check ${detail}.`));
+      }
     } catch (error) {
       harness.transitionTask(repo, task.task_id, 'blocked');
-      console.log(err(`${c.path(task.task_id)} blocked: isolated worktree was not reconciled safely — ${error.message}`));
+      console.log(err(`${c.path(task.task_id)} blocked: managed workspace scope check failed — ${error.message}`));
       process.exitCode = 3;
       return;
     }

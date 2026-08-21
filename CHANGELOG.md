@@ -9,6 +9,12 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Rust-owned current-workspace scope reconciliation:** managed runs now snapshot only the
+  hashes of pre-existing dirty/untracked Git entries at launch, then compare the post-run delta
+  in Rust. Existing user work remains untouched; a newly changed out-of-contract path is
+  durably recorded and blocks lifecycle advancement before verification or sealing. The Node
+  CLI only displays the native result. Non-Git current workspaces explicitly record that this
+  scope proof is unavailable and remain compatibility-only.
 - **Rust-owned managed-run wall-time budgets:** a task contract may set
   `budgets.wall_time_minutes` (1–1,440). Rust validates and fixes the deadline in the prepared
   execution; the launcher only terminates the child at that deadline, records the lifecycle

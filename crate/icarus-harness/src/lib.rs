@@ -10,7 +10,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
@@ -247,6 +247,11 @@ pub struct RunPreparation {
     /// deadline but cannot select or extend it.
     #[serde(default)]
     pub wall_time_deadline: Option<String>,
+    /// Hashes of paths that were already dirty or untracked when a current-workspace run was
+    /// authorized. Rust uses this immutable launch baseline to distinguish the user's existing
+    /// work from an adapter's post-launch delta; contents never enter runtime state.
+    #[serde(default)]
+    pub current_workspace_baseline: BTreeMap<String, String>,
 }
 
 /// Result of importing an isolated, governed worktree into the authoritative repository. A
@@ -1750,6 +1755,11 @@ pub fn prepare_run(
         }
         (path, format!("isolated-{task_id}"))
     };
+    let current_workspace_baseline = if workspace_mode == "current" && git_repository(&root) {
+        workspace_change_digests(&root)?
+    } else {
+        BTreeMap::new()
+    };
     // This is a launch gate, not a convenience export: if the mandatory context cannot be
     // compiled within its budget, no coding agent is started.
     let (context_pack_path, context_pack_hash) =
@@ -1790,6 +1800,7 @@ pub fn prepare_run(
         compatibility_mode: certification != "certified",
         capabilities,
         wall_time_deadline: wall_time_deadline(&task.contract)?,
+        current_workspace_baseline,
         launch_arguments: adapter_launch_arguments(
             &agent,
             &workspace_path,
@@ -1878,6 +1889,61 @@ fn nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
         .map(|entry| {
             String::from_utf8(entry.to_vec())
                 .map_err(|_| HarnessError::invalid("Git returned a non-UTF-8 path"))
+        })
+        .collect()
+}
+
+/// Return every tracked or untracked path whose working-tree state differs from `HEAD`.
+/// Git's `diff HEAD` deliberately covers both staged and unstaged tracked changes.
+fn workspace_changed_paths(root: &Path) -> Result<BTreeSet<String>> {
+    let tracked_paths = nul_paths(&git_checked_bytes(
+        root,
+        &["diff", "--name-only", "-z", "HEAD", "--"],
+    )?)?;
+    let untracked_paths = nul_paths(&git_checked_bytes(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?)?;
+    let mut paths: BTreeSet<String> = tracked_paths.into_iter().collect();
+    paths.extend(untracked_paths);
+    for path in &paths {
+        checked_repo_relative_path(path)?;
+    }
+    Ok(paths)
+}
+
+/// A content-addressed observation for a working-tree entry. It intentionally does not follow
+/// symlinks: a symlink's target is data controlled by the adapter and must never cause the
+/// authority to read outside the prepared repository.
+fn workspace_entry_digest(root: &Path, path: &str) -> Result<String> {
+    let relative = checked_repo_relative_path(path)?;
+    let candidate = root.join(relative);
+    let metadata = match fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(error) => return Err(HarnessError::from(error)),
+    };
+    if metadata.file_type().is_file() {
+        return Ok(format!("file:{}", sha256(&fs::read(candidate)?)));
+    }
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(candidate)?;
+        return Ok(format!(
+            "symlink:{}",
+            sha256(target.to_string_lossy().as_bytes())
+        ));
+    }
+    Err(HarnessError::invalid(format!(
+        "managed workspace path `{path}` is not a regular file or symlink"
+    )))
+}
+
+fn workspace_change_digests(root: &Path) -> Result<BTreeMap<String, String>> {
+    workspace_changed_paths(root)?
+        .into_iter()
+        .map(|path| {
+            let digest = workspace_entry_digest(root, &path)?;
+            Ok((path, digest))
         })
         .collect()
 }
@@ -1973,13 +2039,103 @@ pub fn reconcile_run(repo_root: &Path, task_id: &str) -> Result<ReconciliationRe
         ));
     }
     if run.workspace_mode == "current" {
+        let workspace = PathBuf::from(&run.workspace_path)
+            .canonicalize()
+            .map_err(|_| HarnessError::invalid("managed current workspace no longer exists"))?;
+        if workspace != root {
+            return Err(HarnessError::invalid(
+                "managed current workspace does not match the authoritative repository",
+            ));
+        }
+        if !git_repository(&root) {
+            // The harness remains usable for non-Git compatibility adapters, but cannot make a
+            // source-scope assertion without a repository baseline. Its compatibility status
+            // prevents certification; record the limitation rather than pretending success.
+            append_event(
+                &root,
+                EventInput {
+                    execution_id: task.execution_id.clone(),
+                    task_id: task.task_id.clone(),
+                    event_type: "current_workspace_scope_unavailable".into(),
+                    worktree_id: run.worktree_id.clone(),
+                    timestamp: None,
+                    payload: json!({"reason": "current workspace is not a Git repository"}),
+                },
+            )?;
+            return Ok(ReconciliationResult {
+                task_id: task.task_id,
+                execution_id: task.execution_id,
+                workspace_mode: run.workspace_mode,
+                reconciled: false,
+                changed_files: Vec::new(),
+                patch_digest: None,
+            });
+        }
+        let current = workspace_change_digests(&root)?;
+        let candidates: BTreeSet<String> = run
+            .current_workspace_baseline
+            .keys()
+            .chain(current.keys())
+            .cloned()
+            .collect();
+        let mut changed_files = Vec::new();
+        for path in &candidates {
+            if run.current_workspace_baseline.get(path) != current.get(path) {
+                changed_files.push(path.clone());
+            }
+        }
+        let allowed = build_globset(&task.contract.allowed_paths)?;
+        let forbidden = build_globset(&task.contract.forbidden_paths)?;
+        let mut out_of_contract = Vec::new();
+        for path in &changed_files {
+            checked_repo_relative_path(path)?;
+            if !allowed.is_match(path) || forbidden.is_match(path) {
+                out_of_contract.push(path.clone());
+            }
+        }
+        // The current workspace cannot be rolled back without risking user work. Instead Rust
+        // records the exact post-run observation and blocks lifecycle advancement before a
+        // compatibility adapter can claim verification or seal the task.
+        append_event(
+            &root,
+            EventInput {
+                execution_id: task.execution_id.clone(),
+                task_id: task.task_id.clone(),
+                event_type: "current_workspace_scope_checked".into(),
+                worktree_id: run.worktree_id.clone(),
+                timestamp: None,
+                payload: json!({
+                    "workspace_mode": "current",
+                    "baseline_entries": run.current_workspace_baseline.len(),
+                    "changed_files": changed_files,
+                    "out_of_contract_paths": out_of_contract,
+                }),
+            },
+        )?;
+        if let Some(path) = out_of_contract.first() {
+            return Err(HarnessError::invalid(format!(
+                "current workspace change is outside the task contract: {path}; task remains blocked for review"
+            )));
+        }
+        let mut digest = Sha256::new();
+        for path in &changed_files {
+            digest.update(path.as_bytes());
+            digest.update([0]);
+            digest.update(
+                current
+                    .get(path)
+                    .map(String::as_bytes)
+                    .unwrap_or(b"missing"),
+            );
+            digest.update([0]);
+        }
         return Ok(ReconciliationResult {
             task_id: task.task_id,
             execution_id: task.execution_id,
             workspace_mode: run.workspace_mode,
             reconciled: false,
-            changed_files: Vec::new(),
-            patch_digest: None,
+            patch_digest: (!changed_files.is_empty()).then(|| format!("{:x}", digest.finalize())),
+            changed_files,
         });
     }
     let expected = managed_worktree_path(&root, &manifest.repo_id, task_id);
