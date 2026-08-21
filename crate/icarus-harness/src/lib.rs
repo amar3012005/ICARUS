@@ -904,6 +904,11 @@ pub struct CodexAppServerSession {
     /// report this exact path set before the bridge treats the write as observed.
     #[serde(default)]
     pub approved_file_changes: BTreeMap<String, Vec<String>>,
+    /// Paths that ICARUS explicitly declined. Current Codex app-server versions emit a terminal
+    /// `fileChange: declined` item for this normal non-mutation outcome; it is audit evidence,
+    /// not an unapproved write. A terminal `completed` item must never use this map.
+    #[serde(default)]
+    pub declined_file_changes: BTreeMap<String, Vec<String>>,
 }
 
 /// A receipt for a structured Codex app-server boundary. It intentionally excludes model text,
@@ -5900,6 +5905,7 @@ pub fn bind_codex_app_server_thread(
         worktree_id: run.worktree_id.clone(),
         pending_file_changes: BTreeMap::new(),
         approved_file_changes: BTreeMap::new(),
+        declined_file_changes: BTreeMap::new(),
     };
     write_snapshot(&root, &path, serde_json::to_value(&session)?)?;
     append_event(
@@ -5956,6 +5962,7 @@ pub fn resume_codex_app_server_thread(
     session.execution_id = task.execution_id.clone();
     session.pending_file_changes.clear();
     session.approved_file_changes.clear();
+    session.declined_file_changes.clear();
     persist_codex_session(&root, task_id, &session)?;
     append_event(
         &root,
@@ -6083,18 +6090,46 @@ pub fn record_codex_app_server_event(
                     "Codex completed file-change item id does not match the notification item",
                 ));
             }
-            let approved = session
-                .approved_file_changes
-                .remove(&file_change_id)
-                .ok_or_else(|| {
-                    HarnessError::invalid(
-                        "Codex completed a file change without a matching ICARUS approval",
-                    )
-                })?;
-            if approved != paths {
-                return Err(HarnessError::invalid(
-                    "Codex completed file-change paths differ from the approved path set",
-                ));
+            match item_status.as_deref() {
+                // A declined terminal item is the expected result of ICARUS returning a
+                // documented `decline` decision. It proves the request ended without treating
+                // it as a write; require the exact prior declined path set so an unrelated
+                // client event cannot be laundered into an audit receipt.
+                Some("declined") => {
+                    let declined = session
+                        .declined_file_changes
+                        .remove(&file_change_id)
+                        .ok_or_else(|| {
+                            HarnessError::invalid(
+                                "Codex reported a declined file change without a matching ICARUS decline",
+                            )
+                        })?;
+                    if declined != paths {
+                        return Err(HarnessError::invalid(
+                            "Codex declined file-change paths differ from the ICARUS-declined path set",
+                        ));
+                    }
+                }
+                Some("completed") => {
+                    let approved = session
+                        .approved_file_changes
+                        .remove(&file_change_id)
+                        .ok_or_else(|| {
+                            HarnessError::invalid(
+                                "Codex completed a file change without a matching ICARUS approval",
+                            )
+                        })?;
+                    if approved != paths {
+                        return Err(HarnessError::invalid(
+                            "Codex completed file-change paths differ from the approved path set",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(HarnessError::invalid(
+                        "Codex finished a file-change item with an unsupported terminal status",
+                    ));
+                }
             }
             for path in &paths {
                 validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
@@ -6194,7 +6229,13 @@ pub fn decide_codex_app_server_approval(
                         }
                     }
                     match denied_reason {
-                        Some(reason) => ("decline", reason),
+                        Some(reason) => {
+                            // Keep a one-shot binding for the documented terminal declined
+                            // notification. It is intentionally separate from approvals so a
+                            // later successful completion cannot consume a denial as authority.
+                            session.declined_file_changes.insert(item_id.into(), paths);
+                            ("decline", reason)
+                        }
                         None => {
                             session.approved_file_changes.insert(item_id.into(), paths);
                             (

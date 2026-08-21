@@ -1148,6 +1148,26 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
         .decision,
         "decline"
     );
+    // Codex emits a terminal `declined` file-change item after a documented decline. That is
+    // audit evidence for a non-mutation, not a successful write; it must match the exact native
+    // decline. The unfixed bridge treated this as an unapproved completed write and blocked the
+    // otherwise healthy managed turn.
+    record_codex_app_server_event(
+        repo.path(),
+        &task.task_id,
+        "item/completed",
+        &serde_json::json!({
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "item": {
+                "id": "item-forbidden",
+                "type": "fileChange",
+                "status": "declined",
+                "changes": [{"path": "README.md", "diff": "@@", "kind": {"type": "update"}}],
+            },
+        }),
+    )
+    .unwrap();
     let command = decide_codex_app_server_approval(
         repo.path(),
         &task.task_id,
