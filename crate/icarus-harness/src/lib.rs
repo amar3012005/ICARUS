@@ -1680,6 +1680,65 @@ fn save_task(root: &Path, task: &TaskRecord) -> Result<()> {
     )
 }
 
+/// Reconcile the single recoverable lifecycle split caused by a process death after an atomic
+/// task-snapshot replacement but before its corresponding event append. The task snapshot is the
+/// current authority for its status; the missing history is never silently ignored. Before any
+/// subsequent lifecycle operation, append an explicit recovery event only when the persisted
+/// state is exactly one legal transition after the event-log state.
+fn reconcile_task_lifecycle_event(root: &Path, task: &TaskRecord) -> Result<()> {
+    let mut recorded = None;
+    for event in read_events(root)? {
+        if event.task_id != task.task_id {
+            continue;
+        }
+        match event.event_type.as_str() {
+            "task_created" => recorded = Some("created".to_owned()),
+            "task_transitioned" | "task_transition_recovered" => {
+                if let Some(status) = event.payload.get("to").and_then(Value::as_str) {
+                    recorded = Some(status.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(previous) = recorded else {
+        return Err(HarnessError::invalid(
+            "task has no durable lifecycle creation event",
+        ));
+    };
+    if previous == task.status {
+        return Ok(());
+    }
+    let legal = TASK_TRANSITIONS
+        .iter()
+        .find(|(from, _)| *from == previous)
+        .map(|(_, next)| *next)
+        .unwrap_or(&[]);
+    if !legal.contains(&task.status.as_str()) {
+        return Err(HarnessError::invalid(format!(
+            "task snapshot status `{}` cannot be reconciled from durable lifecycle status `{previous}`",
+            task.status
+        )));
+    }
+    append_event(
+        root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "task_transition_recovered".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: json!({
+                "from": previous,
+                "to": task.status,
+                "contract_version": task.contract_version,
+                "reason": "recovered a durable task snapshot after an interrupted lifecycle event append",
+            }),
+        },
+    )?;
+    Ok(())
+}
+
 const TASK_TRANSITIONS: &[(&str, &[&str])] = &[
     ("created", &["orienting", "blocked", "failed"]),
     ("orienting", &["contracted", "blocked", "failed"]),
@@ -1705,6 +1764,7 @@ const TASK_TRANSITIONS: &[(&str, &[&str])] = &[
 pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<TaskRecord> {
     let root = canonical_root(repo_root)?;
     let mut task = task_status(&root, task_id)?;
+    reconcile_task_lifecycle_event(&root, &task)?;
     let allowed = TASK_TRANSITIONS
         .iter()
         .find(|(from, _)| *from == task.status)
@@ -1736,6 +1796,7 @@ pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<
 pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
     let root = canonical_root(repo_root)?;
     let mut task = task_status(&root, task_id)?;
+    reconcile_task_lifecycle_event(&root, &task)?;
     if matches!(task.status.as_str(), "sealed" | "failed") {
         return Err(HarnessError::invalid(format!(
             "cannot resume terminal task in {} state",

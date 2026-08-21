@@ -339,7 +339,7 @@ fn killed_writer_after_atomic_snapshot_rename_leaves_a_complete_recoverable_snap
 #[test]
 fn killed_writer_during_task_snapshot_transition_leaves_a_complete_resumable_task() {
     let repo = repo();
-    init(repo.path(), InitOptions::default()).unwrap();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
     let task = start_task(
         repo.path(),
         "crash during task state transition",
@@ -372,6 +372,13 @@ fn killed_writer_during_task_snapshot_transition_leaves_a_complete_resumable_tas
             .unwrap()
             .status,
         "contracted"
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("task_transition_recovered"));
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
     );
 }
 
