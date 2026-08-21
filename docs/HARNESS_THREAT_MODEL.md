@@ -11,7 +11,7 @@ plans, and claimed test results are not evidence.
 | Threat | Control | Residual risk |
 |---|---|---|
 | Malicious repository instructions or prompt injection | Immutable task contract, mandatory policy context, path-scoped write authorization, and evidence from executed checks only | An adapter without pre-action interception is compatibility mode, not certified enforcement |
-| Scope escape or path traversal | Rust canonical-root checks, relative-path rejection, glob-scoped contracts, and seal-time changed-file validation | Tools invoked outside ICARUS cannot be prevented by compatibility adapters |
+| Scope escape, path traversal, or nested checkout crossing | Rust canonical-root checks, relative-path rejection, glob-scoped contracts, nested Git/submodule write refusal, and seal-time changed-file validation | Tools invoked outside ICARUS cannot be prevented by compatibility adapters |
 | Forged or stale verification | Rust executes contract-defined commands, stores complete output/digests, binds receipts to contract/Git/dirty state, and rejects stale receipts at seal | Local host compromise can alter all local state; signing/remote attestation is future work |
 | Forged runtime history | Append-only hash-chained event log with durable head verification | The local machine remains the trust root until optional signing is enabled |
 | Poisoned or stale graph context | Graph build receipt binds source fingerprint and database digest; Rust refuses a current graph claim after source changes | Parser coverage is limited to supported languages |

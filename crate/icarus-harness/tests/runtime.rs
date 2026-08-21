@@ -1404,6 +1404,17 @@ fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
         )
         .is_err());
     }
+    // A submodule/nested checkout is not governed by this repository's task contract, even if
+    // the path glob would otherwise include it. Do not let an adapter cross that boundary.
+    fs::create_dir_all(repo.path().join("src/vendor/.git")).unwrap();
+    assert!(authorize_adapter_write(
+        repo.path(),
+        &task.task_id,
+        "claude",
+        "Write",
+        "src/vendor/generated.rs",
+    )
+    .is_err());
     assert!(
         verify_event_chain(repo.path(), &initialized.manifest.repo_id)
             .unwrap()

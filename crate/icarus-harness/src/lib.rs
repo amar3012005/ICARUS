@@ -2421,6 +2421,18 @@ fn checked_repo_relative_path(path: &str) -> Result<PathBuf> {
 fn validate_managed_workspace_path(workspace: &Path, path: &str) -> Result<()> {
     let relative = checked_repo_relative_path(path)?;
     let workspace = workspace.canonicalize().map_err(HarnessError::from)?;
+    // A nested checkout or submodule is a separate repository authority boundary. It may have
+    // its own hooks, remotes, and history, so a contract for this repository must not authorize
+    // an adapter to modify it merely because its files happen to be below this filesystem path.
+    let mut nested_ancestor = workspace.clone();
+    for component in relative.components() {
+        nested_ancestor.push(component.as_os_str());
+        if nested_ancestor.join(".git").exists() {
+            return Err(HarnessError::invalid(
+                "managed adapter writes into nested Git repositories or submodules are not allowed",
+            ));
+        }
+    }
     let mut existing = workspace.join(relative);
     loop {
         if existing.exists() {
