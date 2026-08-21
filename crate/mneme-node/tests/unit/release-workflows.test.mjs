@@ -8,7 +8,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..', '..', '..');
 
 function workflow(name) {
-  return readFileSync(join(ROOT, '.github', 'workflows', name), 'utf8');
+  // Git may check workflow fixtures out with CRLF on Windows. These tests validate the
+  // workflow contract, not a contributor's checkout line-ending setting.
+  return readFileSync(join(ROOT, '.github', 'workflows', name), 'utf8').replace(/\r\n/g, '\n');
 }
 
 test('CLI releases use v* tags', () => {
