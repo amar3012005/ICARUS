@@ -7,6 +7,7 @@ const {
   initHarness, migrateHarness, doctor, policyCheck, proposeSkill, promoteSkill, retireSkill, attestTaskCriterion,
   validateAgentArguments, reconcileRun, evaluateSkill, recordActiveSkillOutcome, reviewActiveSkills,
   bindCodexAppServerThread, recordCodexAppServerEvent, decideCodexAppServerApproval,
+  runCodexAppServer,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -149,14 +150,20 @@ test('Codex app-server boundaries are transparent native transports, never JavaS
       calls.push(['approval', args]);
       return JSON.stringify({ decision: 'decline', reason: 'native policy', event_sequence: 5 });
     },
+    harnessRunCodexAppServer(...args) {
+      calls.push(['run', args]);
+      return JSON.stringify({ completed: true });
+    },
   });
   const params = { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1' };
   assert.equal(bindCodexAppServerThread('/repo', 'TASK-1', 'thread-1').thread_id, 'thread-1');
   assert.equal(recordCodexAppServerEvent('/repo', 'TASK-1', 'turn/started', params).event_sequence, 4);
   assert.equal(decideCodexAppServerApproval('/repo', 'TASK-1', 'item/fileChange/requestApproval', params).decision, 'decline');
+  assert.equal(runCodexAppServer('/repo', 'TASK-1').completed, true);
   assert.deepEqual(calls, [
     ['bind', ['/repo', 'TASK-1', 'thread-1']],
     ['event', ['/repo', 'TASK-1', 'turn/started', JSON.stringify(params)]],
     ['approval', ['/repo', 'TASK-1', 'item/fileChange/requestApproval', JSON.stringify(params)]],
+    ['run', ['/repo', 'TASK-1', undefined]],
   ]);
 });

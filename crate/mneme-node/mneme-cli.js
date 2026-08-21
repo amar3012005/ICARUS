@@ -33,7 +33,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -455,7 +455,7 @@ function observeManagedAdapter(command, args, cwd, harness, repo, taskId, wallTi
 async function cmdRun(flags) {
   const taskId = flags.task || flags._[0];
   const agent = flags.agent;
-  if (!taskId || !agent) throw new Error('usage: icarus run --task <TASK-ID> --agent <claude|codex|cursor|grok> [--workspace isolated|current] [--acknowledge-dirty-current] [--dry-run] [--repo <dir>]');
+  if (!taskId || !agent) throw new Error('usage: icarus run --task <TASK-ID> --agent <claude|codex|cursor|grok> [--workspace isolated|current] [--acknowledge-dirty-current] [--codex-app-server] [--dry-run] [--repo <dir>]');
   const commands = { claude: 'claude', codex: 'codex', cursor: 'cursor', grok: 'grok' };
   const command = commands[agent];
   if (!command) throw new Error(`unsupported agent adapter \`${agent}\``);
@@ -478,15 +478,25 @@ async function cmdRun(flags) {
   const task = harness.transitionTask(repo, taskId, 'executing');
   let result;
   try {
-    result = await observeManagedAdapter(
-      command,
-      [...(preparation.launch_arguments || []), ...userArgs],
-      preparation.workspace_path,
-      harness,
-      repo,
-      task.task_id,
-      preparation.wall_time_deadline,
-    );
+    if (agent === 'codex' && flags['codex-app-server']) {
+      // The experimental app-server protocol is owned end-to-end by Rust. This call blocks only
+      // while the managed turn runs; Node receives no transcript, approval payload, or policy
+      // decision to interpret. Keep commandOnPath above: it gives users an actionable error
+      // before entering a persisted execution state when Codex is not installed.
+      if (userArgs.length) throw new Error('Codex app-server managed runs do not accept pass-through agent arguments yet');
+      harness.runCodexAppServer(repo, task.task_id);
+      result = { status: 0, signal: null, timedOut: false };
+    } else {
+      result = await observeManagedAdapter(
+        command,
+        [...(preparation.launch_arguments || []), ...userArgs],
+        preparation.workspace_path,
+        harness,
+        repo,
+        task.task_id,
+        preparation.wall_time_deadline,
+      );
+    }
   } catch (error) {
     harness.transitionTask(repo, task.task_id, 'blocked');
     throw new Error(`managed ${agent} launch blocked: ${error.message}`);
@@ -1353,6 +1363,11 @@ async function main() {
                                         graph migration state, and available agent adapters.
   icarus policy check [--repo <dir>]    validate the tracked repository policy in the Rust
                                         authority; malformed policy blocks managed runs.
+  icarus run --task <TASK-ID> --agent <claude|codex|cursor|grok> [--workspace isolated|current]
+                                        launch a governed adapter. Codex defaults to its stable
+                                        CLI compatibility path; --codex-app-server enables the
+                                        Rust-owned experimental protocol bridge, which fails
+                                        closed on approvals until its path-evidence gate lands.
   icarus task start --objective <text> --contract <contract.json> [--repo <dir>]
                                         create a Rust-governed task with an immutable v1 contract.
   icarus task <status|resume> <TASK-ID> [--repo <dir>]

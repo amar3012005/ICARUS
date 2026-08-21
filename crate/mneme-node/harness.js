@@ -128,6 +128,10 @@ function decideCodexAppServerApproval(repoRoot, taskId, method, params) {
   return invoke('harnessDecideCodexAppServerApproval', [repoRoot, taskId, method, JSON.stringify(params)]);
 }
 
+function runCodexAppServer(repoRoot, taskId, prompt) {
+  return invoke('harnessRunCodexAppServer', [repoRoot, taskId, prompt]);
+}
+
 function handoffManagedTask(repoRoot, taskId) {
   return invoke('harnessHandoffManagedTask', [repoRoot, taskId]);
 }
@@ -173,6 +177,7 @@ module.exports = {
   bindCodexAppServerThread,
   recordCodexAppServerEvent,
   decideCodexAppServerApproval,
+  runCodexAppServer,
   handoffManagedTask,
   recordAdapterLifecycle,
   __setNativeHarnessBridgeForTest,

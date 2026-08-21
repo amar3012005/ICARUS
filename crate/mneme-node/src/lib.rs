@@ -505,6 +505,24 @@ pub fn harness_decide_codex_app_server_approval(
     )
 }
 
+/// Execute one governed Codex app-server turn inside the Rust native addon. This is synchronous
+/// by design: JavaScript only invokes the native bridge and then performs its usual post-run
+/// reconciliation; it never parses app-server events or decides an approval.
+#[napi]
+pub fn harness_run_codex_app_server(
+    repo_root: String,
+    task_id: String,
+    prompt: Option<String>,
+) -> Result<String> {
+    harness::run_codex_app_server_bridge(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        prompt.as_deref(),
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::json!({"completed": true}))
+}
+
 /// Hand a prepared managed execution to ICARUS verification. This does not accept an agent
 /// result or seal a task; it only records the durable execution-to-verification boundary.
 #[napi]

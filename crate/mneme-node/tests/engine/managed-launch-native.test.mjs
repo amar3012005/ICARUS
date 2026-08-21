@@ -107,3 +107,73 @@ printf '%s\\n' '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('experimental Codex app-server launch stays in the Rust native authority end-to-end', () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-codex-app-server-'));
+  const shimDir = join(root, 'bin');
+  const repo = join(root, 'repo');
+  const contractPath = join(root, 'contract.json');
+  try {
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(join(repo, 'README.md'), 'native Codex fixture\n');
+    const git = (args) => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+      assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`);
+    };
+    git(['init', '-q']);
+    git(['config', 'user.email', 'icarus-test@example.invalid']);
+    git(['config', 'user.name', 'ICARUS Test']);
+    git(['add', '.']);
+    git(['commit', '-qm', 'fixture']);
+    writeFileSync(contractPath, JSON.stringify({
+      allowed_paths: ['src/**'], forbidden_paths: ['secrets/**'], acceptance_criteria: [],
+      risk: 'low', budgets: {}, authority: 'local', external_write_policy: 'approval_required',
+    }));
+    const env = { ICARUS_HOME: join(root, 'home') };
+    requireSuccess(['harness', 'init', '--agent', 'codex', '--repo', repo], { env });
+    git(['add', '.icarus']);
+    git(['commit', '-qm', 'add harness contract']);
+    const started = requireSuccess(['task', 'start', '--objective', 'native Codex fixture', '--contract', contractPath, '--repo', repo], { env });
+    const taskId = started.output.match(/started\s+(TASK-[A-Z0-9]+)/)?.[1];
+    assert.ok(taskId, `task id missing from: ${started.output}`);
+    for (const state of ['orienting', 'contracted', 'planned']) {
+      requireSuccess(['task', 'transition', taskId, state, '--repo', repo], { env });
+    }
+    const shim = join(shimDir, 'codex');
+    writeFileSync(shim, `#!/bin/sh
+set -eu
+if [ "${'$'}#" -eq 1 ] && [ "${'$'}1" = "--version" ]; then printf 'fake codex 0.0.0\\n'; exit 0; fi
+[ "${'$'}1" = "app-server" ] || exit 71
+while IFS= read -r line; do
+  case "${'$'}line" in
+    *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*)
+      echo '{"method":"thread/started","params":{"thread":{"id":"thread-native"}}}'
+      echo '{"id":2,"result":{"thread":{"id":"thread-native"}}}' ;;
+    *'"method":"turn/start"'*)
+      echo '{"id":3,"result":{"turn":{"id":"turn-native"}}}'
+      echo '{"id":90,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-native","turnId":"turn-native","itemId":"item-native","startedAtMs":1}}'
+      IFS= read -r approval
+      case "${'$'}approval" in *'"decision":"decline"'*) ;; *) exit 72 ;; esac
+      echo '{"method":"turn/started","params":{"threadId":"thread-native","turnId":"turn-native","startedAtMs":2}}'
+      echo '{"method":"item/completed","params":{"threadId":"thread-native","turnId":"turn-native","completedAtMs":3,"item":{"id":"item-native","type":"agentMessage"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native"}}}'
+      exit 0 ;;
+  esac
+done
+exit 73
+`);
+    chmodSync(shim, 0o755);
+    const launched = requireSuccess(['run', '--task', taskId, '--agent', 'codex', '--workspace', 'current', '--acknowledge-dirty-current', '--codex-app-server', '--repo', repo], {
+      env: { ...env, PATH: `${shimDir}:${process.env.PATH}` },
+    });
+    assert.match(launched.output, /→ verifying/);
+    const events = readFileSync(join(repo, '.icarus/runtime/logs/events.jsonl'), 'utf8');
+    for (const eventType of ['codex_app_server_thread_bound', 'codex_app_server_approval_declined', 'codex_app_server_turn_completed', 'adapter_session_ended']) {
+      assert.match(events, new RegExp(eventType));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

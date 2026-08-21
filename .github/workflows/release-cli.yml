@@ -122,6 +122,13 @@ jobs:
         working-directory: crate/mneme-node
         run: npx napi build --release --target ${{ matrix.target }}
 
+      # The app-server harness route lives in the Rust native addon, not in the Bun/TUI layer.
+      # Exercise the real CLI -> addon -> fake Codex JSON-RPC boundary after this platform's
+      # addon has been built, so a release cannot publish a CLI that merely prints the command.
+      - name: Native managed-agent conformance
+        working-directory: crate/mneme-node
+        run: npm run test:engine
+
       # `bun build --compile` bundles the Rust addon AND a JS runtime into one file, which is
       # what makes the install a single download with no toolchain on the target machine.
       - name: Compile single-file CLI

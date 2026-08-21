@@ -4,6 +4,8 @@
 //! local authority for repository identity, policy, event history, locks, and runtime snapshots.
 //! Language bindings may call it, but must not reimplement these invariants.
 
+mod codex_app_server;
+
 use globset::{Glob, GlobSetBuilder};
 use mneme_bm25::{bm25_search, Bm25Doc, Bm25Params};
 use rusqlite::{Connection, OpenFlags};
@@ -19,6 +21,28 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Run one governed Codex app-server turn through Rust's process, policy, event and lifecycle
+/// authority. This uses the user-installed `codex` client and never supplies a model or key.
+pub fn run_codex_app_server_bridge(
+    repo_root: &Path,
+    task_id: &str,
+    prompt: Option<&str>,
+) -> Result<()> {
+    codex_app_server::run(repo_root, task_id, prompt, "codex")
+}
+
+/// Developer/test variant of the same bridge. Production N-API callers cannot choose an
+/// arbitrary command; this remains public only so the standalone bridge binary can use a
+/// deliberate local fixture without duplicating authority code.
+pub fn run_codex_app_server_bridge_with_command(
+    repo_root: &Path,
+    task_id: &str,
+    prompt: Option<&str>,
+    command: &str,
+) -> Result<()> {
+    codex_app_server::run(repo_root, task_id, prompt, command)
+}
 
 const MANIFEST_VERSION: u32 = 1;
 const RUNTIME_DIR: &str = ".icarus/runtime";
