@@ -17,7 +17,8 @@
   <a href="https://github.com/amar3012005/ICARUS#the-case-for-a-memory-file">Why ICARUS</a> ·
   <a href="https://github.com/amar3012005/ICARUS#what-happens-on-recall">Recall</a> ·
   <a href="https://github.com/amar3012005/ICARUS#use-it-from-your-agent">Agent CLI</a> ·
-  <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a>
+  <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a> ·
+  <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a>
 </p>
 
 <img src="assets/icarus-readme-storyboard.jpg" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, local developer capability, and AMR format overview" width="100%" />
