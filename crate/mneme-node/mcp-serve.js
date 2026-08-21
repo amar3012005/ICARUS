@@ -686,6 +686,34 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_seal',
+    {
+      title: 'Seal a governed task only after native evidence checks pass',
+      description: 'Call only in verifying state after every required immutable criterion has a current passing receipt. ICARUS checks receipt freshness, approvals, scope, unresolved high-risk issues, and the event chain itself. A seal result is structured evidence, never an agent claim that work is complete.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try {
+        const result = harnessFor().sealTask(repo, task_id);
+        const task = harnessFor().taskStatus(repo, task_id);
+        return textResult({ task_id: task.task_id, execution_id: task.execution_id, status: task.status, ...result, issues: result.issues || [] });
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_task_export',
+    {
+      title: 'Export a sealed task receipt',
+      description: 'Read-only export of a sealed task’s final deterministic receipt. Set redacted=true before sharing outside the repository: it removes objective text, paths, output excerpts, artifact lists, and attestations while retaining status and evidence digests.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string(), redacted: z.boolean().default(true) },
+    },
+    async ({ repo, task_id, redacted }) => {
+      try { return textResult(harnessFor().exportTask(repo, task_id, redacted)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_propose',
     {
       title: 'Propose a governed ICARUS harness procedure',

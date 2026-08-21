@@ -95,6 +95,8 @@ test('MCP stdio server completes initialize and exposes the public tool surface'
     'icarus_save_memory',
     'icarus_task_start',
     'icarus_context_get',
+    'icarus_task_seal',
+    'icarus_task_export',
   ]) assert.ok(names.includes(name), `missing MCP tool ${name}`);
   assert.equal(mcp.messages.some((message) => message.error), false);
 });
