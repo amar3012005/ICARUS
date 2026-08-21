@@ -545,6 +545,7 @@ dependencies = [
 name = "icarus-harness"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "globset",
  "libc",
  "mneme-bm25",

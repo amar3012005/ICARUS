@@ -336,14 +336,14 @@ fn adapter_launch_arguments(
     adapter_config_paths: &[PathBuf],
     adapter_settings_path: Option<&Path>,
 ) -> Vec<String> {
-    let workspace = workspace.display().to_string();
+    let workspace = external_path(workspace);
     match agent {
         // Codex's built-in sandbox is an additional boundary around the isolated worktree.
         // `on-request` keeps potentially external/elevated commands visible to the human.
         "codex" => {
             let developer_instructions = format!(
                 "This is governed ICARUS task {task_id}. Read the launch-time ICARUS context pack at {} before planning. Use the ICARUS MCP lifecycle and verification tools; do not claim verification without ICARUS receipts.",
-                context_pack_path.display(),
+                external_path(context_pack_path),
             );
             // `--config` values are documented Codex TOML overrides. They are constructed here,
             // in Rust, and user-provided config/profile flags are rejected below so this launch
@@ -386,12 +386,12 @@ fn adapter_launch_arguments(
                 "--append-system-prompt".into(),
                 format!(
                     "This is governed ICARUS task {task_id}. Read the launch-time ICARUS context pack at {} before planning; do not claim verification without ICARUS receipts.",
-                    context_pack_path.display(),
+                    external_path(context_pack_path),
                 ),
             ];
             for config in adapter_config_paths {
                 arguments.push("--mcp-config".into());
-                arguments.push(config.display().to_string());
+                arguments.push(external_path(config));
             }
             // The generated file provides the ICARUS task lifecycle/context tools. Requiring
             // this explicit config prevents unrelated user/global MCP configuration from
@@ -405,7 +405,7 @@ fn adapter_launch_arguments(
                 // settings, and user-provided `--settings` is rejected by the native argument
                 // validator below.
                 arguments.push("--settings".into());
-                arguments.push(settings.display().to_string());
+                arguments.push(external_path(settings));
             }
             arguments
         }
@@ -927,6 +927,24 @@ fn canonical_root(repo_root: &Path) -> Result<PathBuf> {
     repo_root.canonicalize().map_err(HarnessError::from)
 }
 
+/// Rust keeps canonical paths for authority checks. Windows represents those as `\\?\C:\…`,
+/// but Git, cmd.exe, and several CLI adapters reject that extended-length presentation. Convert
+/// only when crossing into an external process or serializing a launch configuration; never use
+/// this presentation for filesystem authorization.
+fn external_path(path: &Path) -> String {
+    let rendered = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = rendered.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(normal) = rendered.strip_prefix(r"\\?\") {
+            return normal.to_owned();
+        }
+    }
+    rendered.into_owned()
+}
+
 fn manifest_path(root: &Path) -> PathBuf {
     root.join(".icarus/manifest.yaml")
 }
@@ -944,7 +962,7 @@ fn remote_url(root: &Path) -> String {
     Command::new("git")
         .args([
             "-C",
-            &root.display().to_string(),
+            &external_path(root),
             "config",
             "--get",
             "remote.origin.url",
@@ -1924,7 +1942,7 @@ fn git_repository(root: &Path) -> bool {
     Command::new("git")
         .args([
             "-C",
-            &root.display().to_string(),
+            &external_path(root),
             "rev-parse",
             "--is-inside-work-tree",
         ])
@@ -2006,11 +2024,11 @@ pub fn prepare_run(
             let output = Command::new("git")
                 .args([
                     "-C",
-                    &root.display().to_string(),
+                    &external_path(&root),
                     "worktree",
                     "add",
                     "--detach",
-                    &path.display().to_string(),
+                    &external_path(&path),
                     "HEAD",
                 ])
                 .output()
@@ -2053,18 +2071,18 @@ pub fn prepare_run(
         agent: agent.clone(),
         workspace_mode,
         worktree_id: worktree_id.clone(),
-        workspace_path: workspace_path.display().to_string(),
+        workspace_path: external_path(&workspace_path),
         base_git_sha,
         base_dirty_state_fingerprint,
-        context_pack_path: context_pack_path.display().to_string(),
+        context_pack_path: external_path(&context_pack_path),
         context_pack_hash,
         adapter_config_paths: adapter_config_paths
             .iter()
-            .map(|path| path.display().to_string())
+            .map(|path| external_path(path))
             .collect(),
         adapter_settings_path: adapter_settings_path
             .as_ref()
-            .map(|path| path.display().to_string()),
+            .map(|path| external_path(path)),
         certification: certification.into(),
         compatibility_mode: certification != "certified",
         capabilities,
@@ -2101,7 +2119,7 @@ pub fn prepare_run(
 fn git_checked_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(root)
+        .arg(external_path(root))
         .args(args)
         .output()
         .map_err(HarnessError::from)?;
@@ -2122,10 +2140,11 @@ fn git_apply_patch(root: &Path, patch: &[u8]) -> Result<()> {
     }
     for check in [true, false] {
         let mut command = Command::new("git");
-        command
-            .arg("-C")
-            .arg(root)
-            .args(["apply", "--binary", "--whitespace=nowarn"]);
+        command.arg("-C").arg(external_path(root)).args([
+            "apply",
+            "--binary",
+            "--whitespace=nowarn",
+        ]);
         if check {
             command.arg("--check");
         }
@@ -3915,7 +3934,7 @@ fn read_checkpoints(root: &Path, task_id: &str) -> Result<Vec<Checkpoint>> {
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     Command::new("git")
         .arg("-C")
-        .arg(root)
+        .arg(external_path(root))
         .args(args)
         .output()
         .ok()
@@ -4186,19 +4205,16 @@ fn repo_local_org(root: &Path) -> String {
     }
 }
 
-#[cfg(unix)]
 struct SharedShardReadLock(File);
 
-#[cfg(unix)]
 impl SharedShardReadLock {
     fn acquire(path: &Path) -> std::result::Result<Self, String> {
-        use std::os::unix::io::AsRawFd;
+        use fs2::FileExt;
         let file = File::open(path).map_err(|error| error.to_string())?;
-        // SAFETY: the descriptor belongs to `file` for the duration of the call. A shared,
-        // non-blocking lock gives readers a stable committed snapshot without waiting behind a
-        // long-running ingest or opening a competing writer handle.
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
-        if result == 0 {
+        // A shared, non-blocking lock gives readers a stable committed snapshot without waiting
+        // behind a long-running ingest or opening a competing writer handle. fs2 maps this to
+        // the supported advisory primitive on both Unix and Windows.
+        if FileExt::try_lock_shared(&file).is_ok() {
             Ok(Self(file))
         } else {
             Err("repo-local shard is busy; retry after the writer releases shard.lock".into())
@@ -4206,22 +4222,11 @@ impl SharedShardReadLock {
     }
 }
 
-#[cfg(unix)]
 impl Drop for SharedShardReadLock {
     fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: this descriptor is owned by the guard and the unlock is best-effort only.
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-
-#[cfg(not(unix))]
-struct SharedShardReadLock;
-
-#[cfg(not(unix))]
-impl SharedShardReadLock {
-    fn acquire(_path: &Path) -> std::result::Result<Self, String> {
-        Err("repo-local AMR read locking is unsupported on this platform".into())
+        use fs2::FileExt;
+        // This descriptor is owned by the guard and the unlock is best-effort only.
+        let _ = FileExt::unlock(&self.0);
     }
 }
 
@@ -6176,7 +6181,9 @@ fn process_is_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, STILL_ACTIVE,
+    };
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -6185,11 +6192,13 @@ fn process_is_alive(pid: u32) -> bool {
         return false;
     }
 
-    // Query the process without granting destructive rights. A failed open or status query is
-    // treated as live: an inaccessible owner must never make its runtime lock reclaimable.
+    // Query the process without granting destructive rights. Access denied is treated as live:
+    // an inaccessible owner must never make its runtime lock reclaimable. Windows documents
+    // ERROR_INVALID_PARAMETER specifically for a PID that no longer exists, which is safe to
+    // reclaim after the independent stale-age gate has elapsed.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
-        return true;
+        return unsafe { GetLastError() } != ERROR_INVALID_PARAMETER;
     }
     let mut exit_code = 0u32;
     let query_succeeded = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;

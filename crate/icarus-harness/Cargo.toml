@@ -22,6 +22,7 @@ time = { version = "=0.3.36", features = ["formatting", "parsing"] }
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 mseg = { path = "../mseg" }
 mneme-bm25 = { path = "../mneme-bm25" }
+fs2 = "=0.4.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.186"

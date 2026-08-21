@@ -1991,6 +1991,9 @@ fn current_workspace_reconciliation_preserves_baseline_and_blocks_scope_escape()
     assert!(events.contains("README.md"));
 }
 
+// Windows rejects this embedded-newline filename before Git can report it. The Unix test keeps
+// coverage for the NUL-delimited Git path invariant where such a filename is representable.
+#[cfg(not(windows))]
 #[test]
 fn seal_uses_nul_delimited_git_paths_for_scope_enforcement() {
     let repo = initialized_git_repo();
