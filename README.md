@@ -18,6 +18,7 @@
   <a href="https://github.com/amar3012005/ICARUS#what-happens-on-recall">Recall</a> ·
   <a href="https://github.com/amar3012005/ICARUS#use-it-from-your-agent">Agent CLI</a> ·
   <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a> ·
+  <a href="docs/HARNESS_QUICKSTART.md">Harness quickstart</a> ·
   <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a>
 </p>
 
@@ -148,6 +149,22 @@ icarus status
 | `icarus status` | Show local shard state. |
 
 </details>
+
+## Govern a coding task
+
+For repository-scale coding work, ICARUS can run as a deterministic harness around an installed
+coding agent: immutable contracts, bounded local context, isolated worktrees, executed verification
+receipts, and a seal gate. It does not call an LLM itself or turn an agent claim into proof.
+
+```bash
+icarus harness init --agent claude
+icarus task start --objective "Add scoped authentication" --contract contract.json
+icarus context build --task TASK-… --budget 20000 --format markdown
+icarus run --task TASK-… --agent claude
+```
+
+Read the [Harness quickstart](docs/HARNESS_QUICKSTART.md) before using a managed task, and the
+[adapter certification matrix](docs/ADAPTER_CERTIFICATION.md) for the exact current guarantees.
 
 ## Use it from Node
 
