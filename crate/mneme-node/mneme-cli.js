@@ -536,23 +536,23 @@ async function cmdRun(flags) {
   }
 }
 
-function cmdHarnessSkill(flags) {
+function cmdHarnessSkill(flags, command = 'harness-skill') {
   const [subcommand, skillId] = flags._;
   const repo = flags.repo || process.cwd();
   const harness = require('./harness.js');
   if (subcommand === 'propose') {
-    if (!flags.file) throw new Error('usage: icarus harness-skill propose --file <skill.json> [--repo <dir>]');
+    if (!flags.file) throw new Error(`usage: icarus ${command} propose --file <skill.json> [--repo <dir>]`);
     const skill = JSON.parse(fs.readFileSync(flags.file, 'utf8'));
     console.log(ok(`proposed harness skill ${harness.proposeSkill(repo, skill).id}`));
     return;
   }
   if (subcommand === 'promote') {
-    if (!skillId) throw new Error('usage: icarus harness-skill promote <skill-id> [--approval <id>] [--repo <dir>]');
+    if (!skillId) throw new Error(`usage: icarus ${command} promote <skill-id> [--approval <id>] [--repo <dir>]`);
     console.log(ok(`activated harness skill ${harness.promoteSkill(repo, skillId, flags.approval).id}`));
     return;
   }
   if (subcommand === 'evaluate') {
-    if (!skillId || !flags['replay-task']) throw new Error('usage: icarus harness-skill evaluate <skill-id> --replay-task <TASK-ID> [--repo <dir>]');
+    if (!skillId || !flags['replay-task']) throw new Error(`usage: icarus ${command} evaluate <skill-id> --replay-task <TASK-ID> [--repo <dir>]`);
     const evaluation = harness.evaluateSkill(repo, skillId, flags['replay-task']);
     console.log(evaluation.status === 'pass' ? ok(`recorded native replay evaluation for ${c.path(skillId)}`) : err(`replay evaluation failed for ${c.path(skillId)}`));
     for (const issue of evaluation.issues || []) console.log(c.dim(`  · ${issue}`));
@@ -560,7 +560,7 @@ function cmdHarnessSkill(flags) {
     return;
   }
   if (subcommand === 'outcome') {
-    if (!skillId || !flags.task) throw new Error('usage: icarus harness-skill outcome <skill-id> --task <TASK-ID> [--repo <dir>]');
+    if (!skillId || !flags.task) throw new Error(`usage: icarus ${command} outcome <skill-id> --task <TASK-ID> [--repo <dir>]`);
     const outcome = harness.recordActiveSkillOutcome(repo, skillId, flags.task);
     console.log(outcome.status === 'pass' ? ok(`recorded native skill outcome for ${c.path(skillId)}`) : err(`recorded failed native skill outcome for ${c.path(skillId)}`));
     for (const issue of outcome.issues || []) console.log(c.dim(`  · ${issue}`));
@@ -575,11 +575,11 @@ function cmdHarnessSkill(flags) {
     return;
   }
   if (subcommand === 'retire') {
-    if (!skillId || !flags.reason) throw new Error('usage: icarus harness-skill retire <skill-id> --reason <reason> --approval <id> [--repo <dir>]');
+    if (!skillId || !flags.reason) throw new Error(`usage: icarus ${command} retire <skill-id> --reason <reason> --approval <id> [--repo <dir>]`);
     console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
     return;
   }
-  throw new Error('usage: icarus harness-skill <propose|evaluate|outcome|review|promote|retire>');
+  throw new Error(`usage: icarus ${command} <propose|evaluate|outcome|review|promote|retire>`);
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1248,6 +1248,7 @@ async function main() {
       case 'context': cmdContext(flags); break;
       case 'run': await cmdRun(flags); break;
       case 'harness-skill': cmdHarnessSkill(flags); break;
+      case 'learn': cmdHarnessSkill(flags, 'learn'); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -1304,24 +1305,25 @@ async function main() {
   icarus train-pq --org <name> [--seed 42]
                                         train PQ codebook -> enables --pq recall (see below)
   icarus status                        shards + disk usage
-  icarus harness-skill propose --file <skill.json> [--repo <dir>]
+  icarus learn propose --file <skill.json> [--repo <dir>]
                                         submit a reusable, untrusted coding procedure backed by
                                         sealed governed tasks; it cannot enter agent context yet.
-  icarus harness-skill evaluate <id> --replay-task <TASK-ID> [--repo <dir>]
+  icarus learn evaluate <id> --replay-task <TASK-ID> [--repo <dir>]
                                         record a native evaluation of an independently sealed
                                         replay task that checkpointed the proposed skill id.
-  icarus harness-skill outcome <id> --task <TASK-ID> [--repo <dir>]
+  icarus learn outcome <id> --task <TASK-ID> [--repo <dir>]
                                         record the native terminal outcome of a task that
                                         checkpointed an active skill; outcome is never agent prose.
-  icarus harness-skill review [--repo <dir>]
+  icarus learn review [--repo <dir>]
                                         demote active skills with 3 native failures, a safety
                                         violation, incompatible policy/schema, or stale proof.
-  icarus harness-skill promote <id> [--approval <id>] [--repo <dir>]
+  icarus learn promote <id> [--approval <id>] [--repo <dir>]
                                         activate a replay-verified procedure. High-risk skills
                                         require an attributable owner approval.
-  icarus harness-skill retire <id> --reason <text> --approval <id> [--repo <dir>]
+  icarus learn retire <id> --reason <text> --approval <id> [--repo <dir>]
                                         remove a stale or unsafe procedure from future governed
                                         context while preserving its approval-backed audit trail.
+                                        harness-skill remains a compatibility alias.
   icarus setup                         guided, one-by-one wizard: detect coding agents, connect
                                         memory generation, embeddings, HIVEMIND — do this first
   icarus connect [--api-url <url>] [--token <tok>] [--oauth-only]
