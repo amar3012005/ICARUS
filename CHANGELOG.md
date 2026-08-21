@@ -21,6 +21,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 - **Update checksum enforcement:** `/update` now fetches the release `.sha256` sidecar and refuses
   a missing, ambiguous, wrong-platform, or mismatched digest before executing or atomically
   replacing the current binary.
+- **Rollback-safe first install/update:** the `install.sh` binary path now retains one
+  last-known-good executable, restores it after an interrupted handoff, and restores it
+  immediately if the final candidate move fails. This is verified in an isolated temporary
+  ICARUS home; it never operates on a developer's real installation during tests.
 - **Managed-agent conformance process:** public native-addon CI now launches a disposable fake
   Claude-compatible process through the real CLI, Rust task lifecycle, documented pre/post hooks,
   path authorization, scope reconciliation, and verification handoff. It is evidence for the

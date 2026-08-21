@@ -67,3 +67,13 @@ test('REGRESSION: first-time binary install verifies the exact platform checksum
   assert.match(installer, /chmod \+x "\$BIN_DIR\/icarus\.tmp"/);
   assert.ok(installer.indexOf('downloaded binary failed SHA-256 verification') < installer.indexOf('chmod +x "$BIN_DIR/icarus.tmp"'));
 });
+
+test('REGRESSION: installer preserves a rollback binary and recovers an interrupted handoff', () => {
+  const installer = readFileSync(join(ROOT, 'install.sh'), 'utf8');
+  assert.match(installer, /recover_interrupted_binary_install\(\)/);
+  assert.match(installer, /commit_verified_binary\(\)/);
+  assert.match(installer, /icarus\.rollback-tmp/);
+  assert.match(installer, /icarus\.previous/);
+  assert.match(installer, /could not commit the new CLI — restoring the previous install/);
+  assert.ok(installer.indexOf('commit_verified_binary "$BIN_DIR/icarus.tmp"') > installer.indexOf('downloaded binary failed SHA-256 verification'));
+});

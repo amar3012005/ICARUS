@@ -134,6 +134,55 @@ release_asset_checksum() {
   ' "$sidecar"
 }
 
+# A checksum-valid candidate can still encounter a local failure while it is being committed.
+# Keep one last-known-good binary and a short-lived handoff file so a power loss cannot turn a
+# working installation into a missing command.  These names intentionally live beside the
+# target: rename(2) is atomic only within one filesystem.
+recover_interrupted_binary_install() {
+  local target="$BIN_DIR/icarus" staged="$BIN_DIR/icarus.rollback-tmp" previous="$BIN_DIR/icarus.previous"
+  [ -e "$target" ] && return 0
+
+  if [ -e "$staged" ]; then
+    warn "recovering the previous CLI after an interrupted install"
+    mv "$staged" "$target" || die "could not recover $target from $staged; refusing to continue"
+    return 0
+  fi
+  if [ -e "$previous" ]; then
+    warn "recovering the last known-good CLI after an interrupted install"
+    mv "$previous" "$target" || die "could not recover $target from $previous; refusing to continue"
+  fi
+}
+
+commit_verified_binary() {
+  local candidate="$1" target="$BIN_DIR/icarus" staged="$BIN_DIR/icarus.rollback-tmp" previous="$BIN_DIR/icarus.previous"
+
+  # Do not overwrite a stale handoff.  If it exists, it is the only recoverable copy of a
+  # previously working CLI and must be restored before another update is attempted.
+  recover_interrupted_binary_install
+
+  if [ -e "$target" ]; then
+    if ! mv "$target" "$staged"; then
+      warn "could not stage the current CLI for rollback — keeping the existing install"
+      return 1
+    fi
+  fi
+
+  if ! mv "$candidate" "$target"; then
+    warn "could not commit the new CLI — restoring the previous install"
+    if [ -e "$staged" ] && ! mv "$staged" "$target"; then
+      die "new CLI was not committed and rollback failed; $staged contains the recoverable binary"
+    fi
+    return 1
+  fi
+
+  # The new executable was preflighted before this point.  Retain exactly one known-good
+  # predecessor for an operator rollback.  A failure here leaves the new executable working and
+  # the staged predecessor intact, which recovery will preserve on the next install attempt.
+  if [ -e "$staged" ] && ! mv "$staged" "$previous"; then
+    warn "new CLI installed, but its rollback copy could not be finalized at $previous"
+  fi
+}
+
 try_binary_install() {
   local asset url expected actual matches
   asset="$(binary_asset_name)" || { warn "no prebuilt binary for $(uname -s)/$(uname -m) — building from source"; return 1; }
@@ -144,6 +193,7 @@ try_binary_install() {
   fi
   info "Downloading prebuilt binary ($asset, ~65MB)"
   mkdir -p "$HOME_DIR" "$DATA_DIR" "$BIN_DIR"
+  recover_interrupted_binary_install
   # -s (silent) hides curl's own progress entirely -- on a slow connection this ~65MB download
   # can run a minute or more with ZERO screen output, indistinguishable from a hang (a real user
   # report: "stuck here" right after this line, when it was actually still downloading at ~50%).
@@ -180,7 +230,10 @@ try_binary_install() {
     rm -f "$BIN_DIR/icarus.tmp"
     return 1
   fi
-  mv "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus"
+  if ! commit_verified_binary "$BIN_DIR/icarus.tmp"; then
+    rm -f "$BIN_DIR/icarus.tmp"
+    return 1
+  fi
   ok "Installed CLI → $BIN_DIR/icarus (single binary, no toolchain needed)"
   USED_BINARY=1
   return 0
