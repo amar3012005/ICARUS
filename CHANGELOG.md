@@ -9,6 +9,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Claude managed-run evidence hooks:** task-scoped Claude settings now capture completed
+  `Edit`/`Write` calls (`PostToolUse`) and stop requests (`Stop`) in ICARUS's Rust-owned,
+  tamper-evident audit chain. Pre-action authorization remains the only blocking hook; post and
+  stop receipts are deliberately observational and do not falsely claim verification, sealing,
+  or full command interception.
 - **Python binding** (`mneme-python`, pyo3 + maturin, `abi3-py38` — one wheel across Python
   3.8-3.13+). Same engine and on-disk format the Node binding wraps, not a reimplementation:
   open, insert (plain and layered), vector recall (plain and layer-filtered), native BM25,

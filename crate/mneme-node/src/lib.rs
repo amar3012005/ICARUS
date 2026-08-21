@@ -415,6 +415,29 @@ pub fn harness_authorize_adapter_write(
     )
 }
 
+/// Record a typed Claude Edit/Write PostToolUse observation in the Rust audit chain. This is a
+/// tool-boundary record only; it cannot substitute for an ICARUS verification receipt.
+#[napi]
+pub fn harness_record_adapter_post_action(
+    repo_root: String,
+    task_id: String,
+    agent: String,
+    tool_name: String,
+    path: String,
+) -> Result<String> {
+    let receipt = harness::record_adapter_post_action(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        &agent,
+        &tool_name,
+        &path,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(receipt).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 /// Record a typed adapter process boundary observed by the local managed launcher. This bridge
 /// exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
 /// chain, so a presentation client cannot turn model prose into trusted execution evidence.

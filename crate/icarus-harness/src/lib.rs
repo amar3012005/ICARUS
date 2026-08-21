@@ -406,17 +406,26 @@ fn persist_adapter_config(
     // Rust. It is intentionally scoped to Edit/Write: arbitrary Bash cannot be soundly reduced
     // to a set of files before shell execution, so it remains manual-permission compatibility
     // mode rather than pretending full command interception exists.
-    let hook_command = format!(
-        "icarus harness hook --task {} --event pre-tool --repo \"$CLAUDE_PROJECT_DIR\"",
-        task.task_id
-    );
+    let hook_command = |event: &str| {
+        format!(
+            "icarus harness hook --task {} --event {event} --repo \"$CLAUDE_PROJECT_DIR\"",
+            task.task_id
+        )
+    };
     let settings_path = directory.join(format!("{}.claude-settings.json", task.execution_id));
     let settings = serde_json::to_vec_pretty(&json!({
         "disableAllHooks": false,
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Edit|Write",
-                "hooks": [{"type": "command", "command": hook_command, "timeout": 30}]
+                "hooks": [{"type": "command", "command": hook_command("pre-tool"), "timeout": 30}]
+            }],
+            "PostToolUse": [{
+                "matcher": "Edit|Write",
+                "hooks": [{"type": "command", "command": hook_command("post-tool"), "timeout": 30}]
+            }],
+            "Stop": [{
+                "hooks": [{"type": "command", "command": hook_command("stop"), "timeout": 30}]
             }]
         }
     }))?;
@@ -677,6 +686,21 @@ pub struct AdapterAuthorizationReceipt {
     pub path: String,
     pub allowed: bool,
     pub reason: String,
+    pub event_sequence: u64,
+}
+
+/// A typed post-action receipt captured by a documented adapter hook. It describes only the
+/// tool boundary, not whether the requested contents were semantically correct; verification
+/// and sealing remain separate Rust-owned operations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterPostActionReceipt {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub execution_id: String,
+    pub agent: String,
+    pub tool_name: String,
+    pub path: String,
     pub event_sequence: u64,
 }
 
@@ -4479,13 +4503,70 @@ pub fn authorize_adapter_write(
     })
 }
 
+/// Capture the completion of a Claude Edit/Write tool invocation. The path is revalidated in
+/// Rust because post-action hooks are still untrusted process input; this receipt never turns a
+/// successful tool call into a verification or seal claim.
+pub fn record_adapter_post_action(
+    repo_root: &Path,
+    task_id: &str,
+    agent: &str,
+    tool_name: &str,
+    path: &str,
+) -> Result<AdapterPostActionReceipt> {
+    if agent != "claude" || !matches!(tool_name, "Edit" | "Write") {
+        return Err(HarnessError::invalid(
+            "adapter post-action capture only supports Claude Edit or Write hooks",
+        ));
+    }
+    let root = canonical_root(repo_root)?;
+    let task = task_status(&root, task_id)?;
+    if task.status != "executing" {
+        return Err(HarnessError::invalid(
+            "adapter post-action capture requires an executing task",
+        ));
+    }
+    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
+        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
+    let run: RunPreparation = serde_json::from_value(run_value)?;
+    if run.task_id != task.task_id || run.execution_id != task.execution_id || run.agent != agent {
+        return Err(HarnessError::invalid(
+            "adapter post-action capture does not match the prepared execution",
+        ));
+    }
+    validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
+    let event = append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "adapter_post_action_observed".into(),
+            worktree_id: run.worktree_id,
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "observation": "hook_post_action",
+                "agent": agent,
+                "tool_name": tool_name,
+                "path": path,
+            }),
+        },
+    )?;
+    Ok(AdapterPostActionReceipt {
+        schema_version: 1,
+        task_id: task.task_id,
+        execution_id: task.execution_id,
+        agent: agent.into(),
+        tool_name: tool_name.into(),
+        path: path.into(),
+        event_sequence: event.sequence,
+    })
+}
+
 /// Record an adapter process lifecycle fact observed by the managed launcher.
 ///
-/// This is intentionally narrow. `adapter_session_started` and `adapter_session_ended` prove
-/// only that the launcher observed a local adapter process boundary for the prepared execution.
-/// They do *not* grant an adapter pre-action authorization, tool-event capture, or seal
-/// interception capability. Those claims remain false until an adapter has an independently
-/// verified hook/event integration.
+/// This is intentionally narrow. Session start/end prove launcher-observed local process
+/// boundaries; a stop observation proves only that the configured hook fired. None grants an
+/// adapter full completion interception or automatic sealing capability.
 pub fn record_adapter_lifecycle(
     repo_root: &Path,
     task_id: &str,
@@ -4494,15 +4575,19 @@ pub fn record_adapter_lifecycle(
 ) -> Result<AdapterLifecycleReceipt> {
     if !matches!(
         event_type,
-        "adapter_session_started" | "adapter_session_ended"
+        "adapter_session_started" | "adapter_session_ended" | "adapter_stop_observed"
     ) {
         return Err(HarnessError::invalid(
-            "adapter lifecycle event must be adapter_session_started or adapter_session_ended",
+            "adapter lifecycle event must be adapter_session_started, adapter_session_ended, or adapter_stop_observed",
         ));
     }
-    if event_type == "adapter_session_started" && exit_code.is_some() {
+    if matches!(
+        event_type,
+        "adapter_session_started" | "adapter_stop_observed"
+    ) && exit_code.is_some()
+    {
         return Err(HarnessError::invalid(
-            "adapter_session_started cannot contain an exit code",
+            "adapter_session_started and adapter_stop_observed cannot contain an exit code",
         ));
     }
     let root = canonical_root(repo_root)?;
@@ -4530,7 +4615,7 @@ pub fn record_adapter_lifecycle(
             timestamp: None,
             payload: json!({
                 "schema_version": 1,
-                "observation": "launcher_observed",
+                "observation": if event_type == "adapter_stop_observed" { "hook_stop_observed" } else { "launcher_observed" },
                 "agent": run.agent.clone(),
                 "exit_code": exit_code,
             }),

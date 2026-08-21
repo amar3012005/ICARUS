@@ -113,62 +113,76 @@ async function cmdIngest(flags, cfg) {
   console.log(`\n${ok(`ingested ${c.bold(result.chunks)} chunks from ${result.files} files into ${c.path(org)} (${result.live} live, mode=${result.mode})`)}`);
 }
 
+function normalizeClaudeHookPath(repo, rawPath) {
+  const root = fs.realpathSync(repo);
+  let candidate = path.resolve(root, String(rawPath || ''));
+  // Resolve the nearest existing ancestor. This catches both a target symlink and a symlinked
+  // parent before Claude's Write/Edit tool can follow it outside the workspace.
+  let existing = candidate;
+  const missing = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) throw new Error('file path has no existing workspace ancestor');
+    missing.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const resolvedExisting = fs.realpathSync(existing);
+  if (resolvedExisting !== root && !resolvedExisting.startsWith(`${root}${path.sep}`)) throw new Error('file path resolves outside the managed workspace');
+  // macOS commonly exposes the same filesystem as both /tmp and /private/tmp. Rebuild the
+  // candidate from the canonical ancestor before comparing paths, while retaining the symlink
+  // rejection above for existing targets and parent directories.
+  candidate = path.join(resolvedExisting, ...missing);
+  const relative = path.relative(root, candidate);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('file path escapes the managed workspace');
+  return relative.split(path.sep).join('/');
+}
+
 async function cmdHarness(flags) {
   const subcommand = flags._[0];
   if (subcommand === 'hook') {
     const taskId = flags.task;
     const event = flags.event;
-    if (!taskId || event !== 'pre-tool') throw new Error('usage: icarus harness hook --task <TASK-ID> --event pre-tool [--repo <dir>]');
+    if (!taskId || !['pre-tool', 'post-tool', 'stop'].includes(event)) throw new Error('usage: icarus harness hook --task <TASK-ID> --event <pre-tool|post-tool|stop> [--repo <dir>]');
     let input;
     try { input = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (error) {
-      console.error(`ICARUS denied hook: invalid Claude hook JSON (${error.message})`);
-      process.exitCode = 2;
+      console.error(`ICARUS hook error: invalid Claude hook JSON (${error.message})`);
+      process.exitCode = event === 'pre-tool' ? 2 : 1;
       return;
     }
-    // Claude Code's documented PreToolUse payload uses an absolute `file_path` for Edit/Write.
-    // Treat malformed, unknown, or symlink-escaping paths as denials rather than hoping the
-    // agent's tool layer will interpret them safely.
-    if (!['PreToolUse', 'pre_tool'].includes(input.hook_event_name) || !['Edit', 'Write'].includes(input.tool_name)) {
-      console.error('ICARUS denied hook: only Claude Edit/Write PreToolUse events are authorized');
-      process.exitCode = 2;
-      return;
-    }
-    const rawPath = input.tool_input && input.tool_input.file_path;
     const repo = flags.repo || process.cwd();
-    let root;
-    let candidate;
-    try {
-      root = fs.realpathSync(repo);
-      candidate = path.resolve(root, String(rawPath || ''));
-      // Resolve the nearest existing ancestor. This catches both a target symlink and a
-      // symlinked parent before Claude's Write/Edit tool can follow it outside the workspace.
-      let existing = candidate;
-      const missing = [];
-      while (!fs.existsSync(existing)) {
-        const parent = path.dirname(existing);
-        if (parent === existing) throw new Error('file path has no existing workspace ancestor');
-        missing.unshift(path.basename(existing));
-        existing = parent;
+    const harness = require('./harness.js');
+    if (event === 'stop') {
+      if (!['Stop', 'stop'].includes(input.hook_event_name)) {
+        console.error('ICARUS hook error: expected a Claude Stop event');
+        process.exitCode = 1;
+        return;
       }
-      const resolvedExisting = fs.realpathSync(existing);
-      if (resolvedExisting !== root && !resolvedExisting.startsWith(`${root}${path.sep}`)) throw new Error('file path resolves outside the managed workspace');
-      // macOS commonly exposes the same filesystem as both /tmp and /private/tmp. Rebuild the
-      // candidate from the canonical ancestor before comparing paths, while retaining the
-      // symlink rejection above for existing targets and parent directories.
-      candidate = path.join(resolvedExisting, ...missing);
-      const relative = path.relative(root, candidate);
-      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('file path escapes the managed workspace');
-      const decision = require('./harness.js').authorizeAdapterWrite(
-        repo,
-        taskId,
-        'claude',
-        input.tool_name,
-        relative.split(path.sep).join('/'),
-      );
-      if (!decision.allowed) throw new Error(decision.reason);
+      try { harness.recordAdapterLifecycle(repo, taskId, 'adapter_stop_observed'); } catch (error) {
+        console.error(`ICARUS hook error: ${error.message}`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+    const expectedEvent = event === 'pre-tool' ? ['PreToolUse', 'pre_tool'] : ['PostToolUse', 'post_tool'];
+    // Claude Code's documented tool hook payload uses an absolute `file_path` for Edit/Write.
+    // Treat malformed, unknown, or symlink-escaping paths as a pre-action denial; after a tool
+    // has already run, report capture failure without pretending it can undo the operation.
+    if (!expectedEvent.includes(input.hook_event_name) || !['Edit', 'Write'].includes(input.tool_name)) {
+      console.error(`ICARUS ${event === 'pre-tool' ? 'denied' : 'hook error'}: only Claude Edit/Write ${event === 'pre-tool' ? 'PreToolUse' : 'PostToolUse'} events are supported`);
+      process.exitCode = event === 'pre-tool' ? 2 : 1;
+      return;
+    }
+    try {
+      const relative = normalizeClaudeHookPath(repo, input.tool_input && input.tool_input.file_path);
+      if (event === 'pre-tool') {
+        const decision = harness.authorizeAdapterWrite(repo, taskId, 'claude', input.tool_name, relative);
+        if (!decision.allowed) throw new Error(decision.reason);
+      } else {
+        harness.recordAdapterPostAction(repo, taskId, 'claude', input.tool_name, relative);
+      }
     } catch (error) {
-      console.error(`ICARUS denied hook: ${error.message}`);
-      process.exitCode = 2;
+      console.error(`ICARUS ${event === 'pre-tool' ? 'denied' : 'hook error'}: ${error.message}`);
+      process.exitCode = event === 'pre-tool' ? 2 : 1;
     }
     return;
   }

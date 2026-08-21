@@ -44,6 +44,11 @@ export declare function harnessAuthorizeAction(repoRoot: string, taskId: string,
  */
 export declare function harnessAuthorizeAdapterWrite(repoRoot: string, taskId: string, agent: string, toolName: string, path: string): string
 /**
+ * Record a typed Claude Edit/Write PostToolUse observation in the Rust audit chain. This is a
+ * tool-boundary record only; it cannot substitute for an ICARUS verification receipt.
+ */
+export declare function harnessRecordAdapterPostAction(repoRoot: string, taskId: string, agent: string, toolName: string, path: string): string
+/**
  * Record a typed adapter process boundary observed by the local managed launcher. This bridge
  * exposes no arbitrary event payload: only Rust's bounded lifecycle receipt can enter the audit
  * chain, so a presentation client cannot turn model prose into trusted execution evidence.

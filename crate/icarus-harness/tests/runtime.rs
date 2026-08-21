@@ -2,10 +2,11 @@ use icarus_harness::{
     amend_task_contract, append_event, attest_task_criterion, authorize_action,
     authorize_adapter_write, build_context, checkpoint_task, doctor, evaluate_skill,
     graph_source_fingerprint, init, load_repository_policy, migrate, prepare_run, read_snapshot,
-    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle, record_graph_receipt,
-    resume_task, retire_skill, review_active_skills, seal_task, start_task, task_status,
-    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, EventInput, HarnessSkill, InitOptions, TaskContract,
+    reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
+    record_adapter_post_action, record_graph_receipt, resume_task, retire_skill,
+    review_active_skills, seal_task, start_task, task_status, transition_task,
+    validate_agent_arguments, verify_event_chain, verify_task_criterion, write_snapshot, Action,
+    EventInput, HarnessSkill, InitOptions, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -430,6 +431,14 @@ fn launcher_lifecycle_receipts_are_bound_to_the_prepared_execution() {
         record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_session_ended", Some(0))
             .unwrap();
     assert!(ended.event_sequence > started.event_sequence);
+    let stopped =
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_stop_observed", None)
+            .unwrap();
+    assert!(stopped.event_sequence > ended.event_sequence);
+    assert!(
+        record_adapter_lifecycle(repo.path(), &task.task_id, "adapter_stop_observed", Some(0),)
+            .is_err()
+    );
     assert!(
         record_adapter_lifecycle(repo.path(), &task.task_id, "untrusted_agent_event", None,)
             .is_err()
@@ -506,6 +515,86 @@ fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
     let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
     assert!(events.contains("adapter_pre_action_authorized"));
     assert!(events.contains("adapter_pre_action_denied"));
+}
+
+#[test]
+fn claude_post_action_receipts_are_bound_and_path_validated_in_rust() {
+    let repo = repo();
+    let initialized = init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["claude".into()],
+        },
+    )
+    .unwrap();
+    let task = start_task(repo.path(), "capture completed Claude writes", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "claude".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+    let observed = record_adapter_post_action(
+        repo.path(),
+        &task.task_id,
+        "claude",
+        "Write",
+        "src/allowed.rs",
+    )
+    .unwrap();
+    assert_eq!(observed.agent, "claude");
+    assert_eq!(observed.tool_name, "Write");
+    assert_eq!(observed.path, "src/allowed.rs");
+    assert!(record_adapter_post_action(
+        repo.path(),
+        &task.task_id,
+        "codex",
+        "Write",
+        "src/allowed.rs",
+    )
+    .is_err());
+    assert!(record_adapter_post_action(
+        repo.path(),
+        &task.task_id,
+        "claude",
+        "Bash",
+        "src/allowed.rs",
+    )
+    .is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        let outside = repo
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside-post-hook-target.rs");
+        fs::write(&outside, "outside\n").unwrap();
+        symlink(&outside, repo.path().join("src/escaped.rs")).unwrap();
+        assert!(record_adapter_post_action(
+            repo.path(),
+            &task.task_id,
+            "claude",
+            "Edit",
+            "src/escaped.rs",
+        )
+        .is_err());
+    }
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("adapter_post_action_observed"));
+    assert!(events.contains("hook_post_action"));
 }
 
 #[test]
@@ -849,6 +938,15 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .as_str()
         .unwrap()
         .contains(&task.task_id));
+    assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit|Write");
+    assert!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("--event post-tool"));
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("--event stop"));
     assert!(claude_prepared
         .launch_arguments
         .windows(2)
