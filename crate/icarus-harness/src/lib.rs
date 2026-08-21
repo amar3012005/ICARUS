@@ -1819,6 +1819,35 @@ fn checked_repo_relative_path(path: &str) -> Result<PathBuf> {
     Ok(candidate.to_path_buf())
 }
 
+/// Resolve the closest existing ancestor of a prospective adapter write and require that it
+/// remains under the prepared workspace after symlinks are followed. Contract glob matching by
+/// itself is not sufficient: `src/allowed.rs` could be a symlink to a file outside the worktree.
+fn validate_managed_workspace_path(workspace: &Path, path: &str) -> Result<()> {
+    let relative = checked_repo_relative_path(path)?;
+    let workspace = workspace.canonicalize().map_err(HarnessError::from)?;
+    let mut existing = workspace.join(relative);
+    loop {
+        if existing.exists() {
+            let resolved = existing.canonicalize().map_err(HarnessError::from)?;
+            if resolved != workspace && !resolved.starts_with(&workspace) {
+                return Err(HarnessError::invalid(
+                    "adapter write path resolves outside the managed workspace",
+                ));
+            }
+            return Ok(());
+        }
+        let parent = existing
+            .parent()
+            .ok_or_else(|| HarnessError::invalid("adapter write path has no workspace ancestor"))?;
+        if parent == existing {
+            return Err(HarnessError::invalid(
+                "adapter write path has no workspace ancestor",
+            ));
+        }
+        existing = parent.to_path_buf();
+    }
+}
+
 fn write_reconciled_untracked_file(source: &Path, target: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
@@ -4405,6 +4434,7 @@ pub fn authorize_adapter_write(
             "adapter write authorization does not match the prepared execution",
         ));
     }
+    validate_managed_workspace_path(Path::new(&run.workspace_path), path)?;
     let authorization = authorize_action(
         &root,
         &task.task_id,

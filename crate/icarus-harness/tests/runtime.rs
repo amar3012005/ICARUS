@@ -482,6 +482,22 @@ fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
         authorize_adapter_write(repo.path(), &task.task_id, "codex", "Write", "src/other.rs",)
             .is_err()
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        let outside = repo.path().parent().unwrap().join("outside-hook-target.rs");
+        fs::write(&outside, "outside\n").unwrap();
+        symlink(&outside, repo.path().join("src/escaped.rs")).unwrap();
+        assert!(authorize_adapter_write(
+            repo.path(),
+            &task.task_id,
+            "claude",
+            "Edit",
+            "src/escaped.rs",
+        )
+        .is_err());
+    }
     assert!(
         verify_event_chain(repo.path(), &initialized.manifest.repo_id)
             .unwrap()
