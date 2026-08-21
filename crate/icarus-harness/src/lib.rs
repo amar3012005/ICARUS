@@ -6175,7 +6175,7 @@ fn process_is_alive(pid: u32) -> bool {
     // Query the process without granting destructive rights. A failed open or status query is
     // treated as live: an inaccessible owner must never make its runtime lock reclaimable.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle == 0 {
+    if handle.is_null() {
         return true;
     }
     let mut exit_code = 0u32;
