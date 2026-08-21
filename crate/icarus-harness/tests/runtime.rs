@@ -3044,7 +3044,30 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
         ],
         verification: serde_json::Value::Null,
     };
+    let mut duplicate_sources = skill.clone();
+    duplicate_sources.id = "duplicate-sources".into();
+    duplicate_sources.source_tasks = vec![skill.source_tasks[0].clone(); 3];
+    assert!(icarus_harness::propose_skill(repo.path(), duplicate_sources).is_err());
     icarus_harness::propose_skill(repo.path(), skill).unwrap();
+    // The promotion gate repeats the check so an already-written candidate cannot be edited to
+    // turn one source task into three after native proposal validation.
+    let candidate_path = repo
+        .path()
+        .join(".icarus/runtime/skills/proposed/safe-review.json");
+    let candidate_before_tamper = fs::read_to_string(&candidate_path).unwrap();
+    let mut candidate: serde_json::Value = serde_json::from_str(&candidate_before_tamper).unwrap();
+    candidate["source_tasks"] = serde_json::json!([
+        candidate["source_tasks"][0].clone(),
+        candidate["source_tasks"][0].clone(),
+        candidate["source_tasks"][0].clone(),
+    ]);
+    fs::write(
+        &candidate_path,
+        format!("{}\n", serde_json::to_string_pretty(&candidate).unwrap()),
+    )
+    .unwrap();
+    assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
+    fs::write(&candidate_path, candidate_before_tamper).unwrap();
     assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
     let replay_one = sealed_replay_task(repo.path(), "replay one", "safe-review");
     let replay_two = sealed_replay_task(repo.path(), "replay two", "safe-review");

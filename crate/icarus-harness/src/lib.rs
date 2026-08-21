@@ -3817,6 +3817,13 @@ fn skill_id_valid(id: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
 }
+
+/// A source run is evidence only once. Repeating the same sealed task must not let a candidate
+/// manufacture the three independent sources required by the low-risk promotion policy.
+fn skill_sources_are_independent(skill: &HarnessSkill) -> bool {
+    skill.source_tasks.len() == skill.source_tasks.iter().collect::<BTreeSet<_>>().len()
+}
+
 fn skill_contains_secret(skill: &HarnessSkill) -> bool {
     let material = format!(
         "{} {}",
@@ -4302,6 +4309,11 @@ pub fn propose_skill(repo_root: &Path, mut skill: HarnessSkill) -> Result<Harnes
             "skill requires a safe id, instructions, sealed source tasks, task_types, and file_patterns",
         ));
     }
+    if !skill_sources_are_independent(&skill) {
+        return Err(HarnessError::invalid(
+            "skill source tasks must be distinct independent sealed runs",
+        ));
+    }
     let proof_expiry = skill
         .proof_expires_at
         .as_deref()
@@ -4352,6 +4364,11 @@ pub fn promote_skill(
     if skill_contains_secret(&skill) {
         return Err(HarnessError::invalid(
             "skill candidate appears to contain a secret",
+        ));
+    }
+    if !skill_sources_are_independent(&skill) {
+        return Err(HarnessError::invalid(
+            "skill source tasks must be distinct independent sealed runs",
         ));
     }
     let high_risk = [
