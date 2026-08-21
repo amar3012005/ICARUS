@@ -4796,6 +4796,14 @@ fn prepared_codex_run(root: &Path, task_id: &str) -> Result<(TaskRecord, RunPrep
     Ok((task, run))
 }
 
+/// Return the already-prepared Codex execution selected by Rust. The app-server bridge uses this
+/// instead of accepting a caller-supplied working directory, so an isolated task cannot be
+/// redirected to the parent checkout by its transport process.
+pub fn codex_app_server_run(repo_root: &Path, task_id: &str) -> Result<RunPreparation> {
+    let root = canonical_root(repo_root)?;
+    Ok(prepared_codex_run(&root, task_id)?.1)
+}
+
 fn load_bound_codex_session(
     root: &Path,
     task_id: &str,

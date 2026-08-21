@@ -813,6 +813,95 @@ fn codex_app_server_thread_and_approval_boundaries_are_rust_owned_and_fail_close
     assert!(events.contains("codex_app_server_approval_declined"));
 }
 
+#[cfg(unix)]
+#[test]
+fn rust_codex_app_server_bridge_binds_and_declines_without_a_model_or_network() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repo();
+    let initialized = init(
+        repo.path(),
+        InitOptions {
+            agents: vec!["codex".into()],
+        },
+    )
+    .unwrap();
+    let task = start_task(repo.path(), "bridge fixture task", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    prepare_run(
+        repo.path(),
+        &task.task_id,
+        "codex".into(),
+        "current".into(),
+        false,
+    )
+    .unwrap();
+    transition_task(repo.path(), &task.task_id, "executing").unwrap();
+
+    let fake = repo.path().join("fake-codex-app-server.sh");
+    fs::write(
+        &fake,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{"id":1,"result":{}}'
+      ;;
+    *'"method":"thread/start"'*)
+      echo '{"method":"thread/started","params":{"thread":{"id":"thread-fixture"}}}'
+      echo '{"id":2,"result":{"thread":{"id":"thread-fixture"}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      echo '{"id":3,"result":{"turn":{"id":"turn-fixture"}}}'
+      echo '{"id":90,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-fixture","turnId":"turn-fixture","itemId":"item-fixture","startedAtMs":1}}'
+      IFS= read -r approval
+      case "$approval" in
+        *'"decision":"decline"'*) ;;
+        *) exit 91 ;;
+      esac
+      echo '{"method":"turn/started","params":{"threadId":"thread-fixture","turnId":"turn-fixture","startedAtMs":2}}'
+      echo '{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":3,"item":{"id":"item-fixture","type":"agentMessage"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"thread-fixture","turn":{"id":"turn-fixture"}}}'
+      exit 0
+      ;;
+  esac
+done
+exit 92
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = env!("CARGO_BIN_EXE_icarus-codex-bridge");
+    let output = Command::new(binary)
+        .args([
+            "--repo",
+            repo.path().to_str().unwrap(),
+            "--task",
+            &task.task_id,
+            "--app-server",
+            fake.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "bridge stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        verify_event_chain(repo.path(), &initialized.manifest.repo_id)
+            .unwrap()
+            .valid
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("codex_app_server_thread_bound"));
+    assert!(events.contains("codex_app_server_approval_declined"));
+    assert!(events.contains("codex_app_server_turn_completed"));
+    assert!(events.contains("adapter_session_ended"));
+}
+
 #[test]
 fn claude_pre_action_decisions_are_audited_for_both_allow_and_deny() {
     let repo = repo();
