@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agents": {
+      "items": {
+        "enum": [
+          "claude",
+          "codex",
+          "cursor",
+          "grok"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "git_remote_fingerprint": {
+      "pattern": "^[a-f0-9]{16}$",
+      "type": "string"
+    },
+    "harness_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "policy_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "repo_id": {
+      "pattern": "^repo-[a-f0-9]{16}$",
+      "type": "string"
+    },
+    "repo_root": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "harness_version",
+    "repo_id",
+    "repo_root",
+    "git_remote_fingerprint",
+    "policy_version",
+    "agents"
+  ],
+  "title": "ICARUS Harness Manifest",
+  "type": "object"
+}

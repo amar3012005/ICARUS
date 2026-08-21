@@ -430,7 +430,7 @@ async function run(flags) {
     // memory per project, not three isolated silos.
     try {
       const shard = initRepoShard(process.cwd(), p.orgName);
-      console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (added .icarus/ to .gitignore)`);
+      console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (added .icarus/data/ to .gitignore)`);
     } catch (e) {
       console.log(`  · shard creation skipped: ${e.message}`);
     }

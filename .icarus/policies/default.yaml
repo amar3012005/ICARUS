@@ -1,0 +1,5 @@
+# ICARUS Harness policy v1
+policy_version: 1
+external_writes: approval_required
+network: agent_managed
+learning: proposal_only

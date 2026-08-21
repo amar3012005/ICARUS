@@ -22,7 +22,7 @@ import { join } from 'node:path';
 const require = createRequire(import.meta.url);
 const {
   repoOrgName, findRepoIcarusDataRoot, scanIngestable, noIngestableFilesReason, chunk,
-  INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE,
+  INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE, harnessSafeGitignore,
 } = require('../../cli-lib.js');
 
 function tmp() {
@@ -107,6 +107,18 @@ test('findRepoIcarusDataRoot stops at the repo root and ignores an ancestor .ica
       'the walk must stop at inner-repo/.git, not reach outer/.icarus',
     );
   } finally { rmSync(outer, { recursive: true, force: true }); }
+});
+
+test('project memory ignores only data so Harness configuration remains trackable', () => {
+  const result = harnessSafeGitignore('# project rules\n.icarus/\n');
+  assert.ok(!/^\.icarus\/?\s*$/m.test(result), 'legacy broad ignore must be removed');
+  assert.match(result, /^\.icarus\/data\/$/m, 'only local shard data stays ignored');
+  assert.match(result, /# project rules/, 'unrelated gitignore content survives');
+});
+
+test('project memory gitignore migration is idempotent', () => {
+  const once = harnessSafeGitignore('.icarus/runtime/\n.icarus/data/\n');
+  assert.equal(harnessSafeGitignore(once), once);
 });
 
 // ── scanIngestable / noIngestableFilesReason ───────────────────────────────────────────

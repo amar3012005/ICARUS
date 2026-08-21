@@ -1,0 +1,9 @@
+# ICARUS Harness repository contract. Commit this file; never commit .icarus/runtime/.
+schema_version: 1
+harness_version: 1
+repo_id: repo-530fed575993912f
+repo_root: /Users/amar/ICARUS
+git_remote_fingerprint: 530fed575993912f
+policy_version: 1
+agents:
+- codex

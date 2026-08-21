@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_criteria": {
+      "type": [
+        "array",
+        "object"
+      ]
+    },
+    "allowed_paths": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "authority": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "budgets": {
+      "type": "object"
+    },
+    "decision_references": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "external_write_policy": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "forbidden_paths": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "risk": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "task_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "allowed_paths",
+    "forbidden_paths",
+    "acceptance_criteria",
+    "risk",
+    "budgets",
+    "authority",
+    "external_write_policy"
+  ],
+  "title": "ICARUS Task Contract",
+  "type": "object"
+}

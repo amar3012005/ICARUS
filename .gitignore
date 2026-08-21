@@ -45,3 +45,6 @@ __pycache__/
 
 # Public-mirror developer handoff notes are local-only and must survive sync untracked.
 DEV_NOTES/
+# ICARUS Harness runtime state (local, never commit)
+.icarus/runtime/
+.icarus/data/

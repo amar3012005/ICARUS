@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "external_writes": {
+      "enum": [
+        "approval_required",
+        "forbidden"
+      ]
+    },
+    "learning": {
+      "enum": [
+        "proposal_only",
+        "disabled"
+      ]
+    },
+    "network": {
+      "enum": [
+        "agent_managed",
+        "disabled"
+      ]
+    },
+    "policy_version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "policy_version",
+    "external_writes",
+    "network",
+    "learning"
+  ],
+  "title": "ICARUS Harness Repository Policy",
+  "type": "object"
+}

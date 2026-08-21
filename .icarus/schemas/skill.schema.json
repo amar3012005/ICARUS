@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allowed_tools": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "confidence": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "decision_references": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "file_patterns": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "id": {
+      "pattern": "^[a-z0-9_-]+$",
+      "type": "string"
+    },
+    "instructions": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "policy_requirements": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "proof_expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "replay_results": {
+      "type": "array"
+    },
+    "risk": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "source_tasks": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "state": {
+      "enum": [
+        "proposed",
+        "active",
+        "demoted",
+        "retired"
+      ]
+    },
+    "task_types": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "triggers": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "verification": {},
+    "verification_steps": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "state",
+    "triggers",
+    "instructions",
+    "allowed_tools",
+    "policy_requirements",
+    "verification_steps",
+    "source_tasks",
+    "task_types",
+    "file_patterns",
+    "proof_expires_at",
+    "risk",
+    "owner",
+    "version",
+    "confidence"
+  ],
+  "title": "ICARUS Proposed Skill",
+  "type": "object"
+}

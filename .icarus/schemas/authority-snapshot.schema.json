@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approvals": {
+      "type": "array"
+    },
+    "decisions": {
+      "type": "array"
+    },
+    "digest": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "repo_id": {
+      "pattern": "^repo-[a-f0-9]{16}$",
+      "type": "string"
+    },
+    "revision": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "scope": {
+      "additionalProperties": false,
+      "properties": {
+        "org_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "project_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "org_id",
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "team_skills": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "repo_id",
+    "revision",
+    "issued_at",
+    "expires_at",
+    "decisions",
+    "approvals",
+    "team_skills",
+    "digest"
+  ],
+  "title": "ICARUS Authority Snapshot",
+  "type": "object"
+}

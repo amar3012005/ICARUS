@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "execution_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input": {
+      "type": "object"
+    },
+    "phase": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "sequence": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "worktree_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "execution_id",
+    "sequence",
+    "phase",
+    "input",
+    "worktree_fingerprint",
+    "created_at"
+  ],
+  "title": "ICARUS Checkpoint",
+  "type": "object"
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "criterion_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "execution_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "output_digest": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "output_path": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "pending"
+      ]
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "execution_id",
+    "criterion_id",
+    "status",
+    "output_digest",
+    "output_path",
+    "created_at"
+  ],
+  "title": "ICARUS Verification Receipt",
+  "type": "object"
+}

@@ -378,12 +378,21 @@ function repoOrgName(repo) {
   return cleaned || 'default';
 }
 
+// Keep only runtime memory private. This is deliberately pure so the project-installer contract
+// can be tested without loading the native shard addon.
+function harnessSafeGitignore(existing = '') {
+  const narrowed = existing.replace(/^\.icarus\/?\s*(?:\r?\n|$)/gm, '');
+  if (/^\.icarus\/data\/?\s*$/m.test(narrowed)) return narrowed;
+  const sep = narrowed && !narrowed.endsWith('\n') ? '\n' : '';
+  return narrowed + sep + '.icarus/data/\n';
+}
+
 /** Physically creates a repo-local shard NOW (setup time), not lazily on first save — matches
  * the real ask: running setup should leave a real, existing org slot behind, not just a name
  * referenced in some instruction text with nothing backing it yet. Idempotent: opening an
- * already-existing shard is just a normal open, not a reset. Appends `.icarus/` to the repo's
- * own .gitignore (creating one if absent) so real, possibly-sensitive memory content never lands
- * in git history by default — a real safety default, not an incidental side effect. */
+ * already-existing shard is just a normal open, not a reset. Only `.icarus/data/` is ignored:
+ * the Harness keeps its manifest and policies in that same directory and those files must remain
+ * reviewable/tracked. A legacy broad `.icarus/` rule is narrowed on re-run for the same reason. */
 function initRepoShard(repo, orgName, dim = 1024) {
   const dataRoot = path.join(path.resolve(repo), '.icarus', 'data');
   fs.mkdirSync(dataRoot, { recursive: true });
@@ -391,10 +400,11 @@ function initRepoShard(repo, orgName, dim = 1024) {
   store.flush();
   const gitignorePath = path.join(path.resolve(repo), '.gitignore');
   const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
-  if (!/^\.icarus\/?\s*$/m.test(existing)) {
-    const sep = existing && !existing.endsWith('\n') ? '\n' : '';
-    fs.writeFileSync(gitignorePath, existing + sep + '.icarus/\n');
-  }
+  // Older project installers ignored the entire `.icarus/` directory. That is safe for a
+  // memory-only project but breaks the Harness contract: `.icarus/manifest.yaml` and policies
+  // need to be committed. Drop only the exact legacy rule; unrelated globs/comments survive.
+  const updated = harnessSafeGitignore(existing);
+  if (updated !== existing) fs.writeFileSync(gitignorePath, updated);
   return { dataRoot, org: orgName };
 }
 
@@ -2368,5 +2378,5 @@ module.exports = {
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
-  richOrgStats, findRepoIcarusDataRoot, repoOrgName, initRepoShard, listOrgsWithMeta, deleteOrgShard,
+  richOrgStats, findRepoIcarusDataRoot, repoOrgName, harnessSafeGitignore, initRepoShard, listOrgsWithMeta, deleteOrgShard,
 };
