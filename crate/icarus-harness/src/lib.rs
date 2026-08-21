@@ -1146,12 +1146,30 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         file.write_all(content)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
+        // `rename` is atomic, but it is not necessarily durable across an abrupt power loss
+        // until the containing directory has been synced too. Runtime state is deliberately
+        // recoverable after a killed process, so make the rename durable before returning.
+        sync_directory(parent)?;
         Ok(())
     })();
     if temporary.exists() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+// Windows does not support opening a directory as a normal `File` for `sync_all`. The rename
+// still gives atomic replacement there; keeping this a no-op preserves cross-platform CLI
+// support while Unix release targets get the stronger crash-durability guarantee above.
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn manifest_yaml(manifest: &Manifest) -> Result<String> {
@@ -4955,6 +4973,7 @@ pub fn append_event(repo_root: &Path, input: EventInput) -> Result<RuntimeEvent>
 
 fn append_event_locked(root: &Path, input: EventInput) -> Result<RuntimeEvent> {
     let manifest = load_manifest(root)?;
+    recover_interrupted_event_head(root, &manifest.repo_id)?;
     let existing = read_events(root)?;
     let previous_hash = existing.last().map(|event| event.event_hash.clone());
     let mut event = RuntimeEvent {
@@ -4976,15 +4995,75 @@ fn append_event_locked(root: &Path, input: EventInput) -> Result<RuntimeEvent> {
     let mut log = OpenOptions::new()
         .append(true)
         .create(true)
-        .open(event_path)?;
+        .open(&event_path)?;
     writeln!(log, "{}", serde_json::to_string(&event)?)?;
     log.sync_all()?;
+    sync_directory(event_path.parent().expect("event log has a parent"))?;
     write_snapshot(
         root,
         "state/event-head.json",
         json!({"schema_version": 1, "repo_id": manifest.repo_id, "sequence": event.sequence, "event_hash": event.event_hash}),
     )?;
     Ok(event)
+}
+
+/// Recover the only safe interrupted-append state: the event log contains fully valid events
+/// beyond the durable head. This occurs if a process is killed after append+fsync but before the
+/// head snapshot is atomically replaced. Bad hashes, sequences, repository ids, or a
+/// non-contiguous head remain an error for `doctor`; recovery never truncates or masks them.
+fn recover_interrupted_event_head(root: &Path, expected_repo_id: &str) -> Result<()> {
+    let events = read_events(root)?;
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut previous_hash = None;
+    for (index, event) in events.iter().enumerate() {
+        if event.repo_id != expected_repo_id
+            || event.sequence != (index + 1) as u64
+            || event.previous_hash != previous_hash
+            || hash_event(event)? != event.event_hash
+        {
+            return Err(HarnessError::invalid(
+                "cannot recover event head: runtime event log is not a valid contiguous chain",
+            ));
+        }
+        previous_hash = Some(event.event_hash.clone());
+    }
+
+    let tail = events.last().expect("non-empty events has a tail");
+    let head = read_snapshot(root, "state/event-head.json")?;
+    let head_is_current = head.as_ref().is_some_and(|head| {
+        head["repo_id"] == expected_repo_id
+            && head["sequence"] == tail.sequence
+            && head["event_hash"] == tail.event_hash
+    });
+    if head_is_current {
+        return Ok(());
+    }
+
+    // A missing head can only be repaired for the first event. A stale head must point exactly
+    // to the previous event: anything else may be truncation or manual replacement.
+    let recoverable = match head {
+        None => tail.sequence == 1,
+        Some(head) => {
+            let previous = events.get(events.len().saturating_sub(2));
+            previous.is_some_and(|previous| {
+                head["repo_id"] == expected_repo_id
+                    && head["sequence"] == previous.sequence
+                    && head["event_hash"] == previous.event_hash
+            })
+        }
+    };
+    if !recoverable {
+        return Err(HarnessError::invalid(
+            "cannot recover event head: durable head does not precede the valid log tail",
+        ));
+    }
+    write_snapshot(
+        root,
+        "state/event-head.json",
+        json!({"schema_version": 1, "repo_id": expected_repo_id, "sequence": tail.sequence, "event_hash": tail.event_hash}),
+    )
 }
 
 fn now_rfc3339() -> String {

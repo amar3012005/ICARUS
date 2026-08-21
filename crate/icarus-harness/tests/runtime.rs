@@ -191,6 +191,30 @@ fn events_have_a_durable_tamper_evident_chain_and_head() {
         .issues
         .iter()
         .any(|issue| issue.contains("event hash mismatch")));
+    assert!(append_event(repo.path(), EventInput::new("exec-1", "TASK-1", "resume"),).is_err());
+}
+
+#[test]
+fn next_append_repairs_only_a_valid_stale_event_head_after_an_interrupted_append() {
+    let repo = repo();
+    let initialized = init(repo.path(), InitOptions::default()).unwrap();
+    append_event(repo.path(), EventInput::new("exec-1", "TASK-1", "created")).unwrap();
+    let head_path = repo.path().join(".icarus/runtime/state/event-head.json");
+    let first_head = fs::read(&head_path).unwrap();
+
+    append_event(
+        repo.path(),
+        EventInput::new("exec-1", "TASK-1", "checkpoint"),
+    )
+    .unwrap();
+    // Model a process killed after the second log line had been fsync'd but before replacing its
+    // head snapshot. The next append may repair this one exact, cryptographically valid state.
+    fs::write(&head_path, first_head).unwrap();
+    append_event(repo.path(), EventInput::new("exec-1", "TASK-1", "resumed")).unwrap();
+
+    let report = verify_event_chain(repo.path(), &initialized.manifest.repo_id).unwrap();
+    assert!(report.valid, "{:#?}", report.issues);
+    assert_eq!(report.events, 3);
 }
 
 #[test]
