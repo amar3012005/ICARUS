@@ -234,6 +234,20 @@ fn crash_child_after_event_log_sync() {
 
 #[cfg(feature = "test-failpoints")]
 #[test]
+fn crash_child_after_atomic_snapshot_rename() {
+    let Ok(root) = std::env::var("ICARUS_TEST_CRASH_REPO") else {
+        return;
+    };
+    write_snapshot(
+        Path::new(&root),
+        "state/atomic-crash.json",
+        serde_json::json!({"generation": "new"}),
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
 fn killed_writer_reclaims_its_dead_lock_and_recovers_the_durable_event_log() {
     let repo = repo();
     let initialized = init(repo.path(), InitOptions::default()).unwrap();
@@ -261,6 +275,52 @@ fn killed_writer_reclaims_its_dead_lock_and_recovers_the_durable_event_log() {
         .path()
         .join(".icarus/runtime/locks/events.lock")
         .exists());
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn killed_writer_after_atomic_snapshot_rename_leaves_a_complete_recoverable_snapshot() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    write_snapshot(
+        repo.path(),
+        "state/atomic-crash.json",
+        serde_json::json!({"generation": "old"}),
+    )
+    .unwrap();
+
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "crash_child_after_atomic_snapshot_rename",
+            "--nocapture",
+        ])
+        .env("ICARUS_TEST_CRASH_REPO", repo.path())
+        .env("ICARUS_TEST_CRASH_POINT", "atomic-after-rename")
+        .status()
+        .unwrap();
+    assert!(!child.success(), "crash child unexpectedly succeeded");
+
+    // The candidate had completed file fsync + rename before it died; read through the public
+    // snapshot API to prove the post-crash file is a complete JSON value rather than a torn one.
+    assert_eq!(
+        read_snapshot(repo.path(), "state/atomic-crash.json")
+            .unwrap()
+            .unwrap()["generation"],
+        "new"
+    );
+    write_snapshot(
+        repo.path(),
+        "state/atomic-crash.json",
+        serde_json::json!({"generation": "recovered"}),
+    )
+    .unwrap();
+    assert_eq!(
+        read_snapshot(repo.path(), "state/atomic-crash.json")
+            .unwrap()
+            .unwrap()["generation"],
+        "recovered"
+    );
 }
 
 #[test]

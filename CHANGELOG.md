@@ -25,6 +25,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   last-known-good executable, restores it after an interrupted handoff, and restores it
   immediately if the final candidate move fails. This is verified in an isolated temporary
   ICARUS home; it never operates on a developer's real installation during tests.
+- **Rust atomic-snapshot interruption regression:** a feature-gated child-process test now exits
+  after the snapshot candidate is fsync'd and atomically renamed, before directory fsync returns.
+  The parent proves the post-interruption snapshot remains complete JSON and can be safely
+  rewritten. This is process-crash coverage, not a claim to emulate physical power loss.
 - **Managed-agent conformance process:** public native-addon CI now launches a disposable fake
   Claude-compatible process through the real CLI, Rust task lifecycle, documented pre/post hooks,
   path authorization, scope reconciliation, and verification handoff. It is evidence for the

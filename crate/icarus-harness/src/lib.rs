@@ -1146,6 +1146,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         file.write_all(content)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
+        crash_after_atomic_rename_if_requested();
         // `rename` is atomic, but it is not necessarily durable across an abrupt power loss
         // until the containing directory has been synced too. Runtime state is deliberately
         // recoverable after a killed process, so make the rename durable before returning.
@@ -1157,6 +1158,21 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     }
     result
 }
+
+#[cfg(feature = "test-failpoints")]
+fn crash_after_atomic_rename_if_requested() {
+    if std::env::var("ICARUS_TEST_CRASH_POINT").ok().as_deref() == Some("atomic-after-rename") {
+        // Exercise the process-death boundary after the replacement is visible but before the
+        // parent directory fsync returns. This is test-only; production always reaches the
+        // directory sync below. `exit` skips Rust destructors (and therefore the remaining
+        // fsync) while avoiding macOS crash-reporter hangs caused by `abort` in nested tests.
+        // It must still leave a complete JSON value, never a partially written snapshot.
+        std::process::exit(86);
+    }
+}
+
+#[cfg(not(feature = "test-failpoints"))]
+fn crash_after_atomic_rename_if_requested() {}
 
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<()> {
