@@ -82,15 +82,16 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: icarus-linux-x64
-          # NOT YET BUILT: icarus-linux-arm64 and icarus-win32-x64.
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: icarus-win32-x64.exe
+          # NOT YET BUILT: icarus-linux-arm64.
           #
           # install.sh already ASKS for linux-arm64 on such a host, gets a 404, and falls back
           # to its documented source build (`warn "prebuilt binary not available ... building
           # from source instead"`), so the behaviour is degraded-but-correct rather than
-          # broken. Naming the gap here instead of leaving it implicit: cross-compiling the
-          # bun-compiled binary for aarch64 needs a real toolchain/runner story, and Windows
-          # needs the shard's flock path solved first (mseg/src/shard.rs deliberately fails
-          # loudly on non-unix rather than running without a lock). Both are Phase 8 work
+          # broken. Naming the remaining gap here instead of leaving it implicit: compiling
+          # the Bun executable for aarch64 needs a real toolchain/runner story. Both are Phase 8 work
           # ("Complete platform binaries for macOS ARM64/x64, Linux ARM64/x64, Windows x64").
     name: build-${{ matrix.asset }}
     runs-on: ${{ matrix.host }}
@@ -141,6 +142,7 @@ jobs:
       # so this check cannot be defeated by an unrelated environment problem.
       - name: Verify the built binary executes and reports the right version
         working-directory: crate/mneme-node
+        shell: bash
         run: |
           set -euo pipefail
           chmod +x "${{ matrix.asset }}"
@@ -151,6 +153,7 @@ jobs:
 
       - name: Checksum
         working-directory: crate/mneme-node
+        shell: bash
         run: shasum -a 256 "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
 
       # The binary is Bun-compiled from this exact checkout and includes the native Rust addon.
@@ -248,7 +251,8 @@ jobs:
           for want in \
             icarus-darwin-arm64 icarus-darwin-arm64.spdx.json \
             icarus-darwin-x64 icarus-darwin-x64.spdx.json \
-            icarus-linux-x64 icarus-linux-x64.spdx.json; do
+            icarus-linux-x64 icarus-linux-x64.spdx.json \
+            icarus-win32-x64.exe icarus-win32-x64.exe.spdx.json; do
             echo "$NAMES" | grep -qx "$want" || { echo "::error::missing asset $want"; exit 1; }
           done
 
@@ -289,3 +293,30 @@ jobs:
           echo "latest=$LATEST expected=${{ needs.verify-version.outputs.tag }}"
           [ "$LATEST" = "${{ needs.verify-version.outputs.tag }}" ] \
             || { echo "::error::releases/latest is $LATEST, not ${{ needs.verify-version.outputs.tag }}"; exit 1; }
+
+  # Windows cannot execute a Linux cold-download probe. Verify the exact published Windows
+  # bytes on the host platform, including the same `--version` command install.ps1 executes.
+  cold-windows:
+    needs: [verify-version, publish]
+    runs-on: windows-latest
+    steps:
+      - name: Cold-download and verify the published Windows asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ needs.verify-version.outputs.tag }}'
+          $repo = '${{ github.repository }}'
+          $asset = 'icarus-win32-x64.exe'
+          $base = "https://github.com/$repo/releases/download/$tag/$asset"
+          Invoke-WebRequest -Uri $base -OutFile 'cold-icarus.exe'
+          $checksums = Invoke-WebRequest -Uri "$base.sha256" -UseBasicParsing
+          $matches = @($checksums.Content -split "`n" | Where-Object { $_ -match '^([a-fA-F0-9]{64})\s+\*?icarus-win32-x64\.exe\s*$' })
+          if ($matches.Count -ne 1) { throw 'Windows checksum sidecar does not bind exactly one expected asset' }
+          $expected = ([regex]::Match($matches[0], '^[a-fA-F0-9]{64}')).Value.ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath 'cold-icarus.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "cold Windows download hash mismatch: expected $expected got $actual" }
+          $version = & .\cold-icarus.exe --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '${{ needs.verify-version.outputs.version }}') {
+            throw "cold Windows binary reports '$version'"
+          }
+          Write-Host "cold Windows download verified: $version"

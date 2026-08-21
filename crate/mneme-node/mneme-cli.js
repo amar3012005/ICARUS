@@ -708,8 +708,11 @@ async function cmdUpdate(_flags, _cfg) {
     console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
   }
   console.log(bullet(c.system('downloading and verifying the new binary...')));
-  const bytes = await performSelfUpdate();
-  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB). Run ${c.command('icarus status')} to confirm.`));
+  const update = await performSelfUpdate();
+  const suffix = update.restartRequired
+    ? ' Exit this command now; the verified Windows replacement will complete immediately after it exits, then restart icarus.'
+    : ` Run ${c.command('icarus status')} to confirm.`;
+  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${suffix}`));
 }
 
 function cmdCompact(flags, cfg) {

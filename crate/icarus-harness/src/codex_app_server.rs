@@ -137,9 +137,11 @@ fn resolve_executable(command: &str) -> Result<String> {
             .map(str::trim)
             .find(|value| !value.is_empty())
             .map(str::to_owned)
-            .ok_or_else(|| HarnessError::invalid(format!(
-                "Codex app-server program `{command}` was not returned by where"
-            )));
+            .ok_or_else(|| {
+                HarnessError::invalid(format!(
+                    "Codex app-server program `{command}` was not returned by where"
+                ))
+            });
     }
     #[cfg(not(windows))]
     {

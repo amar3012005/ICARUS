@@ -41,12 +41,37 @@ test('REGRESSION: native engine tests do not rely on a shell glob', () => {
   assert.match(runner, /no native engine tests found/);
 });
 
+test('REGRESSION: normal Node tests do not rely on shell glob expansion', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'crate', 'mneme-node', 'package.json'), 'utf8'));
+  const runner = readFileSync(join(ROOT, 'crate', 'mneme-node', 'scripts', 'test-suite.mjs'), 'utf8');
+  assert.equal(pkg.scripts.test, 'node scripts/test-suite.mjs');
+  assert.match(runner, /\['unit', 'smoke'\]/);
+  assert.match(runner, /spawn\(process\.execPath, \['--test', \.\.\.tests\]/);
+});
+
+test('REGRESSION: public CI parses the Windows installer and runs Node tests on Windows', () => {
+  const ci = workflow('ci.yml');
+  assert.match(ci, /os: \[ubuntu-latest, macos-latest, windows-latest\]/);
+  assert.match(ci, /Windows installer syntax[\s\S]*Get-Content install\.ps1 -Raw/);
+});
+
 test('REGRESSION: normal CI independently exercises the compiled CLI with a native shard', () => {
   const ci = workflow('ci.yml');
   assert.match(ci, /compiled-cli:/, 'compiled artifact verification must not exist only in the release workflow');
   assert.match(ci, /bun build --compile \.\/mneme-cli\.js --outfile/);
   assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" save "compiled binary native shard round trip" --org ci-e2e/);
   assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" recall "compiled binary native shard" --org ci-e2e/);
+});
+
+test('REGRESSION: CLI releases publish and cold-verify a real Windows executable', () => {
+  const release = workflow('release-cli.yml');
+  const installer = readFileSync(join(ROOT, 'install.ps1'), 'utf8');
+  assert.match(release, /host: windows-latest\s+target: x86_64-pc-windows-msvc\s+asset: icarus-win32-x64\.exe/);
+  assert.match(release, /cold-windows:/);
+  assert.match(release, /Get-FileHash -LiteralPath 'cold-icarus\.exe' -Algorithm SHA256/);
+  assert.match(installer, /\$Asset = 'icarus-win32-x64\.exe'/);
+  assert.match(installer, /Get-FileHash -LiteralPath \$Candidate -Algorithm SHA256/);
+  assert.match(installer, /Move-Item -LiteralPath \$Candidate -Destination \$Target -Force/);
 });
 
 test('REGRESSION: CLI releases publish signed provenance for every platform binary', () => {

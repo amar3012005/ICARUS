@@ -1173,9 +1173,11 @@ async function dispatch(line, state, cfg) {
       if (upToDate === null) out(state, c.dim('  couldn\'t check the latest version — trying the update anyway.'));
       else out(state, c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
       out(state, bullet(c.system('downloading and verifying the new binary...')));
-      const bytes = await performSelfUpdate();
-      out(state, ok(`updated to ${c.bold(latest || 'the latest release')} (${(bytes / 1e6).toFixed(1)} MB).`));
-      out(state, c.dim('  this running session is still on the old build — /quit and restart icarus to use the new one.'));
+      const update = await performSelfUpdate();
+      out(state, ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).`));
+      out(state, c.dim(update.restartRequired
+        ? '  Windows will replace the binary after this session exits — /quit, then restart icarus.'
+        : '  this running session is still on the old build — /quit and restart icarus to use the new one.'));
       break;
     }
     case 'setup': {

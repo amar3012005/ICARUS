@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { releaseAssetChecksum, verifyReleaseAsset } = require('../../cli-lib.js');
+const { releaseAssetChecksum, verifyReleaseAsset, windowsUpdateHandoffScript } = require('../../cli-lib.js');
 
 const asset = 'icarus-darwin-arm64';
 const bytes = Buffer.from('ICARUS release update integrity fixture');
@@ -35,4 +35,14 @@ test('release update rejects ambiguous duplicate entries for one asset', () => {
     () => releaseAssetChecksum(`${digest}  ${asset}\n${digest}  ${asset}\n`, asset),
     /exactly one digest/,
   );
+});
+
+test('Windows self-update handoff waits for exit, uses literal paths, and restores a rollback on failure', () => {
+  const script = windowsUpdateHandoffScript();
+  assert.match(script, /Wait-Process -Id \$ParentPid/);
+  assert.match(script, /Move-Item -LiteralPath \$Target -Destination \$Previous -Force/);
+  assert.match(script, /Move-Item -LiteralPath \$Candidate -Destination \$Target -Force/);
+  assert.match(script, /-not \(Test-Path -LiteralPath \$Target\)/);
+  assert.match(script, /Remove-Item -LiteralPath \$Helper -Force/);
+  assert.doesNotMatch(script, /Invoke-Expression|& \$Target/);
 });

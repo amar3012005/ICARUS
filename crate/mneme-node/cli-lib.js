@@ -2207,12 +2207,12 @@ const ICARUS_VERSION = '0.3.63';
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
 function updateAssetName() {
-  const osMap = { darwin: 'darwin', linux: 'linux' };
+  const osMap = { darwin: 'darwin', linux: 'linux', win32: 'win32' };
   const archMap = { x64: 'x64', arm64: 'arm64' };
   const os_ = osMap[process.platform];
   const arch = archMap[process.arch];
-  if (!os_ || !arch) return null; // Windows/other: no prebuilt binary yet, same as install.sh
-  return `icarus-${os_}-${arch}`;
+  if (!os_ || !arch) return null;
+  return `icarus-${os_}-${arch}${process.platform === 'win32' ? '.exe' : ''}`;
 }
 
 /** Check GitHub's real /releases/latest for a newer tag than ICARUS_VERSION. Returns
@@ -2254,6 +2254,59 @@ function verifyReleaseAsset(asset, bytes, checksumText) {
   return actual;
 }
 
+// A live Windows executable is locked by the operating system and cannot safely rename itself.
+// This helper runs only after the current CLI exits. All paths are process arguments, never
+// interpolated into PowerShell source, and `-LiteralPath` prevents wildcard interpretation.
+// The old executable is retained until the staged replacement has committed; if that commit
+// fails, the helper restores it before reporting failure.
+function windowsUpdateHandoffScript() {
+  return `param(
+  [int]$ParentPid,
+  [string]$Target,
+  [string]$Candidate,
+  [string]$Previous,
+  [string]$Helper
+)
+$ErrorActionPreference = 'Stop'
+try {
+  Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 120
+  if (Test-Path -LiteralPath $Target) {
+    if (Test-Path -LiteralPath $Previous) { Remove-Item -LiteralPath $Previous -Force }
+    Move-Item -LiteralPath $Target -Destination $Previous -Force
+  }
+  Move-Item -LiteralPath $Candidate -Destination $Target -Force
+} catch {
+  if (-not (Test-Path -LiteralPath $Target) -and (Test-Path -LiteralPath $Previous)) {
+    Move-Item -LiteralPath $Previous -Destination $Target -Force
+  }
+  exit 1
+} finally {
+  Remove-Item -LiteralPath $Helper -Force -ErrorAction SilentlyContinue
+}`;
+}
+
+function stageWindowsSelfUpdate(target, candidate) {
+  const { spawn } = require('child_process');
+  const helper = `${target}.update-handoff.ps1`;
+  const previous = `${target}.previous.exe`;
+  fs.writeFileSync(helper, windowsUpdateHandoffScript(), { mode: 0o600 });
+  const powershell = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : 'powershell.exe';
+  try {
+    const child = spawn(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
+      String(process.pid), target, candidate, previous, helper,
+    ], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch (error) {
+    try { fs.unlinkSync(helper); } catch (_) { /* preserve the verified candidate for manual recovery */ }
+    throw new Error(`could not schedule the Windows update handoff (${error.message}) — kept your current install`);
+  }
+  return { bytes: fs.statSync(candidate).size, restartRequired: true };
+}
+
 /** Self-update: download the latest release's binary for this platform, sanity-check it
  * actually runs, then atomically replace the CURRENTLY RUNNING binary (process.execPath under
  * Bun's single-file-executable runtime — verified by `typeof Bun !== 'undefined'`, the same test
@@ -2279,7 +2332,7 @@ async function performSelfUpdate(onProgress) {
   if (onProgress) onProgress(buf.length);
 
   const target = process.execPath; // the real, currently-running binary path under Bun
-  const tmp = `${target}.update-tmp`;
+  const tmp = `${target}.update-tmp${process.platform === 'win32' ? '.exe' : ''}`;
   fs.writeFileSync(tmp, buf, { mode: 0o755 });
   // Sanity check BEFORE committing — a corrupt/incompatible download must never replace a
   // working install (same principle install.sh's own try_binary_install already applies).
@@ -2290,10 +2343,11 @@ async function performSelfUpdate(onProgress) {
     fs.unlinkSync(tmp);
     throw new Error(`downloaded binary failed to run (${e.message}) — kept your current install`);
   }
+  if (process.platform === 'win32') return stageWindowsSelfUpdate(target, tmp);
   fs.renameSync(tmp, target); // same filesystem (same dir) -> atomic; safe even while target is
   // the currently-executing binary — POSIX keeps the old inode open under this process until it
   // exits, exactly how rustup/gh/other self-updating CLIs replace themselves while running.
-  return buf.length;
+  return { bytes: buf.length, restartRequired: false };
 }
 
 module.exports = {
@@ -2310,7 +2364,7 @@ module.exports = {
   hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally, isInaccessibleHivemindDuplicate,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, releaseAssetChecksum, verifyReleaseAsset, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
