@@ -1393,6 +1393,44 @@ fn verifier_executes_immutable_criteria_and_records_machine_receipts() {
         .exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn artifact_criteria_reject_symlink_escapes_before_recording_evidence() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut artifact_contract = contract();
+    artifact_contract.acceptance_criteria = serde_json::json!([
+        {"id":"artifact","type":"artifact","path":"artifact-link","required":true}
+    ]);
+    let task = start_task(
+        repo.path(),
+        "verify only local artifacts",
+        artifact_contract,
+    )
+    .unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    std::os::unix::fs::symlink("/tmp", repo.path().join("artifact-link")).unwrap();
+    let error = verify_task_criterion(repo.path(), &task.task_id, "artifact").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("adapter write path resolves outside the managed workspace"));
+    assert!(!repo
+        .path()
+        .join(format!(
+            ".icarus/runtime/evidence/{}/commands.jsonl",
+            task.task_id
+        ))
+        .exists());
+}
+
 #[test]
 fn external_approval_is_expiry_bound_and_cannot_be_replaced_by_pending_prose() {
     let repo = repo();

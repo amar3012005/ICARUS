@@ -9,6 +9,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Artifact-evidence containment:** Rust now validates artifact criteria through the managed
+  workspace containment check before probing existence. An in-repository symlink to a path
+  outside the checkout cannot create a criterion receipt or be used as sealing evidence.
 - **NUL-delimited Git scope proofs:** Rust now derives changed-path lists for checkpoints,
   current-workspace reconciliation, and sealing from `git status --porcelain=v1 -z`, including
   both sides of renames/copies. A forbidden source cannot be hidden by renaming it to an allowed

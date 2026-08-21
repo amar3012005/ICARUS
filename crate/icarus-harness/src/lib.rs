@@ -2501,17 +2501,13 @@ pub fn verify_task_criterion(
                 .ok_or_else(|| {
                     HarnessError::invalid("artifact criterion requires a repository-relative path")
                 })?;
-            let candidate = Path::new(artifact);
-            if candidate.is_absolute()
-                || candidate
-                    .components()
-                    .any(|component| matches!(component, Component::ParentDir))
-            {
-                return Err(HarnessError::invalid(
-                    "artifact path must stay inside the repository",
-                ));
-            }
-            let exists = root.join(candidate).exists();
+            checked_repo_relative_path(artifact)?;
+            // An artifact receipt is evidence, so an in-repository symlink must not make an
+            // arbitrary path outside the checkout appear to have been produced by this task.
+            // The shared validator follows existing ancestors and rejects that escape before
+            // the existence probe can follow the link.
+            validate_managed_workspace_path(&root, artifact)?;
+            let exists = root.join(artifact).exists();
             (
                 if exists { "pass" } else { "fail" }.into(),
                 None,
