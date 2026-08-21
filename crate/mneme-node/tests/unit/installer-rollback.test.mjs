@@ -62,3 +62,51 @@ test('installer restores a valid CLI after a replacement failure or interrupted 
   }
   assert.ok(true);
 });
+
+test('installer keeps the working CLI intact when a downloaded release fails checksum verification', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'icarus-installer-checksum-failure-'));
+  try {
+    const installerLibrary = join(fixture, 'install-lib.sh');
+    writeFileSync(
+      installerLibrary,
+      readFileSync(INSTALLER, 'utf8').replace(/\nmain "\$@"\s*$/, '\n'),
+      { mode: 0o700 },
+    );
+    const good = join(fixture, 'good-cli');
+    writeFileSync(good, '#!/usr/bin/env bash\n[ "${1:-}" = status ]\n', { mode: 0o700 });
+    const home = join(fixture, 'home');
+    const script = `
+      set -euo pipefail
+      export ICARUS_HOME=${JSON.stringify(home)}
+      source ${JSON.stringify(installerLibrary)}
+      mkdir -p "$BIN_DIR"
+      cp ${JSON.stringify(good)} "$BIN_DIR/icarus"
+      before="$(sha256_file "$BIN_DIR/icarus")"
+
+      # A transport may successfully download both files while the sidecar binds a different
+      # byte sequence. The installer must not stage or replace the existing executable first.
+      curl() {
+        out=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = -o ]; then out="$2"; shift 2; continue; fi
+          shift
+        done
+        case "$out" in
+          *.sha256) printf '%064d  %s\\n' 0 "$(binary_asset_name)" > "$out" ;;
+          *) printf 'tampered release candidate\\n' > "$out" ;;
+        esac
+      }
+      ! try_binary_install
+      after="$(sha256_file "$BIN_DIR/icarus")"
+      [ "$before" = "$after" ]
+      "$BIN_DIR/icarus" status
+      test ! -e "$BIN_DIR/icarus.tmp"
+      test ! -e "$BIN_DIR/icarus.tmp.sha256"
+      test ! -e "$BIN_DIR/icarus.rollback-tmp"
+    `;
+    execFileSync('bash', ['-c', script], { cwd: ROOT, stdio: 'pipe' });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+  assert.ok(true);
+});
