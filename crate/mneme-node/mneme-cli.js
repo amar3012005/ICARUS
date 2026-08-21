@@ -707,9 +707,15 @@ function cmdHarnessSkill(flags, command = 'harness-skill') {
     return;
   }
   if (subcommand === 'evaluate') {
-    if (!skillId || !flags['replay-task']) throw new Error(`usage: icarus ${command} evaluate <skill-id> --replay-task <TASK-ID> [--repo <dir>]`);
-    const evaluation = harness.evaluateSkill(repo, skillId, flags['replay-task']);
+    if (!skillId || !flags['replay-task'] || !flags['baseline-task']) throw new Error(`usage: icarus ${command} evaluate <skill-id> --replay-task <TASK-ID> --baseline-task <TASK-ID> [--repo <dir>]`);
+    const evaluation = harness.evaluateSkill(repo, skillId, flags['replay-task'], flags['baseline-task']);
     console.log(evaluation.status === 'pass' ? ok(`recorded native replay evaluation for ${c.path(skillId)}`) : err(`replay evaluation failed for ${c.path(skillId)}`));
+    if (evaluation.status === 'pass') {
+      const improvement = evaluation.measurable_improvement
+        ? c.success('measurable improvement recorded')
+        : c.command('no measurable improvement over baseline');
+      console.log(c.dim(`  · ${improvement}`));
+    }
     for (const issue of evaluation.issues || []) console.log(c.dim(`  · ${issue}`));
     if (evaluation.status !== 'pass') process.exitCode = 3;
     return;
@@ -1467,9 +1473,9 @@ async function main() {
   icarus learn propose --file <skill.json> [--repo <dir>]
                                         submit a reusable, untrusted coding procedure backed by
                                         sealed governed tasks; it cannot enter agent context yet.
-  icarus learn evaluate <id> --replay-task <TASK-ID> [--repo <dir>]
-                                        record a native evaluation of an independently sealed
-                                        replay task that checkpointed the proposed skill id.
+  icarus learn evaluate <id> --replay-task <TASK-ID> --baseline-task <TASK-ID> [--repo <dir>]
+                                        compare an independently sealed replay against a distinct
+                                        same-type baseline; qualifying low-risk evidence auto-promotes.
   icarus learn outcome <id> --task <TASK-ID> [--repo <dir>]
                                         record the native terminal outcome of a task that
                                         checkpointed an active skill; outcome is never agent prose.

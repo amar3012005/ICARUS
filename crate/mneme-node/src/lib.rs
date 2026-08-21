@@ -352,10 +352,15 @@ pub fn harness_evaluate_skill(
     repo_root: String,
     skill_id: String,
     replay_task_id: String,
+    baseline_task_id: Option<String>,
 ) -> Result<String> {
-    let evaluation =
-        harness::evaluate_skill(std::path::Path::new(&repo_root), &skill_id, &replay_task_id)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
+    let evaluation = harness::evaluate_skill(
+        std::path::Path::new(&repo_root),
+        &skill_id,
+        &replay_task_id,
+        baseline_task_id.as_deref(),
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
     harness_json(
         serde_json::to_value(evaluation).map_err(|error| Error::from_reason(error.to_string()))?,
     )

@@ -2973,6 +2973,7 @@ fn harness_skill_cannot_be_proposed_from_an_unsealed_task() {
 
 fn sealed_source_task(repo: &std::path::Path, objective: &str) -> String {
     let mut source_contract = contract();
+    source_contract.task_type = Some("implementation".into());
     source_contract.acceptance_criteria = serde_json::json!([
         {"id":"unit","type":"test","command":"printf 'skill source pass\\n'","required":true}
     ]);
@@ -2998,6 +2999,7 @@ fn sealed_source_task(repo: &std::path::Path, objective: &str) -> String {
 
 fn sealed_replay_task(repo: &std::path::Path, objective: &str, skill_id: &str) -> String {
     let mut replay_contract = contract();
+    replay_contract.task_type = Some("implementation".into());
     replay_contract.acceptance_criteria = serde_json::json!([
         {"id":"unit","type":"test","command":"printf 'skill replay pass\\n'","required":true}
     ]);
@@ -3013,6 +3015,38 @@ fn sealed_replay_task(repo: &std::path::Path, objective: &str, skill_id: &str) -
     )
     .unwrap();
     transition_task(repo, &task.task_id, "verifying").unwrap();
+    assert_eq!(
+        verify_task_criterion(repo, &task.task_id, "unit")
+            .unwrap()
+            .status,
+        "pass"
+    );
+    assert!(seal_task(repo, &task.task_id).unwrap().sealed);
+    task.task_id
+}
+
+fn sealed_baseline_task(repo: &std::path::Path, objective: &str) -> String {
+    let mut baseline_contract = contract();
+    baseline_contract.task_type = Some("implementation".into());
+    baseline_contract.acceptance_criteria = serde_json::json!([
+        {"id":"unit","type":"test","command":"printf 'skill baseline pass\\n'","required":true}
+    ]);
+    let task = start_task(repo, objective, baseline_contract).unwrap();
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
+        transition_task(repo, &task.task_id, state).unwrap();
+    }
+    // The candidate has to earn a measurable improvement against this independent run.  Keep
+    // this deliberately above clock granularity so CI cannot pass only because timestamps tie.
+    // Runtime event-lock recovery deliberately waits up to 500 ms for a live writer.  Keep the
+    // synthetic baseline comfortably beyond that bound so this measurement test never mistakes
+    // ordinary lock contention for a candidate regression on a busy CI runner.
+    std::thread::sleep(Duration::from_secs(2));
     assert_eq!(
         verify_task_criterion(repo, &task.task_id, "unit")
             .unwrap()
@@ -3102,20 +3136,18 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
     assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
     fs::write(&candidate_path, candidate_before_tamper).unwrap();
     assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
+    let baseline_one = sealed_baseline_task(repo.path(), "baseline one");
+    let baseline_two = sealed_baseline_task(repo.path(), "baseline two");
     let replay_one = sealed_replay_task(repo.path(), "replay one", "safe-review");
     let replay_two = sealed_replay_task(repo.path(), "replay two", "safe-review");
-    assert_eq!(
-        evaluate_skill(repo.path(), "safe-review", &replay_one)
-            .unwrap()
-            .status,
-        "pass"
+    let first_evaluation =
+        evaluate_skill(repo.path(), "safe-review", &replay_one, Some(&baseline_one)).unwrap();
+    assert_eq!(first_evaluation.status, "pass");
+    assert!(
+        first_evaluation.measurable_improvement,
+        "{first_evaluation:?}"
     );
-    assert_eq!(
-        evaluate_skill(repo.path(), "safe-review", &replay_two)
-            .unwrap()
-            .status,
-        "pass"
-    );
+    assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
     // A writable ignored runtime receipt is not promotion authority: the matching native event
     // binds its exact digest and replay execution. Tampering with the local JSON removes it from
     // the eligible replay set until ICARUS evaluates the sealed replay again.
@@ -3132,15 +3164,30 @@ fn low_risk_skill_promotion_requires_native_replay_evaluations_not_candidate_cla
     )
     .unwrap();
     assert!(icarus_harness::promote_skill(repo.path(), "safe-review", None).is_err());
-    assert_eq!(
-        evaluate_skill(repo.path(), "safe-review", &replay_one)
-            .unwrap()
-            .status,
-        "pass"
+    let replay_one_evaluation =
+        evaluate_skill(repo.path(), "safe-review", &replay_one, Some(&baseline_one)).unwrap();
+    assert_eq!(replay_one_evaluation.status, "pass");
+    assert!(
+        replay_one_evaluation.measurable_improvement,
+        "{replay_one_evaluation:?}"
     );
-    let active = icarus_harness::promote_skill(repo.path(), "safe-review", None).unwrap();
+    let replay_two_evaluation =
+        evaluate_skill(repo.path(), "safe-review", &replay_two, Some(&baseline_two)).unwrap();
+    assert_eq!(replay_two_evaluation.status, "pass");
+    assert!(
+        replay_two_evaluation.measurable_improvement,
+        "{replay_two_evaluation:?}"
+    );
+    let active: HarnessSkill = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".icarus/skills/active/safe-review.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         active.verification["promotion"]["successful_native_replay_count"],
+        2
+    );
+    assert_eq!(
+        active.verification["promotion"]["measurably_improved_native_replay_count"],
         2
     );
     for index in 0..3 {
@@ -3198,9 +3245,10 @@ fn skill_promotion_writes_verified_authority_and_retirement_preserves_audit_trai
     };
     icarus_harness::propose_skill(repo.path(), skill).unwrap();
     assert!(icarus_harness::promote_skill(repo.path(), "deploy-review", None).is_err());
+    let baseline = sealed_baseline_task(repo.path(), "baseline deployment review");
     let replay = sealed_replay_task(repo.path(), "replay deployment review", "deploy-review");
     assert_eq!(
-        icarus_harness::evaluate_skill(repo.path(), "deploy-review", &replay)
+        icarus_harness::evaluate_skill(repo.path(), "deploy-review", &replay, Some(&baseline))
             .unwrap()
             .status,
         "pass"

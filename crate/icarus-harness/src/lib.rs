@@ -778,6 +778,27 @@ pub struct SkillEvaluation {
     pub final_receipt_digest: String,
     pub observed_at: String,
     pub issues: Vec<String>,
+    /// The independently sealed task that established the matching baseline. A replay without a
+    /// native baseline may be recorded for diagnosis, but cannot promote a candidate.
+    #[serde(default)]
+    pub baseline_task_id: Option<String>,
+    #[serde(default)]
+    pub baseline_execution_id: Option<String>,
+    #[serde(default)]
+    pub baseline_final_receipt_digest: Option<String>,
+    #[serde(default)]
+    pub baseline_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub replay_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub baseline_tool_action_count: Option<usize>,
+    #[serde(default)]
+    pub replay_tool_action_count: Option<usize>,
+    /// True only when the candidate replay is sealed, policy-clean, task-type matched, and has
+    /// a strictly better native duration or fewer observed managed tool actions than its
+    /// independent baseline.
+    #[serde(default)]
+    pub measurable_improvement: bool,
 }
 
 /// Result of the deterministic active-skill health pass. A demotion changes the tracked active
@@ -4046,6 +4067,70 @@ fn verify_sealed_task_receipt(root: &Path, task: &TaskRecord) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillReplayMetrics {
+    duration_ms: u64,
+    tool_action_count: usize,
+    policy_denial_count: usize,
+}
+
+fn skill_replay_metrics(root: &Path, task: &TaskRecord) -> Result<SkillReplayMetrics> {
+    let mut first = None;
+    let mut last = None;
+    let mut tool_action_count = 0;
+    let mut policy_denial_count = 0;
+    for event in read_events(root)? {
+        if event.task_id != task.task_id || event.execution_id != task.execution_id {
+            continue;
+        }
+        let timestamp = time::OffsetDateTime::parse(
+            &event.timestamp,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|_| HarnessError::invalid("task event has an invalid timestamp"))?;
+        first = Some(first.map_or(timestamp, |earliest: time::OffsetDateTime| {
+            earliest.min(timestamp)
+        }));
+        last = Some(last.map_or(timestamp, |latest: time::OffsetDateTime| {
+            latest.max(timestamp)
+        }));
+        if event.event_type == "adapter_post_action_observed" {
+            tool_action_count += 1;
+        }
+        if event.event_type == "adapter_pre_action_denied" {
+            policy_denial_count += 1;
+        }
+    }
+    let Some(first) = first else {
+        return Err(HarnessError::invalid(
+            "task has no execution events for replay measurement",
+        ));
+    };
+    let Some(last) = last else {
+        return Err(HarnessError::invalid(
+            "task has no execution events for replay measurement",
+        ));
+    };
+    Ok(SkillReplayMetrics {
+        duration_ms: u64::try_from((last - first).whole_milliseconds()).unwrap_or(0),
+        tool_action_count,
+        policy_denial_count,
+    })
+}
+
+fn is_high_risk_skill(skill: &HarnessSkill) -> bool {
+    [
+        "security",
+        "deploy",
+        "credential",
+        "migration",
+        "destructive",
+        "external",
+    ]
+    .iter()
+    .any(|word| skill.risk.to_ascii_lowercase().contains(word))
+}
+
 /// Evaluate a proposed procedure against a separate, sealed replay task. ICARUS does not call a
 /// model here: the coding agent performs the replay, then this native gate proves that its task
 /// sealed with ICARUS receipts and explicitly checkpointed the candidate it applied.
@@ -4053,6 +4138,7 @@ pub fn evaluate_skill(
     repo_root: &Path,
     skill_id: &str,
     replay_task_id: &str,
+    baseline_task_id: Option<&str>,
 ) -> Result<SkillEvaluation> {
     let root = canonical_root(repo_root)?;
     let manifest = load_manifest(&root)?;
@@ -4078,6 +4164,43 @@ pub fn evaluate_skill(
     {
         issues.push("replay task must be independent of the candidate source tasks".into());
     }
+    let baseline_task = baseline_task_id
+        .filter(|task_id| !task_id.trim().is_empty())
+        .map(|task_id| task_status(&root, task_id))
+        .transpose()?;
+    if baseline_task_id.is_none() || baseline_task.is_none() {
+        issues.push("replay evaluation requires an independent sealed baseline task".into());
+    }
+    if let Some(baseline) = &baseline_task {
+        if baseline.task_id == replay_task.task_id {
+            issues.push("baseline task must differ from the candidate replay task".into());
+        }
+        if skill
+            .source_tasks
+            .iter()
+            .any(|source| source == &baseline.task_id)
+        {
+            issues.push("baseline task must be independent of the candidate source tasks".into());
+        }
+        if baseline.contract.task_type != replay_task.contract.task_type {
+            issues.push("baseline and replay tasks must have the same immutable task type".into());
+        }
+        match replay_task.contract.task_type.as_deref() {
+            Some(task_type)
+                if skill
+                    .task_types
+                    .iter()
+                    .any(|candidate| candidate == task_type) => {}
+            Some(task_type) => issues.push(format!(
+                "replay task type `{task_type}` is outside the candidate skill task types"
+            )),
+            None => issues
+                .push("replay task requires an immutable task_type for baseline comparison".into()),
+        }
+        if let Err(error) = verify_sealed_task_receipt(&root, baseline) {
+            issues.push(format!("baseline task sealed receipt is invalid: {error}"));
+        }
+    }
     if let Err(error) = verify_sealed_task_receipt(&root, &replay_task) {
         issues.push(format!("replay task sealed receipt is invalid: {error}"));
     }
@@ -4100,6 +4223,38 @@ pub fn evaluate_skill(
     if final_receipt.is_empty() {
         issues.push("replay task final receipt is missing".into());
     }
+    let baseline_receipt = baseline_task.as_ref().and_then(|baseline| {
+        fs::read(
+            runtime_root(&root)
+                .join("tasks")
+                .join(&baseline.task_id)
+                .join("final-result.json"),
+        )
+        .ok()
+    });
+    let replay_metrics = skill_replay_metrics(&root, &replay_task).ok();
+    let baseline_metrics = baseline_task
+        .as_ref()
+        .and_then(|baseline| skill_replay_metrics(&root, baseline).ok());
+    if replay_metrics.is_none() {
+        issues.push("replay task has no native execution metrics".into());
+    }
+    if baseline_task.is_some() && baseline_metrics.is_none() {
+        issues.push("baseline task has no native execution metrics".into());
+    }
+    if replay_metrics
+        .as_ref()
+        .is_some_and(|metrics| metrics.policy_denial_count > 0)
+    {
+        issues.push("replay task recorded a native policy denial".into());
+    }
+    let measurable_improvement = match (&baseline_metrics, &replay_metrics) {
+        (Some(baseline), Some(replay)) if replay.policy_denial_count == 0 => {
+            replay.duration_ms < baseline.duration_ms
+                || replay.tool_action_count < baseline.tool_action_count
+        }
+        _ => false,
+    };
     let evaluation = SkillEvaluation {
         schema_version: 1,
         skill_id: skill.id.clone(),
@@ -4111,6 +4266,18 @@ pub fn evaluate_skill(
         final_receipt_digest: sha256(&final_receipt),
         observed_at: now_rfc3339(),
         issues,
+        baseline_task_id: baseline_task.as_ref().map(|task| task.task_id.clone()),
+        baseline_execution_id: baseline_task.as_ref().map(|task| task.execution_id.clone()),
+        baseline_final_receipt_digest: baseline_receipt.as_ref().map(|receipt| sha256(receipt)),
+        baseline_duration_ms: baseline_metrics.as_ref().map(|metrics| metrics.duration_ms),
+        replay_duration_ms: replay_metrics.as_ref().map(|metrics| metrics.duration_ms),
+        baseline_tool_action_count: baseline_metrics
+            .as_ref()
+            .map(|metrics| metrics.tool_action_count),
+        replay_tool_action_count: replay_metrics
+            .as_ref()
+            .map(|metrics| metrics.tool_action_count),
+        measurable_improvement,
     };
     atomic_write(
         &skill_evaluation_path(&root, skill_id, replay_task_id),
@@ -4127,6 +4294,21 @@ pub fn evaluate_skill(
             payload: serde_json::to_value(&evaluation)?,
         },
     )?;
+    if evaluation.status == "pass" && !is_high_risk_skill(&skill) {
+        let evaluations = native_skill_evaluations(&root, &skill)?;
+        let low_risk_ready = evaluations
+            .iter()
+            .filter(|evaluation| evaluation.status == "pass" && evaluation.measurable_improvement)
+            .map(|evaluation| evaluation.replay_task_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len()
+            >= 2;
+        if low_risk_ready {
+            // `promote_skill` repeats every source/replay/event-chain check. This automatic
+            // path deliberately has no approval argument, so high-risk skills cannot enter it.
+            let _ = promote_skill(&root, skill_id, None)?;
+        }
+    }
     Ok(evaluation)
 }
 
@@ -4208,6 +4390,14 @@ pub fn record_active_skill_outcome(
         final_receipt_digest: sha256(&final_receipt),
         observed_at: now_rfc3339(),
         issues,
+        baseline_task_id: None,
+        baseline_execution_id: None,
+        baseline_final_receipt_digest: None,
+        baseline_duration_ms: None,
+        replay_duration_ms: None,
+        baseline_tool_action_count: None,
+        replay_tool_action_count: None,
+        measurable_improvement: false,
     };
     atomic_write(
         &skill_outcome_path(&root, skill_id, task_id),
@@ -4645,16 +4835,7 @@ pub fn promote_skill(
             "skill source tasks must be distinct independent sealed runs",
         ));
     }
-    let high_risk = [
-        "security",
-        "deploy",
-        "credential",
-        "migration",
-        "destructive",
-        "external",
-    ]
-    .iter()
-    .any(|word| skill.risk.to_ascii_lowercase().contains(word));
+    let high_risk = is_high_risk_skill(&skill);
     if high_risk && owner_approval.as_deref().unwrap_or("").is_empty() {
         return Err(HarnessError::invalid(
             "high-risk skill promotion requires owner approval",
@@ -4666,6 +4847,11 @@ pub fn promote_skill(
         .filter(|evaluation| evaluation.status == "pass")
         .map(|evaluation| evaluation.replay_task_id.clone())
         .collect();
+    let improved_replays: BTreeSet<_> = evaluations
+        .iter()
+        .filter(|evaluation| evaluation.status == "pass" && evaluation.measurable_improvement)
+        .map(|evaluation| evaluation.replay_task_id.clone())
+        .collect();
     if high_risk && successful_replays.is_empty() {
         return Err(HarnessError::invalid(
             "high-risk promotion requires at least one successful native replay evaluation",
@@ -4674,6 +4860,16 @@ pub fn promote_skill(
     if !high_risk && (skill.source_tasks.len() < 3 || successful_replays.len() < 2) {
         return Err(HarnessError::invalid(
             "low-risk promotion requires 3 sealed sources and 2 successful native replay evaluations",
+        ));
+    }
+    if high_risk && improved_replays.is_empty() {
+        return Err(HarnessError::invalid(
+            "high-risk promotion requires a successful native replay with measurable improvement over an independent baseline",
+        ));
+    }
+    if !high_risk && improved_replays.len() < 2 {
+        return Err(HarnessError::invalid(
+            "low-risk promotion requires 2 successful native replays with measurable improvement over independent baselines",
         ));
     }
     for task_id in &skill.source_tasks {
@@ -4692,6 +4888,7 @@ pub fn promote_skill(
             "policy_version": manifest.policy_version,
             "source_task_count": skill.source_tasks.len(),
             "successful_native_replay_count": successful_replays.len(),
+            "measurably_improved_native_replay_count": improved_replays.len(),
             "proof_expires_at": skill.proof_expires_at,
             "evaluation_receipts": evaluations.iter().filter(|evaluation| evaluation.status == "pass").map(|evaluation| format!(".icarus/runtime/skills/evaluations/{}/{}.json", skill.id, evaluation.replay_task_id)).collect::<Vec<_>>(),
         }

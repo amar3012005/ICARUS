@@ -138,8 +138,8 @@ test('skill replay evaluation remains a native receipt operation', () => {
       return JSON.stringify({ skill_id: 'review', replay_task_id: 'TASK-9', status: 'pass' });
     },
   });
-  assert.equal(evaluateSkill('/repo', 'review', 'TASK-9').status, 'pass');
-  assert.deepEqual(calls, [['/repo', 'review', 'TASK-9']]);
+  assert.equal(evaluateSkill('/repo', 'review', 'TASK-9', 'TASK-8').status, 'pass');
+  assert.deepEqual(calls, [['/repo', 'review', 'TASK-9', 'TASK-8']]);
 });
 
 test('active skill outcomes and demotion reviews remain native receipt operations', () => {

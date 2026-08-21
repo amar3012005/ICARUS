@@ -52,7 +52,7 @@ export declare function harnessInspectAuthoritySync(repoRoot: string): string
  */
 export declare function harnessBuildAuthoritySyncRequest(repoRoot: string, taskId: string, scopeJson: string): string
 export declare function harnessProposeSkill(repoRoot: string, skillJson: string): string
-export declare function harnessEvaluateSkill(repoRoot: string, skillId: string, replayTaskId: string): string
+export declare function harnessEvaluateSkill(repoRoot: string, skillId: string, replayTaskId: string, baselineTaskId?: string | undefined | null): string
 export declare function harnessRecordActiveSkillOutcome(repoRoot: string, skillId: string, taskId: string): string
 export declare function harnessReviewActiveSkills(repoRoot: string): string
 export declare function harnessPromoteSkill(repoRoot: string, skillId: string, ownerApproval?: string | undefined | null): string

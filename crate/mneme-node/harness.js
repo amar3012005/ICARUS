@@ -121,7 +121,9 @@ function buildAuthoritySyncRequest(repoRoot, taskId, scope) {
 }
 
 function proposeSkill(repoRoot, skill) { return invoke('harnessProposeSkill', [repoRoot, JSON.stringify(skill)]); }
-function evaluateSkill(repoRoot, skillId, replayTaskId) { return invoke('harnessEvaluateSkill', [repoRoot, skillId, replayTaskId]); }
+function evaluateSkill(repoRoot, skillId, replayTaskId, baselineTaskId) {
+  return invoke('harnessEvaluateSkill', [repoRoot, skillId, replayTaskId, baselineTaskId]);
+}
 function recordActiveSkillOutcome(repoRoot, skillId, taskId) { return invoke('harnessRecordActiveSkillOutcome', [repoRoot, skillId, taskId]); }
 function reviewActiveSkills(repoRoot) { return invoke('harnessReviewActiveSkills', [repoRoot]); }
 function promoteSkill(repoRoot, skillId, ownerApproval) { return invoke('harnessPromoteSkill', [repoRoot, skillId, ownerApproval]); }
