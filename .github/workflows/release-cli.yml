@@ -30,6 +30,8 @@ on:
 
 permissions:
   contents: write   # required to create the release and upload assets
+  id-token: write   # mint the short-lived Sigstore certificate for build provenance
+  attestations: write # persist the signed provenance statement in GitHub's attestation service
 
 jobs:
   # ── gate: the tag, VERSION, and the baked literal must all agree ─────────────────────
@@ -143,6 +145,15 @@ jobs:
       - name: Checksum
         working-directory: crate/mneme-node
         run: shasum -a 256 "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
+
+      # A checksum proves byte integrity only after a consumer obtains it from a trusted channel.
+      # This signed SLSA provenance statement binds this exact binary digest to the public source,
+      # workflow and commit that produced it. Consumers can check it with:
+      # `gh attestation verify <binary> -R owner/repo`.
+      - name: Attest binary build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: crate/mneme-node/${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
         with:

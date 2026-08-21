@@ -40,3 +40,11 @@ test('REGRESSION: normal CI independently exercises the compiled CLI with a nati
   assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" save "compiled binary native shard round trip" --org ci-e2e/);
   assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" recall "compiled binary native shard" --org ci-e2e/);
 });
+
+test('REGRESSION: CLI releases publish signed provenance for every platform binary', () => {
+  const release = workflow('release-cli.yml');
+  assert.match(release, /id-token: write/);
+  assert.match(release, /attestations: write/);
+  assert.match(release, /uses: actions\/attest@v4/);
+  assert.match(release, /subject-path: crate\/mneme-node\/\$\{\{ matrix\.asset \}\}/);
+});

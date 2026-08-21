@@ -9,6 +9,18 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Release provenance attestations:** each published CLI platform binary is now accompanied by
+  a GitHub/Sigstore build-provenance attestation bound to its exact digest, public source commit,
+  and release workflow. Consumers can independently inspect it with
+  `gh attestation verify <binary> -R amar3012005/ICARUS`; this is intentionally additive to the
+  published SHA-256 sidecar, not a claim that SBOM or offline signature verification is complete.
+- **Update checksum enforcement:** `/update` now fetches the release `.sha256` sidecar and refuses
+  a missing, ambiguous, wrong-platform, or mismatched digest before executing or atomically
+  replacing the current binary.
+- **Managed-agent conformance process:** public native-addon CI now launches a disposable fake
+  Claude-compatible process through the real CLI, Rust task lifecycle, documented pre/post hooks,
+  path authorization, scope reconciliation, and verification handoff. It is evidence for the
+  compatibility path only, not a certification claim for Claude or Codex.
 - **Independent binary and MCP acceptance gates:** normal public CI now builds the Rust addon
   and drives the real MCP stdio process through local evidence ingest, structured memory save,
   lexical recall, and get-by-ID against a disposable shard with no network or credentials. A
