@@ -91,6 +91,15 @@ function sourceFingerprint(repoDir) {
   return hash.digest('hex');
 }
 
+// Harness-enabled repositories have a Rust-owned freshness receipt. Use that same authority for
+// both build metadata and status checks; legacy graphs remain self-contained and use the local
+// implementation above.
+function authoritativeSourceFingerprint(repoDir) {
+  return fs.existsSync(path.join(repoDir, '.icarus', 'manifest.yaml'))
+    ? require('./harness.js').graphSourceFingerprint(repoDir)
+    : sourceFingerprint(repoDir);
+}
+
 // One pass per file: collect every function/method-like node (as a symbol) and every call site
 // (raw callee text — resolved against the GLOBAL symbol table in a second pass, once every
 // file's symbols are known, exactly like the real tool's own "resolved N bare CALLS targets"
@@ -396,7 +405,9 @@ function run(db, sql, params = []) {
 }
 
 async function buildAndStore(repoDir) {
-  const fingerprint = sourceFingerprint(repoDir);
+  // Rust verifies graph receipts and owns the supported-source fingerprint contract. Asking it
+  // for the build fingerprint prevents a second traversal/sort implementation from drifting.
+  const fingerprint = authoritativeSourceFingerprint(repoDir);
   const result = await build(repoDir);
   const db = await openDb(repoDir);
   db.run('BEGIN;');
@@ -432,7 +443,7 @@ async function status(repoDir) {
   const lastUpdated = queryAll(db, "SELECT value FROM metadata WHERE key='last_updated'")[0];
   const buildFingerprint = queryAll(db, "SELECT value FROM metadata WHERE key='source_fingerprint'")[0];
   db.close();
-  const currentFingerprint = sourceFingerprint(repoDir);
+  const currentFingerprint = authoritativeSourceFingerprint(repoDir);
   return { nodes, edges, files, languages, lastUpdated: lastUpdated?.value, buildFingerprint: buildFingerprint?.value, currentFingerprint, current: buildFingerprint?.value === currentFingerprint };
 }
 

@@ -9,6 +9,7 @@ const {
   startReleaseCandidateDogfood, releaseCandidateDogfoodReport, attestReleaseCandidateDogfood,
   bindCodexAppServerThread, recordCodexAppServerEvent, decideCodexAppServerApproval,
   runCodexAppServer,
+  graphSourceFingerprint,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -50,6 +51,16 @@ test('doctor remains a native report, preserving the Rust authority boundary', (
     },
   });
   assert.equal(doctor('/repo').healthy, true);
+});
+
+test('graph fingerprint is supplied by the native harness authority', () => {
+  __setNativeHarnessBridgeForTest({
+    harnessGraphSourceFingerprint(repo) {
+      assert.equal(repo, '/repo');
+      return JSON.stringify('a'.repeat(64));
+    },
+  });
+  assert.equal(graphSourceFingerprint('/repo'), 'a'.repeat(64));
 });
 
 test('policy validation remains a native report, never a JavaScript YAML parser', () => {

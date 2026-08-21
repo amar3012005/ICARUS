@@ -62,6 +62,12 @@ export declare function harnessCheckpointTask(repoRoot: string, taskId: string, 
 export declare function harnessBuildContext(repoRoot: string, taskId: string, budgetTokens: number): string
 export declare function harnessBuildContextDelta(repoRoot: string, taskId: string, checkpointSequence: number, budgetTokens: number): string
 export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFingerprint: string): string
+/**
+ * Return the authoritative graph-source fingerprint. The JavaScript graph adapter uses this
+ * rather than maintaining a second hashing implementation, so the fingerprint it stores and
+ * the one Rust verifies can never drift because of traversal or ordering differences.
+ */
+export declare function harnessGraphSourceFingerprint(repoRoot: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
 /**
  * Authorize and audit a documented Claude Edit/Write PreToolUse event. The JavaScript hook

@@ -147,6 +147,12 @@ function recordGraphReceipt(repoRoot, sourceFingerprint) {
   return invoke('harnessRecordGraphReceipt', [repoRoot, sourceFingerprint]);
 }
 
+// The native harness owns the precise supported-source universe and its portable ordering.
+// Graph parsing remains in Node, but freshness proof must use this same Rust authority.
+function graphSourceFingerprint(repoRoot) {
+  return invoke('harnessGraphSourceFingerprint', [repoRoot]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -226,6 +232,7 @@ module.exports = {
   checkpointTask,
   buildContext,
   recordGraphReceipt,
+  graphSourceFingerprint,
   authorizeAction,
   authorizeAdapterWrite,
   recordAdapterPostAction,

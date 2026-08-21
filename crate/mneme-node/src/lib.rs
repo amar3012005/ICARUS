@@ -507,6 +507,16 @@ pub fn harness_record_graph_receipt(
     )
 }
 
+/// Return the authoritative graph-source fingerprint. The JavaScript graph adapter uses this
+/// rather than maintaining a second hashing implementation, so the fingerprint it stores and
+/// the one Rust verifies can never drift because of traversal or ordering differences.
+#[napi]
+pub fn harness_graph_source_fingerprint(repo_root: String) -> Result<String> {
+    let fingerprint = harness::graph_source_fingerprint(std::path::Path::new(&repo_root))
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::json!(fingerprint))
+}
+
 #[napi]
 pub fn harness_authorize_action(
     repo_root: String,
