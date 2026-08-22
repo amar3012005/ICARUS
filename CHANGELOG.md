@@ -112,6 +112,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   API reference generated from `index.d.ts`), `examples/quickstart.mjs`, this changelog.
 
 ### Fixed
+- **Release checksum sidecars:** corrected the portable checksum writer to terminate each
+  sidecar entry with a real newline, so strict Linux/Windows cold-download verification and
+  `/update` accept the exact platform asset binding.
 - **Windows release checksum:** the cross-platform artifact job now hashes with Node's built-in
   crypto instead of macOS/Linux-only `shasum`, so the Windows binary can reach publication.
 - `crate/Cargo.toml` `repository` pointed at the private monorepo; now points at this
