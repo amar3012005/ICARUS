@@ -112,6 +112,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   API reference generated from `index.d.ts`), `examples/quickstart.mjs`, this changelog.
 
 ### Fixed
+- **Packaged graph runtime:** Bun-compiled CLIs now embed and route the core
+  `web-tree-sitter` runtime WASM as well as language grammars, preventing installed binaries
+  from resolving a nonexistent CI build path when graph indexing starts.
 - **Release checksum sidecars:** corrected the portable checksum writer to terminate each
   sidecar entry with a real newline, so strict Linux/Windows cold-download verification and
   `/update` accept the exact platform asset binding.

@@ -15,7 +15,12 @@ let ParserMod = null;
 async function getParser() {
   if (ParserMod) return ParserMod;
   ParserMod = require('web-tree-sitter');
-  await ParserMod.init();
+  // `web-tree-sitter` has its own runtime WASM in addition to the language grammars. A
+  // compiled Bun binary cannot resolve that package-relative file on disk (it otherwise keeps
+  // the CI build path), so send it to Bun's embedded asset through locateFile as well.
+  const bunAssets = typeof Bun !== 'undefined' ? await getBunWasmAssets() : null;
+  const options = bunAssets ? { locateFile: () => bunAssets.parser } : undefined;
+  await ParserMod.init(options);
   return ParserMod;
 }
 
@@ -33,6 +38,10 @@ const _langCache = new Map();
 // Cached across calls within one process — a compiled Bun binary's dynamic import() of the
 // sidecar below is itself cheap once resolved, but no reason to repeat it per language load.
 let _bunWasmAssets = null;
+async function getBunWasmAssets() {
+  if (!_bunWasmAssets) _bunWasmAssets = (await import('./wasm-assets.bun.mjs')).default;
+  return _bunWasmAssets;
+}
 async function resolveWasmPath(name) {
   // Real bug fixed here: require.resolve() on a package-relative path works fine under plain
   // Node, but a `bun build --compile` single binary has no such file on disk at runtime —
@@ -41,8 +50,7 @@ async function resolveWasmPath(name) {
   // asset-embedding (`import ... with { type: "file" }`) is the real fix, but that's ESM-only
   // syntax this CommonJS file can't hold directly — see wasm-assets.bun.mjs's own doc comment.
   if (typeof Bun !== 'undefined') {
-    if (!_bunWasmAssets) _bunWasmAssets = (await import('./wasm-assets.bun.mjs')).default;
-    return _bunWasmAssets[name];
+    return (await getBunWasmAssets())[name];
   }
   return require.resolve(LANG_WASM[name]);
 }

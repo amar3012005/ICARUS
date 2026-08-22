@@ -11,4 +11,5 @@
 import js from 'tree-sitter-wasms/out/tree-sitter-javascript.wasm' with { type: 'file' };
 import ts from 'tree-sitter-wasms/out/tree-sitter-typescript.wasm' with { type: 'file' };
 import rust from 'tree-sitter-wasms/out/tree-sitter-rust.wasm' with { type: 'file' };
-export default { javascript: js, typescript: ts, rust };
+import parser from 'web-tree-sitter/tree-sitter.wasm' with { type: 'file' };
+export default { javascript: js, typescript: ts, rust, parser };

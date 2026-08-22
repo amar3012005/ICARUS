@@ -406,6 +406,8 @@ function printToolSummary() {
   console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
   console.log('          icarus_test_coverage, icarus_why_code');
   console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
+  console.log('  harness: icarus_harness_init (mandatory first-session bootstrap), icarus_task_start,');
+  console.log('           icarus_context_get, icarus_task_handoff, icarus_task_verify, icarus_task_seal');
 }
 
 async function run(flags) {
