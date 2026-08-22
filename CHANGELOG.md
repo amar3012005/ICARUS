@@ -8,6 +8,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+### Fixed
+- **Windows cold-release verification:** checksum sidecars are now downloaded to disk and parsed
+  as raw text, avoiding a PowerShell HTTP-content representation mismatch while still proving the
+  exact downloaded Windows binary against its single expected SHA-256 record.
+
 ### Added
 - **Mandatory agent-session bootstrap:** project instruction installers now require every new
   agent session to initialize a missing repository harness through the new native-backed

@@ -317,10 +317,13 @@ jobs:
           $asset = 'icarus-win32-x64.exe'
           $base = "https://github.com/$repo/releases/download/$tag/$asset"
           Invoke-WebRequest -Uri $base -OutFile 'cold-icarus.exe'
-          $checksums = Invoke-WebRequest -Uri "$base.sha256" -UseBasicParsing
-          $matches = @($checksums.Content -split "`n" | Where-Object { $_ -match '^([a-fA-F0-9]{64})\s+\*?icarus-win32-x64\.exe\s*$' })
-          if ($matches.Count -ne 1) { throw 'Windows checksum sidecar does not bind exactly one expected asset' }
-          $expected = ([regex]::Match($matches[0], '^[a-fA-F0-9]{64}')).Value.ToLowerInvariant()
+          # Persist the sidecar before parsing. Invoke-WebRequest's Content representation
+          # differs across PowerShell hosts; raw file bytes are exactly what users receive.
+          Invoke-WebRequest -Uri "$base.sha256" -OutFile 'cold-icarus.exe.sha256'
+          $sidecar = (Get-Content -LiteralPath 'cold-icarus.exe.sha256' -Raw).Trim()
+          $match = [regex]::Match($sidecar, '^([a-fA-F0-9]{64})\s+\*?icarus-win32-x64\.exe\s*$')
+          if (-not $match.Success) { throw 'Windows checksum sidecar does not bind exactly one expected asset' }
+          $expected = $match.Groups[1].Value.ToLowerInvariant()
           $actual = (Get-FileHash -LiteralPath 'cold-icarus.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "cold Windows download hash mismatch: expected $expected got $actual" }
           $version = & .\cold-icarus.exe --version
