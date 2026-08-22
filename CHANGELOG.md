@@ -9,6 +9,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Mandatory agent-session bootstrap:** project instruction installers now require every new
+  agent session to initialize a missing repository harness through the new native-backed
+  `icarus_harness_init` MCP tool before search, planning, or edits. The rule is idempotent,
+  blocks on initialization failure, then requires graph/context use for coding work.
 - **Packaged graph-builder gate:** every compiled CLI artifact now builds and queries a
   JavaScript, TypeScript, and Rust fixture before release publication. This prevents a missing
   Tree-sitter WASM grammar from reaching macOS users as a runtime-only graph-build failure.
@@ -108,6 +112,8 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   API reference generated from `index.d.ts`), `examples/quickstart.mjs`, this changelog.
 
 ### Fixed
+- **Windows release checksum:** the cross-platform artifact job now hashes with Node's built-in
+  crypto instead of macOS/Linux-only `shasum`, so the Windows binary can reach publication.
 - `crate/Cargo.toml` `repository` pointed at the private monorepo; now points at this
   repository.
 

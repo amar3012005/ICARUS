@@ -18,6 +18,20 @@ icarus doctor
 Use `icarus migrate --dry-run` before `icarus migrate` for a repository created with an older
 ICARUS preview. Migration copies legacy graph metadata only; it never rewrites `.amr` shards.
 
+### Agent-session rule
+
+Install the ICARUS MCP server and the repository instruction block for each agent you use:
+
+```bash
+icarus mcp install claude   # or codex / cursor, from the repository root
+```
+
+That installed block is a hard first-session rule: before code search, planning, edits, or an
+implementation answer, an agent checks for `.icarus/manifest.yaml` and calls
+`icarus_harness_init` when it is absent. Initialization is idempotent; a failure blocks governed
+work rather than allowing the agent to fabricate `.icarus` state. Agents then build a missing or
+stale graph and use `icarus_context_get` before planning a task.
+
 ## 2. Define the work before launching an agent
 
 Write a reviewed contract. The allowed path set and acceptance criteria are authority, not agent

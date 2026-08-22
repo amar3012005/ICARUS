@@ -50,10 +50,15 @@ test('the written block names the derived org for this repo', () => {
   });
 });
 
-test('the project block directs governed agents to compile context before planning', () => {
+test('the project block makes first-session initialization and governed context mandatory', () => {
   withRepo((repo) => {
     mi.installProjectAgents(repo);
     const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
+    assert.ok(text.includes('every new agent session'));
+    assert.ok(text.includes('.icarus/manifest.yaml'));
+    assert.ok(text.includes('icarus_harness_init'));
+    assert.ok(text.includes('Treat an initialization failure as a blocker'));
+    assert.ok(text.includes('icarus_graph_build'));
     assert.ok(text.includes('icarus_context_get'));
     assert.ok(text.includes('icarus_task_verify'));
     assert.ok(text.includes('icarus_harness_skill_authoring_brief'));

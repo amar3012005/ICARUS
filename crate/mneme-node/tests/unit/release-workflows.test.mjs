@@ -76,6 +76,12 @@ test('REGRESSION: CLI releases publish and cold-verify a real Windows executable
   assert.match(installer, /Move-Item -LiteralPath \$Candidate -Destination \$Target -Force/);
 });
 
+test('REGRESSION: release artifact checksums use a Windows-portable SHA-256 implementation', () => {
+  const release = workflow('release-cli.yml');
+  assert.match(release, /crypto\.createHash\("sha256"\)/);
+  assert.doesNotMatch(release, /run: shasum -a 256 "\$\{\{ matrix\.asset \}\}"/);
+});
+
 test('REGRESSION: CLI releases publish and cold-verify a native Linux ARM executable', () => {
   const release = workflow('release-cli.yml');
   const ci = workflow('ci.yml');

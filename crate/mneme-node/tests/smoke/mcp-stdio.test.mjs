@@ -93,6 +93,7 @@ test('MCP stdio server completes initialize and exposes the public tool surface'
   for (const name of [
     'icarus_recall',
     'icarus_save_memory',
+    'icarus_harness_init',
     'icarus_task_start',
     'icarus_context_get',
     'icarus_harness_skill_authoring_brief',

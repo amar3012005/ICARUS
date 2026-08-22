@@ -161,7 +161,7 @@ jobs:
       - name: Checksum
         working-directory: crate/mneme-node
         shell: bash
-        run: shasum -a 256 "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
+        run: node -e 'const fs=require("fs"),crypto=require("crypto"),file=process.argv[1]; process.stdout.write(`${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}  ${file}\\n`)' "${{ matrix.asset }}" | tee "${{ matrix.asset }}.sha256"
 
       # The binary is Bun-compiled from this exact checkout and includes the native Rust addon.
       # Generate an SPDX SBOM from that complete source tree, retain it as a release asset, then

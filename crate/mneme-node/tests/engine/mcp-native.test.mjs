@@ -3,7 +3,8 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +138,31 @@ test('native MCP round-trip persists local evidence and structured memory withou
     assert.deepEqual(memory.tags, ['mcp', 'native', 'durability']);
   } finally {
     // Wait until the child closes the native shard before deleting only this test-owned tree.
+    await stopChildren();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('icarus_harness_init creates a repository harness once and is idempotent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-harness-init-'));
+  const repo = join(root, 'repo');
+  try {
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    const mcp = startMcp({ ICARUS_HOME: join(root, 'home'), OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const initialized = await mcp.request(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-harness-init', version: '1.0.0' },
+    });
+    assert.equal(initialized.result.serverInfo.name, 'icarus');
+    mcp.notify('notifications/initialized', {});
+
+    const first = await tool(mcp, 2, 'icarus_harness_init', { repo });
+    assert.equal(first.created, true);
+    assert.ok(existsSync(join(repo, '.icarus', 'manifest.yaml')), 'native initialization must create the tracked manifest');
+
+    const second = await tool(mcp, 3, 'icarus_harness_init', { repo });
+    assert.equal(second.created, false, 'a later session must observe, not recreate, the harness');
+  } finally {
     await stopChildren();
     rmSync(root, { recursive: true, force: true });
   }

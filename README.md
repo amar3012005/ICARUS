@@ -165,6 +165,9 @@ icarus run --task TASK-… --agent claude
 
 Read the [Harness quickstart](docs/HARNESS_QUICKSTART.md) before using a managed task, and the
 [adapter certification matrix](docs/ADAPTER_CERTIFICATION.md) for the exact current guarantees.
+Run `icarus mcp install <claude|codex|cursor>` from a repository root to install the mandatory
+first-session bootstrap rule for that agent: it initializes a missing `.icarus` harness
+idempotently before code search, planning, or edits, then uses graph and context tools.
 
 ## Use it from Node
 

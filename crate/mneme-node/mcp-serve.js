@@ -532,6 +532,18 @@ async function run() {
   const harnessFor = () => require('./harness.js');
 
   server.registerTool(
+    'icarus_harness_init',
+    {
+      title: 'Initialize the ICARUS harness for this repository',
+      description: 'Call at the start of every new coding-agent session before code search, planning, or edits when <repo>/.icarus/manifest.yaml is absent. It creates the tracked repository identity and policy exactly once; repeated calls are idempotent and report the existing harness. Do not manually invent or write .icarus state if this fails.',
+      inputSchema: { repo: z.string().default(process.cwd()), agents: z.array(z.string()).default([]).describe('Optional adapter instruction targets, for example ["claude"] or ["codex"].') },
+    },
+    async ({ repo, agents }) => {
+      try { return textResult(harnessFor().initHarness(repo, { agents: agents || [] })); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_task_start',
     {
       title: 'Start a governed ICARUS coding task',
