@@ -858,11 +858,36 @@ async function cmdUpdate(_flags, _cfg) {
     console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
   }
   console.log(bullet(c.system('downloading and verifying the new binary...')));
-  const update = await performSelfUpdate();
+  let progressTick = 0;
+  let renderedProgress = false;
+  const update = await performSelfUpdate((progress) => {
+    if (!process.stdout.isTTY) return;
+    renderedProgress = true;
+    process.stdout.write(`\r${renderUpdateProgress(progress, progressTick++)}`);
+  });
+  if (renderedProgress) process.stdout.write('\n');
   const suffix = update.restartRequired
     ? ' Exit this command now; the verified Windows replacement will complete immediately after it exits, then restart icarus.'
     : ` Run ${c.command('icarus status')} to confirm.`;
   console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${suffix}`));
+}
+
+function formatUpdateBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '?';
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+function renderUpdateProgress({ received = 0, total = null, phase = 'downloading' }, tick = 0) {
+  const width = 24;
+  const knownTotal = Number.isFinite(total) && total > 0;
+  const ratio = knownTotal ? Math.max(0, Math.min(1, received / total)) : 0;
+  const filled = phase === 'verifying' ? width : Math.floor(ratio * width);
+  const bar = `${c.success('█'.repeat(filled))}${c.dim('░'.repeat(width - filled))}`;
+  const amount = knownTotal ? `${formatUpdateBytes(received)}/${formatUpdateBytes(total)}` : formatUpdateBytes(received);
+  const label = phase === 'verifying' ? 'verifying SHA-256' : `downloading${knownTotal ? ` ${Math.floor(ratio * 100)}%` : ''}`;
+  return `  ${c.running(spinnerFrame(tick))} [${bar}] ${c.fg(amount)}  ${c.system(label)}`;
 }
 
 function cmdCompact(flags, cfg) {

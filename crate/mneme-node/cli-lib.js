@@ -2212,7 +2212,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.69';
+const ICARUS_VERSION = '0.3.70';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2323,7 +2323,38 @@ function stageWindowsSelfUpdate(target, candidate) {
  * native.js already uses to detect "am I the compiled artifact"). Refuses on a source/dev
  * install (plain `node mneme-cli.js`) since there's no single binary to replace there — git
  * pull + rebuild is that install's own update path, already documented in its own README.
- * onProgress(bytesDownloaded) is optional, for a progress indicator. */
+ * onProgress({received,total,phase}) is optional and is emitted while the response body streams,
+ * rather than only after the full binary is buffered. */
+async function readReleaseAsset(response, onProgress) {
+  const totalHeader = Number(response.headers.get('content-length'));
+  const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
+  const report = (received, phase = 'downloading') => onProgress?.({ received, total, phase });
+  if (!response.body?.getReader) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    report(bytes.length);
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  let lastReportedAt = 0;
+  report(0);
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    chunks.push(chunk);
+    received += chunk.length;
+    const now = Date.now();
+    if (now - lastReportedAt >= 75) {
+      report(received);
+      lastReportedAt = now;
+    }
+  }
+  report(received);
+  return Buffer.concat(chunks, received);
+}
+
 async function performSelfUpdate(onProgress) {
   if (typeof Bun === 'undefined') {
     throw new Error('running from source (node mneme-cli.js), not the compiled binary — update via `git pull` in your ICARUS checkout instead');
@@ -2334,12 +2365,9 @@ async function performSelfUpdate(onProgress) {
   const [res, checksumRes] = await Promise.all([fetch(url), fetch(`${url}.sha256`)]);
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
   if (!checksumRes.ok) throw new Error(`release checksum download failed: HTTP ${checksumRes.status}`);
-  const [buf, checksumText] = await Promise.all([
-    res.arrayBuffer().then((bytes) => Buffer.from(bytes)),
-    checksumRes.text(),
-  ]);
+  const [buf, checksumText] = await Promise.all([readReleaseAsset(res, onProgress), checksumRes.text()]);
+  onProgress?.({ received: buf.length, total: Number(res.headers.get('content-length')) || null, phase: 'verifying' });
   verifyReleaseAsset(asset, buf, checksumText);
-  if (onProgress) onProgress(buf.length);
 
   const target = process.execPath; // the real, currently-running binary path under Bun
   const tmp = `${target}.update-tmp${process.platform === 'win32' ? '.exe' : ''}`;
@@ -2374,7 +2402,7 @@ module.exports = {
   hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally, isInaccessibleHivemindDuplicate,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,

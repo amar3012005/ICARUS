@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { releaseAssetChecksum, verifyReleaseAsset, windowsUpdateHandoffScript } = require('../../cli-lib.js');
+const { readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, windowsUpdateHandoffScript } = require('../../cli-lib.js');
 
 const asset = 'icarus-darwin-arm64';
 const bytes = Buffer.from('ICARUS release update integrity fixture');
@@ -35,6 +35,23 @@ test('release update rejects ambiguous duplicate entries for one asset', () => {
     () => releaseAssetChecksum(`${digest}  ${asset}\n${digest}  ${asset}\n`, asset),
     /exactly one digest/,
   );
+});
+
+test('release asset streaming reports incremental download progress and the verification boundary', async () => {
+  const chunks = [Buffer.from('ICARUS '), Buffer.from('streamed '), Buffer.from('update')];
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }), { headers: { 'content-length': String(chunks.reduce((sum, chunk) => sum + chunk.length, 0)) } });
+  const progress = [];
+  const downloaded = await readReleaseAsset(response, (event) => progress.push(event));
+  assert.equal(downloaded.toString(), 'ICARUS streamed update');
+  assert.equal(progress[0].received, 0);
+  assert.equal(progress.at(-1).received, downloaded.length);
+  assert.equal(progress.at(-1).total, downloaded.length);
+  assert.ok(progress.every((event) => event.phase === 'downloading'));
 });
 
 test('Windows self-update handoff waits for exit, uses literal paths, and restores a rollback on failure', () => {

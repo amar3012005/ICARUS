@@ -337,6 +337,17 @@ function tuiIngestQueueLine(event, spinner, cols = process.stdout.columns || 80)
   return `  ${mark} [${bar}] ${event.current || event.completed || 0}/${event.total || 0}  ${INGEST_PHASE_LABEL[phase] || phase}  ${file || ''}`;
 }
 
+function tuiUpdateProgressLine({ received = 0, total = null, phase = 'downloading' }, spinner) {
+  const width = 24;
+  const knownTotal = Number.isFinite(total) && total > 0;
+  const ratio = knownTotal ? Math.max(0, Math.min(1, received / total)) : 0;
+  const filled = phase === 'verifying' ? width : Math.floor(ratio * width);
+  const bar = `${c.success('█'.repeat(filled))}${c.dim('░'.repeat(width - filled))}`;
+  const amount = knownTotal ? `${(received / 1e6).toFixed(1)}/${(total / 1e6).toFixed(1)} MB` : `${(received / 1e6).toFixed(1)} MB`;
+  const label = phase === 'verifying' ? 'verifying SHA-256' : `downloading${knownTotal ? ` ${Math.floor(ratio * 100)}%` : ''}`;
+  return `  ${spinner} [${bar}] ${amount}  ${label}`;
+}
+
 function chatRecallLines(hits, cols = process.stdout.columns || 80) {
   const modeLabel = hits[0]?.rerankFailed
     ? 'parallel hybrid · rerank fallback'
@@ -1173,7 +1184,8 @@ async function dispatch(line, state, cfg) {
       if (upToDate === null) out(state, c.dim('  couldn\'t check the latest version — trying the update anyway.'));
       else out(state, c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
       out(state, bullet(c.system('downloading and verifying the new binary...')));
-      const update = await performSelfUpdate();
+      let progressTick = 0;
+      const update = await performSelfUpdate((progress) => writeProgressTick(state, `\r${tuiUpdateProgressLine(progress, c.running(spinnerFrame(progressTick++)))}`));
       out(state, ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).`));
       out(state, c.dim(update.restartRequired
         ? '  Windows will replace the binary after this session exits — /quit, then restart icarus.'

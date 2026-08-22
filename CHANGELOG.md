@@ -9,6 +9,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Live `/update` progress:** self-update now streams the release response and renders a
+  TQDM-style single-line progress bar with bytes and percentage, followed by an explicit
+  SHA-256 verification state. It retains the same checksum and atomic-replacement guarantees.
 - **Managed MCP task lifecycle:** the MCP server now exposes Rust-authorized
   \`icarus_task_transition\`. A task started through MCP previously remained in \`created\`
   with no agent-accessible path to \`executing\`, causing every managed write to be correctly
