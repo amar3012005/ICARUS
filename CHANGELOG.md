@@ -9,6 +9,13 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Managed MCP task lifecycle:** the MCP server now exposes Rust-authorized
+  \`icarus_task_transition\`. A task started through MCP previously remained in \`created\`
+  with no agent-accessible path to \`executing\`, causing every managed write to be correctly
+  denied. Installed agent instructions now specify the required legal progression before writes.
+- **MCP graph-build regression coverage:** the protocol smoke suite now performs a real graph
+  build and status request through MCP, proving a graph parser failure is returned as a tool
+  result rather than silently closing the JSON-RPC transport.
 - **Windows cold-release verification:** checksum sidecars are now downloaded to disk and parsed
   as raw text, avoiding a PowerShell HTTP-content representation mismatch while still proving the
   exact downloaded Windows binary against its single expected SHA-256 record.

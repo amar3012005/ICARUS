@@ -167,3 +167,40 @@ test('icarus_harness_init creates a repository harness once and is idempotent', 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('MCP can advance a started task to executing before authorizing a managed write', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-task-transition-'));
+  const repo = join(root, 'repo');
+  try {
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    const mcp = startMcp({ ICARUS_HOME: join(root, 'home'), OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const initialized = await mcp.request(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-task-transition', version: '1.0.0' },
+    });
+    assert.equal(initialized.result.serverInfo.name, 'icarus');
+    mcp.notify('notifications/initialized', {});
+    await tool(mcp, 2, 'icarus_harness_init', { repo });
+    const task = await tool(mcp, 3, 'icarus_task_start', {
+      repo,
+      objective: 'Exercise the MCP task lifecycle',
+      contract: {
+        allowed_paths: ['src/**'], forbidden_paths: [], acceptance_criteria: [], risk: 'low', budgets: {},
+        authority: 'native MCP integration test', external_write_policy: 'approval_required',
+      },
+    });
+    assert.equal(task.status, 'created');
+    for (const [offset, target] of ['orienting', 'contracted', 'planned', 'executing'].entries()) {
+      const transitioned = await tool(mcp, 4 + offset, 'icarus_task_transition', { repo, task_id: task.task_id, target });
+      assert.equal(transitioned.status, target);
+    }
+    const authorization = await tool(mcp, 8, 'icarus_action_check', {
+      repo, task_id: task.task_id, kind: 'write', path: 'src/new.js',
+    });
+    assert.equal(authorization.status, 'executing');
+    assert.equal(authorization.allowed, true);
+  } finally {
+    await stopChildren();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

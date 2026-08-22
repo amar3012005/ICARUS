@@ -60,6 +60,8 @@ test('the project block makes first-session initialization and governed context 
     assert.ok(text.includes('Treat an initialization failure as a blocker'));
     assert.ok(text.includes('icarus_graph_build'));
     assert.ok(text.includes('icarus_context_get'));
+    assert.ok(text.includes('icarus_task_transition'));
+    assert.ok(text.includes('planned → executing'));
     assert.ok(text.includes('icarus_task_verify'));
     assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
   });

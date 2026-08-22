@@ -568,6 +568,22 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_task_transition',
+    {
+      title: 'Advance a governed ICARUS task through its durable lifecycle',
+      description: 'Call after icarus_task_start to move a task through created → orienting → contracted → planned → executing. Before the first managed code write, the task MUST be executing; use this tool one legal state at a time. Rust validates every transition and records the audit event, so this cannot bypass policy or jump from created directly to executing.',
+      inputSchema: {
+        repo: z.string().default(process.cwd()),
+        task_id: z.string(),
+        target: z.enum(['orienting', 'contracted', 'planned', 'executing', 'verifying', 'waiting_for_approval', 'blocked', 'failed', 'sealed']),
+      },
+    },
+    async ({ repo, task_id, target }) => {
+      try { return textResult(harnessFor().transitionTask(repo, task_id, target)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_action_check',
     {
       title: 'Check whether a task action is authorized',

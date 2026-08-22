@@ -4,6 +4,8 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -95,6 +97,7 @@ test('MCP stdio server completes initialize and exposes the public tool surface'
     'icarus_save_memory',
     'icarus_harness_init',
     'icarus_task_start',
+    'icarus_task_transition',
     'icarus_context_get',
     'icarus_harness_skill_authoring_brief',
     'icarus_harness_learning_capture',
@@ -104,4 +107,26 @@ test('MCP stdio server completes initialize and exposes the public tool surface'
     'icarus_task_export',
   ]) assert.ok(names.includes(name), `missing MCP tool ${name}`);
   assert.equal(mcp.messages.some((message) => message.error), false);
+});
+
+test('MCP graph build returns a result and keeps the transport live', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'icarus-mcp-graph-'));
+  try {
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'fixture.js'), 'export function mcpGraphFixture() {}\n');
+    const mcp = startMcp();
+    const initialized = await mcp.request(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-graph-smoke', version: '1.0.0' },
+    });
+    assert.equal(initialized.result.serverInfo.name, 'icarus');
+    mcp.notify('notifications/initialized', {});
+    const built = await mcp.request(2, 'tools/call', { name: 'icarus_graph_build', arguments: { repo } });
+    assert.equal(built.result.isError, undefined, JSON.stringify(built.result));
+    assert.equal(JSON.parse(built.result.content[0].text).files, 1);
+    const status = await mcp.request(3, 'tools/call', { name: 'icarus_graph_status', arguments: { repo } });
+    assert.equal(status.result.isError, undefined, JSON.stringify(status.result));
+    assert.equal(JSON.parse(status.result.content[0].text).current, true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });

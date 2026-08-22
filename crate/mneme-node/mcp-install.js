@@ -350,7 +350,7 @@ At the beginning of **every new agent session** in this repository, before code 
 
 For "where is X" / "who calls X" / "what imports X" in this codebase: call \`icarus_graph_query\` FIRST — a cheap structural lookup (callers_of/callees_of/imports_of/find) — instead of Grep/Read over whole files. Run \`icarus_graph_build\` once for this repo if \`icarus_graph_status\` shows nothing built yet, and again after significant restructuring.
 
-For a governed coding task in a repository with \`.icarus/manifest.yaml\`: call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before ending a managed Claude session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.
+For a governed coding task in a repository with \`.icarus/manifest.yaml\`: \`icarus_task_start\` creates a task in \`created\`, not \`executing\`. Advance it with \`icarus_task_transition\` one legal state at a time: \`created → orienting → contracted → planned → executing\`. Call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before the first managed code write, transition to \`executing\`; do not call \`icarus_action_check\` while the task is still \`created\` or bypass its denial. Before ending a managed session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.
 
 After a sealed task reveals a reusable procedure, call \`icarus_harness_skill_authoring_brief\`. Use the returned evidence and scope to draft a narrow proposed procedure, then call \`icarus_harness_skill_propose\`. Never present a proposal as active: only ICARUS replay evaluation and promotion can place it in future context.`;
 }
@@ -406,7 +406,7 @@ function printToolSummary() {
   console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
   console.log('          icarus_test_coverage, icarus_why_code');
   console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
-  console.log('  harness: icarus_harness_init (mandatory first-session bootstrap), icarus_task_start,');
+  console.log('  harness: icarus_harness_init (mandatory first-session bootstrap), icarus_task_start, icarus_task_transition,');
   console.log('           icarus_context_get, icarus_task_handoff, icarus_task_verify, icarus_task_seal');
 }
 
