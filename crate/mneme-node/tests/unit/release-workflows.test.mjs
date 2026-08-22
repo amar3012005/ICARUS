@@ -65,6 +65,20 @@ test('REGRESSION: normal CI independently exercises the compiled CLI with a nati
   assert.match(ci, /ICARUS_HOME="\$HOME_DIR" "\$BIN" recall "compiled binary native shard" --org ci-e2e/);
 });
 
+test('REGRESSION: compiled graph storage embeds SQL.js WASM instead of retaining its build path', () => {
+  const assets = readFileSync(join(ROOT, 'crate', 'mneme-node', 'wasm-assets.bun.mjs'), 'utf8');
+  const graph = readFileSync(join(ROOT, 'crate', 'mneme-node', 'graph-native.js'), 'utf8');
+  const ci = workflow('ci.yml');
+  const release = workflow('release-cli.yml');
+  assert.match(assets, /sql\.js\/dist\/sql-wasm\.wasm/);
+  assert.match(graph, /locateFile:\s*\(\)\s*=>\s*assets\.sql/);
+  for (const workflowText of [ci, release]) {
+    assert.match(workflowText, /SQL_WASM="node_modules\/sql\.js\/dist\/sql-wasm\.wasm"/);
+    assert.match(workflowText, /mv "\$SQL_WASM" "\$SQL_WASM\.source-only"/,
+      'compiled graph tests must hide SQL.js source WASM so a retained CI path cannot pass');
+  }
+});
+
 test('REGRESSION: CLI releases publish and cold-verify a real Windows executable', () => {
   const release = workflow('release-cli.yml');
   const installer = readFileSync(join(ROOT, 'install.ps1'), 'utf8');

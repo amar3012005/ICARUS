@@ -9,6 +9,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Packaged graph SQL runtime:** compiled CLIs now embed SQL.js's `sql-wasm.wasm` and pass
+  its embedded path through SQL.js's `locateFile` hook. `icarus graph build` therefore no
+  longer retains the CI checkout path or fails after installation. CI and release graph checks
+  now hide the source-copy WASM to prove this portability boundary.
 - **Live `/update` progress:** self-update now streams the release response and renders a
   TQDM-style single-line progress bar with bytes and percentage, followed by an explicit
   SHA-256 verification state. It retains the same checksum and atomic-replacement guarantees.

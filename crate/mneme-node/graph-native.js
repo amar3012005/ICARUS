@@ -364,8 +364,11 @@ function dbPath(repoDir) {
 // testing, well under a size where "hold the whole DB in memory" is a real cost) — would need a
 // different design at a scale sql.js was never meant for (a monorepo with 100k+ files).
 let _SQLPromise = null;
-function getSQL() {
-  if (!_SQLPromise) _SQLPromise = require('sql.js')();
+async function getSQL() {
+  if (!_SQLPromise) _SQLPromise = (async () => {
+    const assets = typeof Bun !== 'undefined' ? await getBunWasmAssets() : null;
+    return require('sql.js')(assets ? { locateFile: () => assets.sql } : undefined);
+  })();
   return _SQLPromise;
 }
 

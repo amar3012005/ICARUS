@@ -145,9 +145,14 @@ jobs:
           EXPECTED="${{ needs.verify-version.outputs.version }}"
           echo "binary reports: $GOT (expected $EXPECTED)"
           [ "$GOT" = "$EXPECTED" ] || { echo "::error::binary reports $GOT, expected $EXPECTED"; exit 1; }
-          # This is a cold artifact check, not a source-mode Node test. It specifically proves
-          # Bun carried JavaScript, TypeScript, and Rust Tree-sitter WASM grammars into every
-          # release binary before the artifact is checksummed and published.
+          # This is a cold artifact check, not a source-mode Node test. Hide SQL.js's source
+          # WASM first: a binary that retained a CI checkout path must fail this gate rather than
+          # shipping an artifact that breaks after installation.
+          SQL_WASM="node_modules/sql.js/dist/sql-wasm.wasm"
+          mv "$SQL_WASM" "$SQL_WASM.source-only"
+          trap 'mv "$SQL_WASM.source-only" "$SQL_WASM"' EXIT
+          # Bun must carry JavaScript, TypeScript, Rust, Tree-sitter runtime, and SQL.js WASM
+          # into every release binary before it is checksummed and published.
           GRAPH_REPO="$(mktemp -d)"
           mkdir -p "$GRAPH_REPO/src"
           printf 'export function javascriptGraphFixture() {}\n' > "$GRAPH_REPO/src/index.js"

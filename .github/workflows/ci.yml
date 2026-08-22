@@ -226,9 +226,13 @@ jobs:
           [ "$("$BIN" --version)" = "$(tr -d '[:space:]' < ../../VERSION)" ]
           ICARUS_HOME="$HOME_DIR" "$BIN" save "compiled binary native shard round trip" --org ci-e2e
           ICARUS_HOME="$HOME_DIR" "$BIN" recall "compiled binary native shard" --org ci-e2e | grep -Fi "compiled binary native shard round trip"
-          # A compiled binary must embed every Tree-sitter grammar WASM. Native-shard recall
-          # alone cannot catch a missing grammar asset, which previously made `graph build`
-          # fail only after a macOS user installed the release artifact.
+          # Run graph construction with the source SQL.js WASM hidden. A compiled artifact that
+          # accidentally retains an absolute CI checkout path would otherwise pass here and fail
+          # after installation on a user's machine.
+          SQL_WASM="node_modules/sql.js/dist/sql-wasm.wasm"
+          mv "$SQL_WASM" "$SQL_WASM.source-only"
+          trap 'mv "$SQL_WASM.source-only" "$SQL_WASM"' EXIT
+          # A compiled binary must embed every parser and database WASM asset.
           GRAPH_REPO="$RUNNER_TEMP/icarus-ci-graph"
           mkdir -p "$GRAPH_REPO/src"
           printf 'export function javascriptGraphFixture() {}\n' > "$GRAPH_REPO/src/index.js"
