@@ -9,6 +9,13 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Added
+- **Packaged graph-builder gate:** every compiled CLI artifact now builds and queries a
+  JavaScript, TypeScript, and Rust fixture before release publication. This prevents a missing
+  Tree-sitter WASM grammar from reaching macOS users as a runtime-only graph-build failure.
+- **Provenance-bound learning capture:** a sealed task can now produce a receipt-derived memory
+  candidate. A coding agent must explicitly review and approve a concise structured draft before
+  ICARUS stores it in the local AMR shard with immutable task/capture provenance tags and an
+  audit-chain receipt.
 - **Release provenance attestations:** each published CLI platform binary is now accompanied by
   a GitHub/Sigstore build-provenance attestation bound to its exact digest, public source commit,
   and release workflow. Consumers can independently inspect it with

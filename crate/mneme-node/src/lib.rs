@@ -526,6 +526,57 @@ pub fn harness_skill_authoring_brief(repo_root: String, task_id: String) -> Resu
     )
 }
 
+/// A sealed-task learning capture is Rust-derived provenance only. Node deliberately receives no
+/// authority to create a lesson or save it until an explicit reviewed draft passes this bridge.
+#[napi]
+pub fn harness_create_learning_capture(repo_root: String, task_id: String) -> Result<String> {
+    let capture = harness::create_learning_capture(std::path::Path::new(&repo_root), &task_id)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(capture).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_approve_learning_capture(
+    repo_root: String,
+    capture_id: String,
+    capture_digest: String,
+    draft_json: String,
+) -> Result<String> {
+    let draft = serde_json::from_str(&draft_json)
+        .map_err(|error| Error::from_reason(format!("invalid learning memory draft JSON: {error}")))?;
+    let approval = harness::approve_learning_capture(
+        std::path::Path::new(&repo_root),
+        &capture_id,
+        &capture_digest,
+        draft,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(approval).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
+#[napi]
+pub fn harness_record_learning_capture_saved(
+    repo_root: String,
+    capture_id: String,
+    memory_id: String,
+    draft_digest: String,
+) -> Result<String> {
+    let saved = harness::record_learning_capture_saved(
+        std::path::Path::new(&repo_root),
+        &capture_id,
+        &memory_id,
+        &draft_digest,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(
+        serde_json::to_value(saved).map_err(|error| Error::from_reason(error.to_string()))?,
+    )
+}
+
 #[napi]
 pub fn harness_authorize_action(
     repo_root: String,

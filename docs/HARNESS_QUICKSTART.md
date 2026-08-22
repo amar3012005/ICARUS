@@ -81,7 +81,25 @@ If a task is interrupted, use `icarus task status --task TASK-…` and `icarus t
 task, execution linkage, checkpoints, and event chain are persisted by Rust; a fresh agent process
 does not get to invent a completed state.
 
-## 5. Evolve a reusable procedure from sealed work
+## 5. Capture a reviewed memory from sealed work
+
+ICARUS can turn a completed task into a **candidate** for future retrieval without using its own
+LLM or silently saving model prose. Rust derives immutable provenance from the sealed final
+receipt; the coding agent reviews it and writes a short, factual memory. Only then does ICARUS
+persist it to the chosen local AMR org with task and capture tags, and record the returned memory
+id in the harness event chain.
+
+```bash
+icarus learn capture --task TASK-… > capture.json
+# Review capture.json, then write memory.json with title, content, optional tags/source_type/project.
+icarus learn save-capture CAPTURE-… --digest <capture_digest> --file memory.json --org icarus
+```
+
+The capture is refused for unsealed work, a changed receipt, a mismatched digest, a blank draft,
+or a second different draft. This is how patch decisions and verified lessons become retrievable
+context while keeping unreviewed guesses out of the memory filesystem.
+
+## 6. Evolve a reusable procedure from sealed work
 
 ICARUS does not generate skills with its own model. After a sealed task, a coding agent can ask
 Rust for an evidence-bound authoring brief, use its own reasoning to draft a narrowly scoped

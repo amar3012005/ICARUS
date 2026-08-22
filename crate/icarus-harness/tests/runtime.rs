@@ -1,18 +1,18 @@
 use icarus_harness::{
     amend_task_contract, append_event, attest_release_candidate_dogfood, attest_task_criterion,
     authority_snapshot_digest, authorize_action, authorize_adapter_write,
-    bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
+    approve_learning_capture, bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
     codex_app_server_resume_session, decide_codex_app_server_approval, doctor, evaluate_skill,
     export_task, graph_source_fingerprint, handoff_managed_task, init, inspect_authority_sync,
     install_authority_snapshot, install_authority_snapshot_with_replacement,
     load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
-    record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
+    create_learning_capture, record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
     record_codex_app_server_event, record_graph_receipt, release_candidate_dogfood_report,
     render_context_markdown, resume_codex_app_server_thread, resume_task, retire_skill,
-    review_active_skills, seal_task, skill_authoring_brief, start_release_candidate_dogfood,
+    record_learning_capture_saved, review_active_skills, seal_task, skill_authoring_brief, start_release_candidate_dogfood,
     start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
     verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
-    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, TaskContract,
+    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, LearningMemoryDraft, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -1716,6 +1716,66 @@ fn skill_authoring_brief_uses_only_matching_sealed_task_evidence() {
     assert!(!brief.candidate_source_task_ids.contains(&unrelated.task_id));
     assert_eq!(brief.additional_sealed_sources_required, 1);
     assert!(brief.authoring_instructions.contains("proposed skill"));
+}
+
+#[test]
+fn learning_capture_requires_sealed_evidence_explicit_approval_and_a_real_memory_id() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut task_contract = contract();
+    task_contract.acceptance_criteria = serde_json::json!([]);
+    task_contract.task_type = Some("feature".into());
+    let task = start_task(repo.path(), "capture a verified implementation lesson", task_contract).unwrap();
+    assert!(create_learning_capture(repo.path(), &task.task_id).is_err());
+    for state in ["orienting", "contracted", "planned", "executing", "verifying"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
+    let capture = create_learning_capture(repo.path(), &task.task_id).unwrap();
+    assert_eq!(capture.status, "pending_review");
+    assert_eq!(capture.source_task_id, task.task_id);
+    assert!(!capture.capture_digest.is_empty());
+    assert_eq!(create_learning_capture(repo.path(), &task.task_id).unwrap(), capture);
+
+    let draft = LearningMemoryDraft {
+        title: "Verified capture rule".into(),
+        content: "Create a local learning memory only from sealed task evidence after explicit review.".into(),
+        tags: vec!["harness".into()],
+        source_type: Some("decision".into()),
+        project: Some("icarus".into()),
+    };
+    assert!(approve_learning_capture(repo.path(), &capture.capture_id, "wrong", draft.clone()).is_err());
+    let approval = approve_learning_capture(
+        repo.path(),
+        &capture.capture_id,
+        &capture.capture_digest,
+        draft,
+    )
+    .unwrap();
+    assert!(approval.provenance_tags.contains(&format!("task:{}", task.task_id)));
+    assert!(record_learning_capture_saved(repo.path(), &capture.capture_id, "", &approval.draft_digest).is_err());
+    let saved = record_learning_capture_saved(
+        repo.path(),
+        &capture.capture_id,
+        "memory-local-001",
+        &approval.draft_digest,
+    )
+    .unwrap();
+    assert_eq!(saved.memory_id, "memory-local-001");
+    assert_eq!(
+        record_learning_capture_saved(
+            repo.path(),
+            &capture.capture_id,
+            "memory-local-001",
+            &approval.draft_digest,
+        )
+        .unwrap(),
+        saved
+    );
+    let events = fs::read_to_string(repo.path().join(".icarus/runtime/logs/events.jsonl")).unwrap();
+    assert!(events.contains("learning_capture_created"));
+    assert!(events.contains("learning_capture_approved"));
+    assert!(events.contains("learning_capture_saved"));
 }
 
 #[test]

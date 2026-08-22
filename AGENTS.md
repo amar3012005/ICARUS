@@ -8,4 +8,6 @@ For "where is X" / "who calls X" / "what imports X" in this codebase: call `icar
 For a governed coding task in a repository with `.icarus/manifest.yaml`: call `icarus_context_get` before planning, after session compaction or resume, and after a material repository change. Before ending a managed Claude session, checkpoint then call `icarus_task_handoff`; this enters verification but never asserts success or seals. Do not claim verification without `icarus_task_verify` receipts.
 
 After a sealed task reveals a reusable procedure, call `icarus_harness_skill_authoring_brief`. Use the returned evidence and scope to draft a narrow proposed procedure, then call `icarus_harness_skill_propose`. Never present a proposal as active: only ICARUS replay evaluation and promotion can place it in future context.
+
+After a sealed task has a verified decision or lesson worth retrieving later, call `icarus_harness_learning_capture`. Review its receipt-bound evidence and author a concise factual structured memory, then call `icarus_harness_learning_capture_approve` with the returned capture digest and `org: "icarus"`. Never treat a capture as saved until the approval call returns its local AMR memory id; unreviewed model prose must not enter ICARUS memory.
 <!-- /icarus:project-instructions -->

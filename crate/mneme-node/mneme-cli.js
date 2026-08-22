@@ -23,7 +23,7 @@ const {
   hivemindConfigured, hivemindIngestDir, formatHivemindProgress, attemptHivemindOAuth,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
-  hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory,
+  hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, saveStructuredMemory,
 } = require('./cli-lib.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
@@ -696,7 +696,7 @@ async function cmdRun(flags) {
   }
 }
 
-function cmdHarnessSkill(flags, command = 'harness-skill') {
+async function cmdHarnessSkill(flags, command = 'harness-skill') {
   const [subcommand, skillId] = flags._;
   const repo = flags.repo || process.cwd();
   const harness = require('./harness.js');
@@ -704,6 +704,29 @@ function cmdHarnessSkill(flags, command = 'harness-skill') {
     const taskId = flags.task || skillId;
     if (!taskId) throw new Error(`usage: icarus ${command} brief --task <sealed-task-id> [--repo <dir>]`);
     console.log(JSON.stringify(harness.skillAuthoringBrief(repo, taskId), null, 2));
+    return;
+  }
+  if (subcommand === 'capture') {
+    const taskId = flags.task || skillId;
+    if (!taskId) throw new Error(`usage: icarus ${command} capture --task <sealed-task-id> [--repo <dir>]`);
+    console.log(JSON.stringify(harness.createLearningCapture(repo, taskId), null, 2));
+    return;
+  }
+  if (subcommand === 'save-capture') {
+    const captureId = flags.capture || skillId;
+    if (!captureId || !flags.digest || !flags.file) throw new Error(`usage: icarus ${command} save-capture <CAPTURE-ID> --digest <capture-digest> --file <memory.json> [--org <name>] [--repo <dir>]`);
+    const draft = JSON.parse(fs.readFileSync(flags.file, 'utf8'));
+    const approval = harness.approveLearningCapture(repo, captureId, flags.digest, draft);
+    const tags = [...new Set([...(Array.isArray(draft.tags) ? draft.tags : []), ...approval.provenance_tags])];
+    const memory = await saveStructuredMemory(draft.content, flags.org || 'default', loadCfg(), {
+      title: draft.title,
+      tags,
+      sourceType: draft.source_type,
+      project: draft.project,
+    });
+    const receipt = harness.recordLearningCaptureSaved(repo, captureId, memory.id, approval.draft_digest);
+    console.log(ok(`saved approved learning capture ${c.path(captureId)} as local AMR memory ${c.path(memory.id)}`));
+    console.log(c.dim(`  task ${receipt.source_task_id} · provenance tags attached`));
     return;
   }
   if (subcommand === 'propose') {
@@ -751,7 +774,7 @@ function cmdHarnessSkill(flags, command = 'harness-skill') {
     console.log(ok(`retired harness skill ${harness.retireSkill(repo, skillId, flags.reason, flags.approval).id}`));
     return;
   }
-  throw new Error(`usage: icarus ${command} <brief|propose|evaluate|outcome|review|promote|retire>`);
+  throw new Error(`usage: icarus ${command} <capture|save-capture|brief|propose|evaluate|outcome|review|promote|retire>`);
 }
 
 // Recall is LOCAL-ONLY, always — never routes to HIVEMIND's shared /api/recall regardless of
@@ -1423,8 +1446,8 @@ async function main() {
       case 'context': cmdContext(flags); break;
       case 'sync': await cmdSync(flags, cfg); break;
       case 'run': await cmdRun(flags); break;
-      case 'harness-skill': cmdHarnessSkill(flags); break;
-      case 'learn': cmdHarnessSkill(flags, 'learn'); break;
+      case 'harness-skill': await cmdHarnessSkill(flags); break;
+      case 'learn': await cmdHarnessSkill(flags, 'learn'); break;
       case 'graph': await require('./graph.js').run(flags); break;
       case 'skill': await cmdSkill(flags, cfg); break;
       case 'verify': cmdVerify(flags, cfg); break;
@@ -1487,6 +1510,12 @@ async function main() {
   icarus learn brief --task <TASK-ID> [--repo <dir>]
                                         derive a bounded skill-authoring brief from a sealed task;
                                         give it to a coding agent to draft an untrusted proposal.
+  icarus learn capture --task <TASK-ID> [--repo <dir>]
+                                        derive receipt-bound facts for an explicitly reviewed
+                                        local learning memory; never writes model prose itself.
+  icarus learn save-capture <CAPTURE-ID> --digest <digest> --file <memory.json> [--org <name>]
+                                        validate the reviewed draft, persist it locally with
+                                        immutable provenance tags, and record its AMR memory id.
   icarus learn evaluate <id> --replay-task <TASK-ID> --baseline-task <TASK-ID> [--repo <dir>]
                                         compare an independently sealed replay against a distinct
                                         same-type baseline; qualifying low-risk evidence auto-promotes.

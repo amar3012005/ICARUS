@@ -100,9 +100,9 @@ test('the entrypoint parses and loads without a native addon present', () => {
   );
 });
 
-test('the public learn command is a stable alias for governed harness skills', () => {
+test('the public learn command exposes governed skills and reviewed learning capture', () => {
   const r = cli(['learn', 'not-a-real-operation']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /usage: icarus learn <brief\|propose\|evaluate\|outcome\|review\|promote\|retire>/);
+  assert.match(r.stderr, /usage: icarus learn <capture\|save-capture\|brief\|propose\|evaluate\|outcome\|review\|promote\|retire>/);
   assert.doesNotMatch(r.stderr, /harness-skill/);
 });

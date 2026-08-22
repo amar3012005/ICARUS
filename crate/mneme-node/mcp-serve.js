@@ -738,6 +738,49 @@ async function run() {
   );
 
   server.registerTool(
+    'icarus_harness_learning_capture',
+    {
+      title: 'Derive a reviewed-memory candidate from sealed work',
+      description: 'Call after a task is sealed when its verified decisions, receipts, or patch outcome may be useful in future work. ICARUS returns immutable task provenance and review instructions only; it does not infer a lesson, call an LLM, or write a memory. Use the approval tool only after authoring a concise factual draft grounded in this evidence.',
+      inputSchema: { repo: z.string().default(process.cwd()), task_id: z.string() },
+    },
+    async ({ repo, task_id }) => {
+      try { return textResult(harnessFor().createLearningCapture(repo, task_id)); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_harness_learning_capture_approve',
+    {
+      title: 'Approve and persist a provenance-bound learning memory',
+      description: 'Use only after icarus_harness_learning_capture and an explicit review. Submit a concise caller-authored memory supported by the sealed receipt. ICARUS validates the capture digest first, adds immutable task/capture provenance tags, saves only to the selected local AMR org, then records the returned memory id in the hash-chained harness audit. It never sends this memory to a remote service.',
+      inputSchema: {
+        repo: z.string().default(process.cwd()),
+        capture_id: z.string(),
+        capture_digest: z.string(),
+        title: z.string(),
+        content: z.string(),
+        tags: z.array(z.string()).default([]),
+        source_type: z.enum(['text', 'code', 'conversation', 'documentation', 'decision']).optional(),
+        project: z.string().optional(),
+        org: z.string().default('default'),
+      },
+    },
+    async ({ repo, capture_id, capture_digest, title, content, tags, source_type, project, org }) => {
+      try {
+        const draft = { title, content, tags: tags || [], source_type, project };
+        const approval = harnessFor().approveLearningCapture(repo, capture_id, capture_digest, draft);
+        const combinedTags = [...new Set([...(tags || []), ...approval.provenance_tags])];
+        const memory = await saveStructuredMemory(content, org || 'default', loadCfg(), {
+          title, tags: combinedTags, sourceType: source_type, project,
+        });
+        const saved = harnessFor().recordLearningCaptureSaved(repo, capture_id, memory.id, approval.draft_digest);
+        return textResult({ memory, saved, provenance_tags: combinedTags });
+      } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
     'icarus_harness_skill_propose',
     {
       title: 'Propose a governed ICARUS harness procedure',

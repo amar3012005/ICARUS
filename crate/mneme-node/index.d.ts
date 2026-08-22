@@ -69,6 +69,13 @@ export declare function harnessRecordGraphReceipt(repoRoot: string, sourceFinger
  */
 export declare function harnessGraphSourceFingerprint(repoRoot: string): string
 export declare function harnessSkillAuthoringBrief(repoRoot: string, taskId: string): string
+/**
+ * A sealed-task learning capture is Rust-derived provenance only. Node deliberately receives no
+ * authority to create a lesson or save it until an explicit reviewed draft passes this bridge.
+ */
+export declare function harnessCreateLearningCapture(repoRoot: string, taskId: string): string
+export declare function harnessApproveLearningCapture(repoRoot: string, captureId: string, captureDigest: string, draftJson: string): string
+export declare function harnessRecordLearningCaptureSaved(repoRoot: string, captureId: string, memoryId: string, draftDigest: string): string
 export declare function harnessAuthorizeAction(repoRoot: string, taskId: string, kind: string, path?: string | undefined | null): string
 /**
  * Authorize and audit a documented Claude Edit/Write PreToolUse event. The JavaScript hook

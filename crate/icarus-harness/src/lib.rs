@@ -780,6 +780,66 @@ pub struct SkillAuthoringBrief {
     pub promotion_gates: Vec<String>,
 }
 
+/// A bounded, machine-derived handoff from sealed work to a human/agent-reviewed local memory.
+/// ICARUS never invents the lesson or writes it into AMR: this record carries only immutable
+/// provenance and verification facts, so the caller can author a concise grounded memory and
+/// explicitly approve it before the Node transport persists anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LearningCapture {
+    pub schema_version: u32,
+    pub capture_id: String,
+    pub capture_digest: String,
+    pub status: String,
+    pub source_task_id: String,
+    pub source_execution_id: String,
+    pub task_type: Option<String>,
+    pub objective: String,
+    pub decision_references: Vec<String>,
+    pub verification: Vec<Value>,
+    pub final_receipt_path: String,
+    pub final_receipt_digest: String,
+    pub diff_digest: String,
+    pub review_instructions: String,
+}
+
+/// The content remains caller-authored, but Rust validates that an explicit review ties it to
+/// one specific immutable capture before a memory transport may persist it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LearningMemoryDraft {
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LearningCaptureApproval {
+    pub schema_version: u32,
+    pub capture_id: String,
+    pub capture_digest: String,
+    pub source_task_id: String,
+    pub draft_digest: String,
+    pub provenance_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LearningCaptureSave {
+    pub schema_version: u32,
+    pub capture_id: String,
+    pub capture_digest: String,
+    pub source_task_id: String,
+    pub memory_id: String,
+    pub draft_digest: String,
+}
+
 /// A native record of an independently sealed task used to evaluate a proposed procedure.
 /// Candidate-provided `replay_results` remain retained for backwards-compatible display only;
 /// they never grant promotion authority.
@@ -4885,6 +4945,261 @@ pub fn skill_authoring_brief(repo_root: &Path, task_id: &str) -> Result<SkillAut
             "Active procedures are automatically reviewed and can be demoted for failures, safety violations, incompatible policy, or stale proof.".into(),
         ],
     })
+}
+
+fn learning_capture_path(root: &Path, capture_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("learning/captures")
+        .join(format!("{capture_id}.json"))
+}
+
+fn learning_capture_approval_path(root: &Path, capture_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("learning/captures")
+        .join(format!("{capture_id}.approval.json"))
+}
+
+fn learning_capture_save_path(root: &Path, capture_id: &str) -> PathBuf {
+    runtime_root(root)
+        .join("learning/captures")
+        .join(format!("{capture_id}.saved.json"))
+}
+
+fn learning_capture_digest(capture: &LearningCapture) -> Result<String> {
+    Ok(sha256(
+        serde_json::to_vec(&json!({
+            "schema_version": capture.schema_version,
+            "capture_id": capture.capture_id,
+            "status": capture.status,
+            "source_task_id": capture.source_task_id,
+            "source_execution_id": capture.source_execution_id,
+            "task_type": capture.task_type,
+            "objective": capture.objective,
+            "decision_references": capture.decision_references,
+            "verification": capture.verification,
+            "final_receipt_path": capture.final_receipt_path,
+            "final_receipt_digest": capture.final_receipt_digest,
+            "diff_digest": capture.diff_digest,
+            "review_instructions": capture.review_instructions,
+        }))?
+        .as_slice(),
+    ))
+}
+
+fn load_learning_capture(root: &Path, capture_id: &str) -> Result<LearningCapture> {
+    let capture: LearningCapture = serde_json::from_reader(
+        File::open(learning_capture_path(root, capture_id))
+            .map_err(|_| HarnessError::invalid("learning capture does not exist"))?,
+    )?;
+    if capture.schema_version != 1
+        || capture.capture_id != capture_id
+        || capture.capture_digest != learning_capture_digest(&capture)?
+    {
+        return Err(HarnessError::invalid(
+            "learning capture is malformed or its provenance digest does not match",
+        ));
+    }
+    Ok(capture)
+}
+
+/// Derive a pending learning capture exclusively from an immutable sealed-task receipt. This is
+/// intentionally a proposal: no model text and no AMR write occurs here.
+pub fn create_learning_capture(repo_root: &Path, task_id: &str) -> Result<LearningCapture> {
+    let root = canonical_root(repo_root)?;
+    load_manifest(&root)?;
+    let task = task_status(&root, task_id)?;
+    verify_sealed_task_receipt(&root, &task)?;
+    let capture_id = format!("CAPTURE-{}", &task.task_id[5..]);
+    let path = learning_capture_path(&root, &capture_id);
+    if path.exists() {
+        return load_learning_capture(&root, &capture_id);
+    }
+    let final_path = runtime_root(&root)
+        .join("tasks")
+        .join(&task.task_id)
+        .join("final-result.json");
+    let receipt_bytes = fs::read(&final_path)?;
+    let receipt: Value = serde_json::from_slice(&receipt_bytes)?;
+    let verification = receipt
+        .get("receipts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "criterion_id": entry.get("criterion_id").and_then(Value::as_str),
+                "criterion_type": entry.get("criterion_type").and_then(Value::as_str),
+                "status": entry.get("status").and_then(Value::as_str),
+                "output_digest": entry.get("output_digest").and_then(Value::as_str),
+            })
+        })
+        .collect();
+    let final_receipt_path = final_path
+        .strip_prefix(&root)
+        .unwrap_or(&final_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut capture = LearningCapture {
+        schema_version: 1,
+        capture_id,
+        capture_digest: String::new(),
+        status: "pending_review".into(),
+        source_task_id: task.task_id.clone(),
+        source_execution_id: task.execution_id.clone(),
+        task_type: task.contract.task_type.clone(),
+        objective: task.objective.clone(),
+        decision_references: task.contract.decision_references.clone(),
+        verification,
+        final_receipt_path,
+        final_receipt_digest: sha256(&receipt_bytes),
+        diff_digest: receipt
+            .get("diff_digest")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        review_instructions: "Review the sealed-task objective and receipt facts, then write only a concise reusable memory supported by that evidence. Do not assert unverified outcomes, invent a causal explanation, or include credentials. Call approve only after the draft is accurate; ICARUS will add immutable task/capture provenance tags before local AMR persistence.".into(),
+    };
+    capture.capture_digest = learning_capture_digest(&capture)?;
+    atomic_write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&capture)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "learning_capture_created".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::to_value(&capture)?,
+        },
+    )?;
+    Ok(capture)
+}
+
+/// Bind an explicit caller-authored memory draft to a pending capture. The AMR transport must
+/// save only after this succeeds, then call `record_learning_capture_saved` with its real id.
+pub fn approve_learning_capture(
+    repo_root: &Path,
+    capture_id: &str,
+    capture_digest: &str,
+    draft: LearningMemoryDraft,
+) -> Result<LearningCaptureApproval> {
+    let root = canonical_root(repo_root)?;
+    let capture = load_learning_capture(&root, capture_id)?;
+    let task = task_status(&root, &capture.source_task_id)?;
+    verify_sealed_task_receipt(&root, &task)?;
+    if capture.capture_digest != capture_digest {
+        return Err(HarnessError::invalid("learning capture digest does not match"));
+    }
+    if draft.title.trim().is_empty() || draft.content.trim().is_empty() {
+        return Err(HarnessError::invalid("learning memory title and content are required"));
+    }
+    if draft.title.len() > 240 || draft.content.len() > 12_000 || draft.tags.len() > 32 {
+        return Err(HarnessError::invalid("learning memory draft exceeds bounded review limits"));
+    }
+    let draft_digest = sha256(serde_json::to_vec(&draft)?.as_slice());
+    let mut provenance_tags = vec![
+        "harness-learning".into(),
+        "verified".into(),
+        format!("task:{}", capture.source_task_id),
+        format!("capture:{}", capture.capture_id),
+    ];
+    if let Some(task_type) = &capture.task_type {
+        provenance_tags.push(format!("task-type:{task_type}"));
+    }
+    let approval = LearningCaptureApproval {
+        schema_version: 1,
+        capture_id: capture.capture_id.clone(),
+        capture_digest: capture.capture_digest.clone(),
+        source_task_id: capture.source_task_id.clone(),
+        draft_digest,
+        provenance_tags,
+    };
+    let path = learning_capture_approval_path(&root, capture_id);
+    if path.exists() {
+        let existing: LearningCaptureApproval = serde_json::from_reader(File::open(&path)?)?;
+        if existing != approval {
+            return Err(HarnessError::invalid(
+                "learning capture was already approved with a different draft",
+            ));
+        }
+        return Ok(existing);
+    }
+    atomic_write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&approval)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "learning_capture_approved".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::to_value(&approval)?,
+        },
+    )?;
+    Ok(approval)
+}
+
+/// Record the actual AMR memory id only after the transport has completed the local save.
+pub fn record_learning_capture_saved(
+    repo_root: &Path,
+    capture_id: &str,
+    memory_id: &str,
+    draft_digest: &str,
+) -> Result<LearningCaptureSave> {
+    let root = canonical_root(repo_root)?;
+    let capture = load_learning_capture(&root, capture_id)?;
+    let approval: LearningCaptureApproval = serde_json::from_reader(
+        File::open(learning_capture_approval_path(&root, capture_id))
+            .map_err(|_| HarnessError::invalid("learning capture must be approved before it is saved"))?,
+    )?;
+    if approval.capture_digest != capture.capture_digest || approval.draft_digest != draft_digest {
+        return Err(HarnessError::invalid("learning save does not match the approved draft"));
+    }
+    if memory_id.trim().is_empty() {
+        return Err(HarnessError::invalid("learning save requires the local AMR memory id"));
+    }
+    let saved = LearningCaptureSave {
+        schema_version: 1,
+        capture_id: capture.capture_id.clone(),
+        capture_digest: capture.capture_digest.clone(),
+        source_task_id: capture.source_task_id.clone(),
+        memory_id: memory_id.to_owned(),
+        draft_digest: draft_digest.to_owned(),
+    };
+    let path = learning_capture_save_path(&root, capture_id);
+    if path.exists() {
+        let existing: LearningCaptureSave = serde_json::from_reader(File::open(&path)?)?;
+        if existing != saved {
+            return Err(HarnessError::invalid(
+                "learning capture is already recorded against a different AMR memory",
+            ));
+        }
+        return Ok(existing);
+    }
+    let task = task_status(&root, &capture.source_task_id)?;
+    atomic_write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&saved)?).as_bytes(),
+    )?;
+    append_event(
+        &root,
+        EventInput {
+            execution_id: task.execution_id,
+            task_id: task.task_id,
+            event_type: "learning_capture_saved".into(),
+            worktree_id: "main".into(),
+            timestamp: None,
+            payload: serde_json::to_value(&saved)?,
+        },
+    )?;
+    Ok(saved)
 }
 pub fn promote_skill(
     repo_root: &Path,

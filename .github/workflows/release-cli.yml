@@ -145,6 +145,18 @@ jobs:
           EXPECTED="${{ needs.verify-version.outputs.version }}"
           echo "binary reports: $GOT (expected $EXPECTED)"
           [ "$GOT" = "$EXPECTED" ] || { echo "::error::binary reports $GOT, expected $EXPECTED"; exit 1; }
+          # This is a cold artifact check, not a source-mode Node test. It specifically proves
+          # Bun carried JavaScript, TypeScript, and Rust Tree-sitter WASM grammars into every
+          # release binary before the artifact is checksummed and published.
+          GRAPH_REPO="$(mktemp -d)"
+          mkdir -p "$GRAPH_REPO/src"
+          printf 'export function javascriptGraphFixture() {}\n' > "$GRAPH_REPO/src/index.js"
+          printf 'export function typescriptGraphFixture(): void {}\n' > "$GRAPH_REPO/src/index.ts"
+          printf 'pub fn rust_graph_fixture() {}\n' > "$GRAPH_REPO/src/lib.rs"
+          "./${{ matrix.asset }}" graph build --repo "$GRAPH_REPO"
+          "./${{ matrix.asset }}" graph query --repo "$GRAPH_REPO" --kind find --name javascriptGraphFixture | grep -F "javascriptGraphFixture"
+          "./${{ matrix.asset }}" graph query --repo "$GRAPH_REPO" --kind find --name typescriptGraphFixture | grep -F "typescriptGraphFixture"
+          "./${{ matrix.asset }}" graph query --repo "$GRAPH_REPO" --kind find --name rust_graph_fixture | grep -F "rust_graph_fixture"
 
       - name: Checksum
         working-directory: crate/mneme-node

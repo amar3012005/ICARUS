@@ -226,6 +226,18 @@ jobs:
           [ "$("$BIN" --version)" = "$(tr -d '[:space:]' < ../../VERSION)" ]
           ICARUS_HOME="$HOME_DIR" "$BIN" save "compiled binary native shard round trip" --org ci-e2e
           ICARUS_HOME="$HOME_DIR" "$BIN" recall "compiled binary native shard" --org ci-e2e | grep -Fi "compiled binary native shard round trip"
+          # A compiled binary must embed every Tree-sitter grammar WASM. Native-shard recall
+          # alone cannot catch a missing grammar asset, which previously made `graph build`
+          # fail only after a macOS user installed the release artifact.
+          GRAPH_REPO="$RUNNER_TEMP/icarus-ci-graph"
+          mkdir -p "$GRAPH_REPO/src"
+          printf 'export function javascriptGraphFixture() {}\n' > "$GRAPH_REPO/src/index.js"
+          printf 'export function typescriptGraphFixture(): void {}\n' > "$GRAPH_REPO/src/index.ts"
+          printf 'pub fn rust_graph_fixture() {}\n' > "$GRAPH_REPO/src/lib.rs"
+          ICARUS_HOME="$HOME_DIR" "$BIN" graph build --repo "$GRAPH_REPO"
+          ICARUS_HOME="$HOME_DIR" "$BIN" graph query --repo "$GRAPH_REPO" --kind find --name javascriptGraphFixture | grep -F "javascriptGraphFixture"
+          ICARUS_HOME="$HOME_DIR" "$BIN" graph query --repo "$GRAPH_REPO" --kind find --name typescriptGraphFixture | grep -F "typescriptGraphFixture"
+          ICARUS_HOME="$HOME_DIR" "$BIN" graph query --repo "$GRAPH_REPO" --kind find --name rust_graph_fixture | grep -F "rust_graph_fixture"
 
   # Separate job, not folded into `test`: mneme-python's `extension-module` pyo3 feature cannot
   # link under plain `cargo build`/`cargo test` (Python provides its own symbols at dlopen time,

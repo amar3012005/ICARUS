@@ -11,6 +11,7 @@ const {
   runCodexAppServer,
   graphSourceFingerprint,
   skillAuthoringBrief,
+  createLearningCapture, approveLearningCapture, recordLearningCaptureSaved,
   __setNativeHarnessBridgeForTest,
 } = require('../../harness.js');
 
@@ -75,6 +76,33 @@ test('skill authoring brief is a native evidence handoff, never a JavaScript-gen
   assert.deepEqual(skillAuthoringBrief('/repo', 'TASK-ABC123456789'), {
     source_task_id: 'TASK-ABC123456789', candidate_source_task_ids: ['TASK-ABC123456789'],
   });
+});
+
+test('learning capture stays a thin native provenance and approval transport', () => {
+  const calls = [];
+  __setNativeHarnessBridgeForTest({
+    harnessCreateLearningCapture(...args) {
+      calls.push(['capture', args]);
+      return JSON.stringify({ capture_id: 'CAPTURE-ABC', capture_digest: 'digest' });
+    },
+    harnessApproveLearningCapture(...args) {
+      calls.push(['approve', args]);
+      return JSON.stringify({ draft_digest: 'draft-digest', provenance_tags: ['harness-learning'] });
+    },
+    harnessRecordLearningCaptureSaved(...args) {
+      calls.push(['saved', args]);
+      return JSON.stringify({ memory_id: 'memory-1' });
+    },
+  });
+  const draft = { title: 'Lesson', content: 'Only use sealed receipts.', tags: ['harness'] };
+  assert.equal(createLearningCapture('/repo', 'TASK-ABC').capture_id, 'CAPTURE-ABC');
+  assert.equal(approveLearningCapture('/repo', 'CAPTURE-ABC', 'digest', draft).draft_digest, 'draft-digest');
+  assert.equal(recordLearningCaptureSaved('/repo', 'CAPTURE-ABC', 'memory-1', 'draft-digest').memory_id, 'memory-1');
+  assert.deepEqual(calls, [
+    ['capture', ['/repo', 'TASK-ABC']],
+    ['approve', ['/repo', 'CAPTURE-ABC', 'digest', JSON.stringify(draft)]],
+    ['saved', ['/repo', 'CAPTURE-ABC', 'memory-1', 'draft-digest']],
+  ]);
 });
 
 test('policy validation remains a native report, never a JavaScript YAML parser', () => {

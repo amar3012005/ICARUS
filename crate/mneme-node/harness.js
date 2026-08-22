@@ -157,6 +157,21 @@ function skillAuthoringBrief(repoRoot, taskId) {
   return invoke('harnessSkillAuthoringBrief', [repoRoot, taskId]);
 }
 
+// Learning capture is a three-step protocol: Rust derives immutable sealed-task evidence,
+// the caller explicitly approves its own structured draft, then this transport records the
+// actual local-AMR id after persistence. No model-generated lesson is silently saved.
+function createLearningCapture(repoRoot, taskId) {
+  return invoke('harnessCreateLearningCapture', [repoRoot, taskId]);
+}
+
+function approveLearningCapture(repoRoot, captureId, captureDigest, draft) {
+  return invoke('harnessApproveLearningCapture', [repoRoot, captureId, captureDigest, JSON.stringify(draft)]);
+}
+
+function recordLearningCaptureSaved(repoRoot, captureId, memoryId, draftDigest) {
+  return invoke('harnessRecordLearningCaptureSaved', [repoRoot, captureId, memoryId, draftDigest]);
+}
+
 function authorizeAction(repoRoot, taskId, action) {
   return invoke('harnessAuthorizeAction', [repoRoot, taskId, action.kind, action.path]);
 }
@@ -238,6 +253,9 @@ module.exports = {
   recordGraphReceipt,
   graphSourceFingerprint,
   skillAuthoringBrief,
+  createLearningCapture,
+  approveLearningCapture,
+  recordLearningCaptureSaved,
   authorizeAction,
   authorizeAdapterWrite,
   recordAdapterPostAction,
