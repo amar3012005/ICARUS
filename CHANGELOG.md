@@ -9,6 +9,15 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Graph-build diagnostics and liveness:** `icarus graph build` now reports bounded parser,
+  resolution, database, and receipt stages while it runs. A failure names its exact stage,
+  repository, and underlying error instead of collapsing to a bare process exit.
+- **Direct-MCP handoff lifecycle:** entering `executing` through MCP now creates a durable,
+  explicitly compatibility-mode `mcp` run record. Handoff also repairs a missing record for an
+  already-executing legacy MCP task, preserving the audited `executing → verifying` boundary.
+- **Bounded context packs:** mandatory task context now renders canonical compact contract/state
+  JSON while retaining the original contract digest for provenance. Rejected optional entries no
+  longer leave a stale over-budget count in the returned pack.
 - **Packaged graph SQL runtime:** compiled CLIs now embed SQL.js's `sql-wasm.wasm` and pass
   its embedded path through SQL.js's `locateFile` hook. `icarus graph build` therefore no
   longer retains the CI checkout path or fails after installation. CI and release graph checks

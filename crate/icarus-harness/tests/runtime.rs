@@ -727,6 +727,38 @@ fn lifecycle_keeps_immutable_contracts_and_scoped_writes() {
 }
 
 #[test]
+fn direct_mcp_execution_transition_prepares_a_handoffable_current_workspace_record() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "direct MCP task", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+
+    let run = read_snapshot(
+        repo.path(),
+        &format!("state/run-{}.json", task.task_id),
+    )
+    .unwrap()
+    .expect("direct MCP execution must create a durable run record");
+    assert_eq!(run["agent"], "mcp");
+    assert_eq!(run["workspace_mode"], "current");
+    assert_eq!(run["execution_id"], task.execution_id);
+
+    // Simulate a task that entered executing under a pre-fix MCP server. Handoff must repair
+    // the missing record through the same visible compatibility preparation path.
+    fs::remove_file(
+        repo.path()
+            .join(".icarus/runtime/state")
+            .join(format!("run-{}.json", task.task_id)),
+    )
+    .unwrap();
+    let handoff = handoff_managed_task(repo.path(), &task.task_id).unwrap();
+    assert_eq!(handoff.status, "verifying");
+    assert_eq!(handoff.agent, "mcp");
+}
+
+#[test]
 fn resume_preserves_task_identity_and_links_attempts() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();
@@ -1560,6 +1592,34 @@ fn context_compiler_is_deterministic_traceable_and_budgeted() {
         .unwrap_err()
         .to_string()
         .contains("budget_unsatisfied"));
+}
+
+#[test]
+fn context_compiler_compacts_mandatory_metadata_for_a_scoped_task() {
+    let repo = repo();
+    init(repo.path(), InitOptions::default()).unwrap();
+    let mut scoped = contract();
+    scoped.allowed_paths = vec![
+        "core/src/server.js".into(),
+        "frontend/src/Profile.jsx".into(),
+        "docs/**".into(),
+    ];
+    scoped.forbidden_paths = vec![".env".into(), "**/*secret*".into()];
+    scoped.acceptance_criteria = serde_json::json!([
+        {"id":"schema","description":"Persist organization facts with scoped version history."},
+        {"id":"authorization","description":"Only administrators may mutate organization facts."},
+        {"id":"ui","description":"Members see organization facts read-only."}
+    ]);
+    scoped.authority = "User approved a narrowly scoped organization-profile repair and read-only verification.".into();
+    scoped.external_write_policy = "Source edits and verification are allowed; production tenant facts remain immutable during testing.".into();
+    let task = start_task(repo.path(), "repair one profile path", scoped).unwrap();
+
+    // This bound is a byte-safe upper bound, not model-specific tokenizer output. It must stay
+    // small enough for a narrow task without discarding any mandatory contract field.
+    let pack = build_context(repo.path(), &task.task_id, 2_500).unwrap();
+    assert!(pack.upper_bound_tokens <= 2_500);
+    assert!(pack.items.iter().any(|item| item.kind == "contract" && item.mandatory));
+    assert!(pack.items.iter().any(|item| item.kind == "policy" && item.mandatory));
 }
 
 #[test]

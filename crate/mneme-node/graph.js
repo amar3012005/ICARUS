@@ -12,7 +12,29 @@ async function run(flags) {
   if (sub === 'build') {
     console.log(`building graph for ${repo}...`);
     const t0 = Date.now();
-    const r = await graph.buildAndStore(repo);
+    let lastRendered = '';
+    let lastCompleted = -1;
+    const progress = (update) => {
+      const total = Number.isInteger(update.total) ? update.total : '?';
+      const completed = Number.isInteger(update.completed) ? update.completed : '?';
+      const suffix = update.file ? ` · ${update.file}` : '';
+      const line = `graph ${update.stage}: ${completed}/${total}${suffix}`;
+      // Avoid noisy output on large repositories while still proving liveness in captured agent
+      // terminals. Interactive TTYs redraw one line; captured logs see periodic milestones.
+      if (process.stderr.isTTY) {
+        process.stderr.write(`\r${line}`);
+        lastRendered = line;
+      } else if (completed === 0 || update.stage !== 'parsing' || completed - lastCompleted >= 100) {
+        console.error(`[icarus] ${line}`);
+        lastCompleted = typeof completed === 'number' ? completed : lastCompleted;
+      }
+    };
+    let r;
+    try {
+      r = await graph.buildAndStore(repo, progress);
+    } finally {
+      if (lastRendered) process.stderr.write('\n');
+    }
     console.log(`✓ ${r.files} files, ${r.nodes} nodes, ${r.edges} edges (${Date.now() - t0}ms)`);
     return;
   }

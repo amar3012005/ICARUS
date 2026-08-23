@@ -288,15 +288,17 @@ function extractRust(tree, relPath) {
   return { nodes, calls, imports };
 }
 
-async function build(repoDir) {
+async function build(repoDir, onProgress = null) {
   const Parser = await getParser();
   const files = walkFiles(repoDir);
+  onProgress?.({ stage: 'parsing', completed: 0, total: files.length });
   const allNodes = [];
   const allCalls = []; // {calleeName, line, enclosingQualified, filePath}
   const allImports = []; // {source, line, filePath}
   const parsersByLang = {};
 
-  for (const abs of files) {
+  let lastProgressAt = Date.now();
+  for (const [index, abs] of files.entries()) {
     const rel = path.relative(repoDir, abs);
     const lang = EXT_TO_LANG[path.extname(abs)];
     if (!parsersByLang[lang]) {
@@ -313,12 +315,18 @@ async function build(repoDir) {
     allNodes.push(...result.nodes);
     for (const c of result.calls) allCalls.push({ ...c, filePath: rel });
     for (const im of result.imports) allImports.push({ ...im, filePath: rel });
+    const completed = index + 1;
+    if (completed === files.length || completed % 25 === 0 || Date.now() - lastProgressAt >= 1_000) {
+      onProgress?.({ stage: 'parsing', completed, total: files.length, file: rel });
+      lastProgressAt = Date.now();
+    }
   }
 
   // Second pass: resolve call sites against the GLOBAL bare-name symbol table. Ambiguous bare
   // names (two functions sharing a name in different files/classes) get an edge to EVERY match —
   // representing real ambiguity honestly instead of silently guessing one, matching the real
   // tool's own "evidence-backed" framing (it only claims what it can actually back with a match).
+  onProgress?.({ stage: 'resolving', completed: files.length, total: files.length });
   const byName = new Map();
   for (const n of allNodes) {
     if (!byName.has(n.name)) byName.set(n.name, []);
@@ -418,12 +426,20 @@ function run(db, sql, params = []) {
   stmt.free();
 }
 
-async function buildAndStore(repoDir) {
+async function buildAndStore(repoDir, onProgress = null) {
+  let stage = 'fingerprinting supported source';
+  try {
   // Rust verifies graph receipts and owns the supported-source fingerprint contract. Asking it
   // for the build fingerprint prevents a second traversal/sort implementation from drifting.
   const fingerprint = authoritativeSourceFingerprint(repoDir);
-  const result = await build(repoDir);
+  onProgress?.({ stage, completed: 0, total: null });
+  stage = 'parsing supported files';
+  const result = await build(repoDir, onProgress);
+  stage = 'opening graph database';
+  onProgress?.({ stage, completed: result.files, total: result.files });
   const db = await openDb(repoDir);
+  stage = 'writing graph database';
+  onProgress?.({ stage, completed: result.files, total: result.files });
   db.run('BEGIN;');
   db.run('DELETE FROM nodes; DELETE FROM edges;'); // full rebuild for v1 — no incremental update yet
   for (const n of result.nodes) {
@@ -437,14 +453,21 @@ async function buildAndStore(repoDir) {
   run(db, 'INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)', ['last_updated', new Date().toISOString()]);
   run(db, 'INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)', ['source_fingerprint', fingerprint]);
   db.run('COMMIT;');
+  stage = 'persisting graph database';
   saveDb(db, repoDir);
   db.close();
   // Rust owns the durable build receipt. This adapter reports the source fingerprint only after
   // its database has been persisted; Rust recomputes it before atomically accepting the receipt.
   if (fs.existsSync(path.join(repoDir, '.icarus', 'manifest.yaml'))) {
+    stage = 'recording graph receipt';
     require('./harness.js').recordGraphReceipt(repoDir, fingerprint);
   }
+  onProgress?.({ stage: 'complete', completed: result.files, total: result.files });
   return { files: result.files, nodes: result.nodes.length, edges: result.edges.length, sourceFingerprint: fingerprint };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`graph build failed during ${stage} for ${repoDir}: ${detail}`, { cause: error });
+  }
 }
 
 async function status(repoDir) {

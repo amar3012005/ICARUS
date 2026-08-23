@@ -2185,6 +2185,13 @@ pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<
             task.status, target
         )));
     }
+    // MCP-driven tasks do not pass through `icarus run`, so they previously reached
+    // `executing` without the Rust-owned run snapshot that handoff/reconciliation require.
+    // Create an explicitly compatibility-mode current-workspace record at that boundary. A
+    // launcher-created record already exists and is validated rather than replaced.
+    if target == "executing" {
+        ensure_execution_preparation(&root, &task)?;
+    }
     let previous = task.status.clone();
     task.status = target.into();
     save_task(&root, &task)?;
@@ -2200,6 +2207,90 @@ pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<
         },
     )?;
     Ok(task)
+}
+
+/// Ensure every executing task has one durable run record. `icarus run` creates a richer
+/// adapter-specific record while the task is still planned; direct MCP execution receives this
+/// deliberately narrower `mcp` compatibility record when it enters executing. This keeps the
+/// execution → verification audit boundary usable without pretending MCP has launcher hooks.
+fn ensure_execution_preparation(root: &Path, task: &TaskRecord) -> Result<RunPreparation> {
+    let snapshot_name = format!("state/run-{}.json", task.task_id);
+    if let Some(value) = read_snapshot(root, &snapshot_name)? {
+        let prepared: RunPreparation = serde_json::from_value(value)?;
+        if prepared.task_id != task.task_id || prepared.execution_id != task.execution_id {
+            return Err(HarnessError::invalid(
+                "managed run preparation does not match the active task execution",
+            ));
+        }
+        return Ok(prepared);
+    }
+
+    load_repository_policy(root)?;
+    let base_status = git_output(root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let direct_context = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "kind": "mcp_execution_context_reference",
+        "task_id": task.task_id,
+        "execution_id": task.execution_id,
+        "contract_digest": task.contract_digest,
+        "instruction": "Call icarus_context_get for bounded task context before planning or after material repository changes."
+    }))?;
+    let direct_context_path = runtime_root(root)
+        .join("context")
+        .join(&task.task_id)
+        .join(format!("{}.mcp.json", task.execution_id));
+    atomic_write(&direct_context_path, &direct_context)?;
+    let preparation = RunPreparation {
+        task_id: task.task_id.clone(),
+        execution_id: task.execution_id.clone(),
+        agent: "mcp".into(),
+        workspace_mode: "current".into(),
+        worktree_id: "mcp-current".into(),
+        workspace_path: external_path(root),
+        base_git_sha: git_output(root, &["rev-parse", "HEAD"]),
+        base_dirty_state_fingerprint: sha256(base_status.as_bytes()),
+        context_pack_path: external_path(&direct_context_path),
+        context_pack_hash: sha256(&direct_context),
+        adapter_config_paths: Vec::new(),
+        adapter_settings_path: None,
+        certification: "compatibility".into(),
+        capabilities: AdapterCapabilities {
+            workspace_isolation: false,
+            task_scoped_context: true,
+            pre_action_authorization: false,
+            post_action_event_capture: false,
+            completion_interception: false,
+            external_write_interception: false,
+            stable_session_identity: false,
+        },
+        launch_arguments: Vec::new(),
+        compatibility_mode: true,
+        wall_time_deadline: wall_time_deadline(&task.contract)?,
+        current_workspace_baseline: if git_repository(root) {
+            workspace_change_digests(root)?
+        } else {
+            BTreeMap::new()
+        },
+    };
+    write_snapshot(root, &snapshot_name, serde_json::to_value(&preparation)?)?;
+    append_event(
+        root,
+        EventInput {
+            execution_id: task.execution_id.clone(),
+            task_id: task.task_id.clone(),
+            event_type: "mcp_execution_prepared".into(),
+            worktree_id: preparation.worktree_id.clone(),
+            timestamp: None,
+            payload: json!({
+                "schema_version": 1,
+                "agent": "mcp",
+                "workspace_mode": "current",
+                "compatibility_mode": true,
+                "reason": "direct MCP execution entered the governed lifecycle without icarus run"
+            }),
+        },
+    )?;
+    Ok(preparation)
 }
 
 pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
@@ -5981,10 +6072,13 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
         upper_bound_tokens: 0,
         items: Vec::new(),
     };
-    let contract = fs::read_to_string(contract_path(&root, task_id, task.contract_version)?)?;
+    let contract_source = fs::read_to_string(contract_path(&root, task_id, task.contract_version)?)?;
+    // The compact canonical JSON keeps every contract field available to the agent while the
+    // digest continues to identify the immutable, pretty-printed source snapshot on disk.
+    let contract: Value = serde_json::from_str(&contract_source)?;
     add_context_item(
         &mut pack,
-        ContextItem::new(
+        ContextItem::with_source_digest(
             "contract",
             format!(
                 ".icarus/runtime/tasks/{task_id}/contract.v{}.json",
@@ -5994,7 +6088,8 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             "task contract",
             "mandatory execution scope and acceptance criteria",
             true,
-            contract,
+            serde_json::to_string(&contract)?,
+            sha256(contract_source.as_bytes()),
         ),
     )?;
     let slice = graph_slice(&root, &task.objective);
@@ -6064,7 +6159,7 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             ),
         )?;
     }
-    let task_state = serde_json::to_string_pretty(&json!({
+    let task_state = serde_json::to_string(&json!({
         "task_id": task.task_id, "execution_id": task.execution_id, "status": task.status,
         "contract_version": task.contract_version, "contract_digest": task.contract_digest,
     }))?;
@@ -6442,6 +6537,30 @@ impl ContextItem {
             content,
         }
     }
+
+    /// Rendered context can be canonically compacted, but its provenance must remain tied to the
+    /// original immutable snapshot rather than to that presentation format.
+    fn with_source_digest(
+        kind: impl Into<String>,
+        source: impl Into<String>,
+        freshness: impl Into<String>,
+        authority: impl Into<String>,
+        retrieval_reason: impl Into<String>,
+        mandatory: bool,
+        content: String,
+        digest: String,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            source: source.into(),
+            digest,
+            freshness: freshness.into(),
+            authority: authority.into(),
+            retrieval_reason: retrieval_reason.into(),
+            mandatory,
+            content,
+        }
+    }
 }
 
 fn add_context_item(pack: &mut ContextPack, item: ContextItem) -> Result<()> {
@@ -6458,6 +6577,14 @@ fn add_context_item(pack: &mut ContextPack, item: ContextItem) -> Result<()> {
         if rejected.mandatory {
             return Err(HarnessError::invalid(format!("budget_unsatisfied: mandatory {} item requires at least {} conservative token units", rejected.kind, upper_bound)));
         }
+        // The rejected optional item must not leave a stale over-budget number in the returned
+        // pack. Re-converge because the header contains this bound.
+        let mut retained_bound = render_context_markdown(pack).len();
+        for _ in 0..2 {
+            pack.upper_bound_tokens = retained_bound;
+            retained_bound = render_context_markdown(pack).len();
+        }
+        pack.upper_bound_tokens = retained_bound;
         return Ok(());
     }
     pack.upper_bound_tokens = upper_bound;
@@ -6465,9 +6592,27 @@ fn add_context_item(pack: &mut ContextPack, item: ContextItem) -> Result<()> {
 }
 
 pub fn render_context_markdown(pack: &ContextPack) -> String {
-    let mut rendered = format!("# ICARUS context pack\n\ntask: `{}` · execution: `{}` · status: `{}`\nbudget upper bound: {}/{}\n", pack.task_id, pack.execution_id, pack.status, pack.upper_bound_tokens, pack.budget_tokens);
+    // This rendering is fed to context-limited coding agents. The full ContextItem metadata is
+    // still available in the structured pack; the prompt form keeps only its provenance keys
+    // so mandatory governance does not spend hundreds of units repeating presentation labels.
+    let mut rendered = format!(
+        "# ICARUS context pack\ntask=`{}` execution=`{}` status=`{}` budget={}/{}\n",
+        pack.task_id,
+        pack.execution_id,
+        pack.status,
+        pack.upper_bound_tokens,
+        pack.budget_tokens
+    );
     for (index, item) in pack.items.iter().enumerate() {
-        rendered.push_str(&format!("\n## {}. {}{}\nsource: `{}`\ndigest: `{}`\nfreshness: {} · authority: {}\nreason: {}\n\n```text\n{}\n```\n", index + 1, item.kind, if item.mandatory { " (mandatory)" } else { "" }, item.source, item.digest, item.freshness, item.authority, item.retrieval_reason, item.content));
+        rendered.push_str(&format!(
+            "\n## {}:{}{}\nsrc=`{}` sha256=`{}`\n```text\n{}\n```\n",
+            index + 1,
+            item.kind,
+            if item.mandatory { "!" } else { "" },
+            item.source,
+            item.digest,
+            item.content
+        ));
     }
     rendered
 }
@@ -7335,9 +7480,9 @@ pub fn handoff_managed_task(repo_root: &Path, task_id: &str) -> Result<ManagedTa
             "managed task handoff requires an executing task",
         ));
     }
-    let run_value = read_snapshot(&root, &format!("state/run-{}.json", task.task_id))?
-        .ok_or_else(|| HarnessError::invalid("managed run preparation is missing"))?;
-    let run: RunPreparation = serde_json::from_value(run_value)?;
+    // Older MCP tasks may already be executing from before transition_task created this record.
+    // Recover them at the handoff boundary through the same explicit compatibility preparation.
+    let run = ensure_execution_preparation(&root, &task)?;
     if run.task_id != task.task_id || run.execution_id != task.execution_id {
         return Err(HarnessError::invalid(
             "managed task handoff does not match the prepared execution",
