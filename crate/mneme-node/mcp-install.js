@@ -346,11 +346,27 @@ This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icaru
 
 ### Mandatory first-session bootstrap
 
-At the beginning of **every new agent session** in this repository, before code search, planning, edits, or implementation answers: check for \`.icarus/manifest.yaml\`. If it is absent, call \`icarus_harness_init\` with this repository root (or run \`icarus harness init --repo <repo-root>\`) exactly once. Treat an initialization failure as a blocker: do not invent harness state or manually write \`.icarus\`. If the graph is absent or stale, call \`icarus_graph_build\`. For every coding task, call \`icarus_context_get\` before planning once a task exists. Do not silently skip ICARUS because it is inconvenient.
+At the beginning of **every new agent session**, check for \`.icarus/manifest.yaml\`. If it is absent, call \`icarus_harness_init\` with this repository root (or run \`icarus harness init --repo <repo-root>\`) exactly once. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
 
-For "where is X" / "who calls X" / "what imports X" in this codebase: call \`icarus_graph_query\` FIRST — a cheap structural lookup (callers_of/callees_of/imports_of/find) — instead of Grep/Read over whole files. Run \`icarus_graph_build\` once for this repo if \`icarus_graph_status\` shows nothing built yet, and again after significant restructuring.
+### Risk-based operating policy
 
-For a governed coding task in a repository with \`.icarus/manifest.yaml\`: \`icarus_task_start\` creates a task in \`created\`, not \`executing\`. Advance it with \`icarus_task_transition\` one legal state at a time: \`created → orienting → contracted → planned → executing\`. Call \`icarus_context_get\` before planning, after session compaction or resume, and after a material repository change. Before the first managed code write, transition to \`executing\`; do not call \`icarus_action_check\` while the task is still \`created\` or bypass its denial. Before ending a managed session, checkpoint then call \`icarus_task_handoff\`; this enters verification but never asserts success or seals. Do not claim verification without \`icarus_task_verify\` receipts.
+Use the relevant ICARUS and available HIVEMIND MCP tools deliberately; **do not call every tool on every turn**.
+
+- **Fast/read-only lane:** for investigation, log analysis, architecture questions, curls, status, or ordinary answers, do not create a governed task. Use \`icarus_recall\` only when prior project knowledge could change the answer. Use \`icarus_why_code\` or \`icarus_recall_bugs\` before changing unfamiliar or historically fragile code. Use HIVEMIND tools only for scoped shared memory or live-system facts they own.
+- **Normal code-change lane:** before a non-trivial bug fix or feature, recall only targeted prior decisions, bugs, refactors, and test coverage. For “where/who calls/imports” questions, use \`icarus_graph_query\` if \`icarus_graph_status\` is current; build with \`icarus_graph_build\` only when absent/stale or after significant restructuring. Fall back to normal repository inspection if graph indexing is unavailable; a graph failure must not block low-risk work.
+- **Full governed lifecycle:** use \`icarus_task_start → icarus_task_transition → icarus_context_get → icarus_action_check → icarus_checkpoint → icarus_task_handoff\` only for high-risk changes: production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work that must resume safely across sessions. Advance \`created → orienting → contracted → planned → executing\` one legal state at a time. Use \`icarus_task_verify\` only for executable criteria; verification still requires real production receipts, and ICARUS never replaces authenticated curls, database checks, logs, or lifecycle canaries.
+
+### Durable project memory
+
+Save only durable, reusable knowledge — never a transcript or routine progress noise. After a confirmed outcome, use the appropriate tool with this repo org:
+
+- \`icarus_log_decision\` for an architectural/API/library decision, alternatives, rationale, and affected files.
+- \`icarus_save_memory\` for a user preference, invariant, crucial note, incident root cause, or verified patch lesson; use precise tags and \`relationship: "update"\` when superseding a prior fact.
+- \`icarus_track_refactor\` after a significant rename, move, split, merge, extract, or restructure.
+- \`icarus_ingest_code\` for a durable code summary worth recalling across sessions, and \`icarus_test_coverage\` when a meaningful test contract is established or changed.
+- \`icarus_recall_bugs\`, \`icarus_why_code\`, and \`icarus_recall\` when their saved knowledge is relevant before planning or editing; do not broad-recall by ritual.
+
+If HIVEMIND MCP tools are available, use their authoritative shared-memory, tenant, and production-evidence tools for information that belongs there. Keep this repo's ICARUS org isolated; never use a default/shared org or copy tenant-scoped data across boundaries. A harness failure is distinct from a product failure: record it as a harness issue, continue safe low-risk work, and do not claim the product lifecycle is blocked unless the product itself is blocked.
 
 After a sealed task reveals a reusable procedure, call \`icarus_harness_skill_authoring_brief\`. Use the returned evidence and scope to draft a narrow proposed procedure, then call \`icarus_harness_skill_propose\`. Never present a proposal as active: only ICARUS replay evaluation and promotion can place it in future context.`;
 }

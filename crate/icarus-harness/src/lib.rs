@@ -6097,22 +6097,6 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
         .get("available")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    add_context_item(
-        &mut pack,
-        ContextItem::new(
-            "graph_slice",
-            ".icarus/runtime/graph/graph.db + receipt.json",
-            if graph_available {
-                "current"
-            } else {
-                "unavailable_or_stale"
-            },
-            "observed code graph",
-            "direct structural matches to the task objective",
-            false,
-            serde_json::to_string_pretty(&slice)?,
-        ),
-    )?;
     // Validate before including it. Context must never present malformed governance YAML as an
     // authoritative rule set to the coding agent.
     load_repository_policy(&root)?;
@@ -6129,36 +6113,6 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             policy,
         ),
     )?;
-    for (source, freshness, authority, content) in
-        referenced_decisions(&root, &task.contract.decision_references)
-    {
-        add_context_item(
-            &mut pack,
-            ContextItem::new(
-                "decision_reference",
-                source,
-                freshness,
-                authority,
-                "immutable task-linked decision reference",
-                false,
-                content,
-            ),
-        )?;
-    }
-    for (source, content) in active_verified_skills(&root, &task.contract) {
-        add_context_item(
-            &mut pack,
-            ContextItem::new(
-                "verified_skill",
-                source,
-                "verified",
-                "verified harness procedure",
-                "active skill matches task type and contract path scope",
-                false,
-                content,
-            ),
-        )?;
-    }
     let task_state = serde_json::to_string(&json!({
         "task_id": task.task_id, "execution_id": task.execution_id, "status": task.status,
         "contract_version": task.contract_version, "contract_digest": task.contract_digest,
@@ -6192,6 +6146,55 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
             worktree,
         ),
     )?;
+    // Include optional material only after the mandatory contract, policy, state, and workspace
+    // have reserved their budget. Otherwise a fresh graph slice can make a small valid task
+    // look impossible even though the graph itself is safely skippable.
+    add_context_item(
+        &mut pack,
+        ContextItem::new(
+            "graph_slice",
+            ".icarus/runtime/graph/graph.db + receipt.json",
+            if graph_available {
+                "current"
+            } else {
+                "unavailable_or_stale"
+            },
+            "observed code graph",
+            "direct structural matches to the task objective",
+            false,
+            serde_json::to_string_pretty(&slice)?,
+        ),
+    )?;
+    for (source, freshness, authority, content) in
+        referenced_decisions(&root, &task.contract.decision_references)
+    {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "decision_reference",
+                source,
+                freshness,
+                authority,
+                "immutable task-linked decision reference",
+                false,
+                content,
+            ),
+        )?;
+    }
+    for (source, content) in active_verified_skills(&root, &task.contract) {
+        add_context_item(
+            &mut pack,
+            ContextItem::new(
+                "verified_skill",
+                source,
+                "verified",
+                "verified harness procedure",
+                "active skill matches task type and contract path scope",
+                false,
+                content,
+            ),
+        )?;
+    }
     if let Some(checkpoint) = read_checkpoints(&root, task_id)?.last() {
         let content = serde_json::to_string_pretty(checkpoint)?;
         add_context_item(

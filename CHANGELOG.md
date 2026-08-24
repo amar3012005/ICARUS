@@ -9,6 +9,18 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Risk-based agent operating policy:** installed project instructions now require
+  targeted recall and durable decision, incident, refactor, and patch-lesson capture without
+  turning every investigation or small edit into a governed task. Full task lifecycle gates are
+  reserved for production, security, destructive, tenant, billing, migration, or broad-refactor
+  risk; graph and doctor work is explicitly on-demand.
+- **Context-budget reservation order:** mandatory contract, policy, state, and worktree context
+  now reserves the requested budget before optional graph, decision, and skill context is added.
+  Small valid context requests therefore degrade optional detail instead of failing with
+  `budget_unsatisfied` merely because optional evidence was considered first.
+- **MCP recall selection guidance:** the recall tool now tells agents to retrieve prior project
+  knowledge when it could materially affect an answer or implementation, rather than treating
+  broad recall as required ceremony for greetings, routine status, or self-contained edits.
 - **Graph-build diagnostics and liveness:** `icarus graph build` now reports bounded parser,
   resolution, database, and receipt stages while it runs. A failure names its exact stage,
   repository, and underlying error instead of collapsing to a bare process exit.

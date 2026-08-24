@@ -50,7 +50,7 @@ test('the written block names the derived org for this repo', () => {
   });
 });
 
-test('the project block makes first-session initialization and governed context mandatory', () => {
+test('the project block makes bootstrap and durable memory use explicit without universal task gating', () => {
   withRepo((repo) => {
     mi.installProjectAgents(repo);
     const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
@@ -58,12 +58,21 @@ test('the project block makes first-session initialization and governed context 
     assert.ok(text.includes('.icarus/manifest.yaml'));
     assert.ok(text.includes('icarus_harness_init'));
     assert.ok(text.includes('Treat an initialization failure as a blocker'));
+    assert.ok(text.includes('Risk-based operating policy'));
+    assert.ok(text.includes('Fast/read-only lane'));
+    assert.ok(text.includes('Full governed lifecycle'));
+    assert.ok(text.includes('icarus_recall_bugs'));
+    assert.ok(text.includes('icarus_why_code'));
+    assert.ok(text.includes('icarus_log_decision'));
+    assert.ok(text.includes('icarus_track_refactor'));
+    assert.ok(text.includes('icarus_save_memory'));
     assert.ok(text.includes('icarus_graph_build'));
     assert.ok(text.includes('icarus_context_get'));
     assert.ok(text.includes('icarus_task_transition'));
     assert.ok(text.includes('planned → executing'));
     assert.ok(text.includes('icarus_task_verify'));
     assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
+    assert.ok(!text.includes('For every coding task, call `icarus_context_get`'));
   });
 });
 

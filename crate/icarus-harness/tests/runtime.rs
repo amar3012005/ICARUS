@@ -1887,6 +1887,19 @@ fn context_compiler_reads_a_bounded_current_graph_slice_in_rust() {
     assert_eq!(graph.freshness, "current");
     assert!(graph.content.contains("src/parser.rs::graph_parser"));
     assert!(graph.content.contains("graph_helper"));
+
+    // Optional structural context must never consume room needed by the mandatory execution
+    // contract. A small pack remains usable whether or not the graph slice fits afterward.
+    let small_pack = build_context(repo.path(), &task.task_id, 2_500).unwrap();
+    assert!(small_pack.upper_bound_tokens <= 2_500);
+    assert!(small_pack
+        .items
+        .iter()
+        .any(|item| item.kind == "contract" && item.mandatory));
+    assert!(small_pack
+        .items
+        .iter()
+        .any(|item| item.kind == "policy" && item.mandatory));
 }
 
 #[test]
