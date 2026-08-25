@@ -791,10 +791,9 @@ async function cmdRecall(flags, cfg) {
   const usePq = flags.pq !== undefined;
   if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq]');
   const hits = await recallQuery(q, org, cfg, k, usePq);
-  const modeLabel = usePq ? c.dim(' (PQ/ADC recall)')
-    : hits[0]?.rerankFailed ? c.command(` (rerank failed — showing raw RRF scores, not calibrated: ${hits[0].rerankError})`)
+  const modeLabel = usePq && hits[0]?.mode === 'vector' ? c.dim(' (PQ/ADC recall)')
     : hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked — bge-reranker-v2-m3)')
-    : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 — no embedding provider configured)')
+    : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 local fallback)')
     : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid: dense + lexical, RRF-merged — too few candidates to rerank)')
     : '';
   console.log(`\n${heading(`top ${hits.length}`)} for "${c.fg(q)}"${modeLabel}:\n`);
@@ -1511,12 +1510,12 @@ async function main() {
                                         LOCAL ONLY, always -- never routes to HIVEMIND's shared
                                         recall (a real cross-tenant leak was found there: other
                                         orgs' private content came back for this org's queries).
-                                        Real parallel hybrid retrieval: dense (HNSW) + lexical
-                                        (BM25) run concurrently, merged via Reciprocal Rank
-                                        Fusion. If HIVEMIND connected: narrow re-score via the
-                                        real bge-reranker-v2-m3 cross-encoder on top of that wide
-                                        hybrid merge. If not: the hybrid merge IS the answer, no
-                                        rerank stage.
+                                        Dense (HNSW, when a bounded auxiliary embedding is
+                                        available) and lexical (BM25) results merge via Reciprocal
+                                        Rank Fusion. A connected bge-reranker-v2-m3 may refine
+                                        that local result. Provider timeout/failure silently keeps
+                                        lexical/RRF retrieval; vectors and reranking never block
+                                        ingest or recall.
   icarus save "<text>" --org <name> [--cloud]
                                         LOCAL ONLY by default -- real embedding, stored in the
                                         local .amr shard, never touches HIVEMIND's cloud memory

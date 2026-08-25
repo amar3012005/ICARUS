@@ -9,6 +9,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Offline-first embedding and rerank fallback:** local ingestion now persists every evidence
+  chunk as BM25-searchable lexical data if a configured embedding provider is unavailable, and
+  opens a per-ingest circuit after the first failure instead of waiting again for every batch.
+  Local recall bounds auxiliary embedding/rerank calls to one short, no-retry attempt and returns
+  the same lexical/RRF candidate order without provider-error output when either is unavailable.
 - **Risk-based agent operating policy:** installed project instructions now require
   targeted recall and durable decision, incident, refactor, and patch-lesson capture without
   turning every investigation or small edit into a governed task. Full task lifecycle gates are

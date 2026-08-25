@@ -242,7 +242,7 @@ function printHelp(state) {
   out(state, '');
   out(state, heading('Commands'));
   out(state, `  ${c.command('/ingest')} [dir|file] [--org name] [--full] [--local] [--force] [--keep-cloud]  ingest a folder or a single file — leave the path off to open a native file/folder picker. Connected ingest asks for evidence-only (fast, default) or both (adds memory/entity generation); --full chooses both non-interactively.`);
-  out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Real parallel hybrid (dense+lexical, RRF-merged); narrow-reranked if HIVEMIND connected, else the hybrid merge is final. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
+  out(state, `  ${c.command('/recall')} <query> [--org name] [--k 5] [--pq]     local recall, always. Dense+lexical RRF when vectors are available; otherwise local BM25 continues silently. A connected reranker may refine results but never blocks recall. Never HIVEMIND's shared recall (a real cross-tenant leak was found there).`);
   out(state, `  ${c.command('/save')} <text> [--org name] [--cloud]              uses the save_memory schema (tags/entities/verified relationships) when an LLM key is set; otherwise saves plain local text. --cloud also writes the canonical HIVEMIND memory.`);
   out(state, `  ${c.command('/llm-api')} <openrouter-api-key>                     save an OpenRouter key in macOS Keychain; it is never written to config or echoed.`);
   out(state, `  ${c.command('/model')} [search|model-id]                           browse text models or set the synthesis model.`);
@@ -349,11 +349,9 @@ function tuiUpdateProgressLine({ received = 0, total = null, phase = 'downloadin
 }
 
 function chatRecallLines(hits, cols = process.stdout.columns || 80) {
-  const modeLabel = hits[0]?.rerankFailed
-    ? 'parallel hybrid · rerank fallback'
-    : hits[0]?.mode === 'hybrid-reranked' ? 'parallel hybrid · reranked'
+  const modeLabel = hits[0]?.mode === 'hybrid-reranked' ? 'parallel hybrid · reranked'
     : hits[0]?.mode === 'hybrid' ? 'parallel hybrid · RRF merged'
-    : hits[0]?.mode === 'lexical' ? 'lexical / BM25'
+    : hits[0]?.mode === 'lexical' ? 'lexical / BM25 local fallback'
     : 'local recall';
   const snippetWidth = Math.max(60, Math.min(220, cols - 18));
   return [
@@ -1041,10 +1039,8 @@ async function dispatch(line, state, cfg) {
       if (!q) { out(state, err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
       const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
-      const modeLabel = hits[0]?.rerankFailed
-        ? c.command(` (rerank failed — showing raw RRF scores, not calibrated: ${hits[0].rerankError})`)
-        : hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked)')
-        : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 only)')
+      const modeLabel = hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked)')
+        : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 local fallback)')
         : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid, RRF-merged — too few candidates to rerank)')
         : '';
       out(state, `\n${heading(`top ${hits.length}`)}${modeLabel}\n`);

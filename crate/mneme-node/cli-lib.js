@@ -89,6 +89,29 @@ function openStore(cfg, org, opts = {}) {
 const HOME = process.env.ICARUS_HOME || process.env.MNEME_HOME || path.join(os.homedir(), '.icarus');
 const CFG_PATH = path.join(HOME, 'config.json');
 
+// Embeddings and cross-encoder reranking improve retrieval quality, but the local shard and its
+// BM25 index are the availability boundary. Never let an auxiliary remote provider turn an
+// ingest or recall into an outage, and never wait through the platform's often-long default
+// fetch timeout. This is deliberately one attempt only: a retry would add latency without making
+// the already-available lexical path safer. Advanced deployments may tune the deadline, but it
+// remains bounded so a dead endpoint cannot strand an interactive agent turn.
+const DEFAULT_AUXILIARY_REMOTE_TIMEOUT_MS = 900;
+function auxiliaryRemoteTimeoutMs(cfg) {
+  const configured = Number(cfg?.embeddings?.timeoutMs ?? cfg?.rerank?.timeoutMs ?? process.env.ICARUS_AUXILIARY_REMOTE_TIMEOUT_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_AUXILIARY_REMOTE_TIMEOUT_MS;
+  return Math.max(1, Math.min(Math.floor(configured), 5_000));
+}
+async function fetchAuxiliary(url, options, cfg) {
+  const controller = new AbortController();
+  const timeoutMs = auxiliaryRemoteTimeoutMs(cfg);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // The shard's native `layer` field is a plain u8 with 3 conventional values already in use
 // (see mneme-node/src/lib.rs's insert_layered/recall_layer doc comments) — HIVEMIND's own
 // memory/evidence/cognitive split. LAYER_SKILL is a 4th convention, Node-side only: no Rust
@@ -846,11 +869,11 @@ function skillList(org) {
 async function embed(texts, cfg) {
   const key = cfg.embeddings?.apiKey || process.env.OPENROUTER_API_KEY || process.env.LITELLM_API_KEY;
   if (!key) throw new Error('no embedding provider configured — run `icarus connect-embeddings`, or use lexical-only (BM25) recall instead');
-  const res = await fetch(`${cfg.embeddings.endpoint}/embeddings`, {
+  const res = await fetchAuxiliary(`${cfg.embeddings.endpoint}/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: cfg.embeddings.model, input: texts, encoding_format: 'float' }),
-  });
+  }, cfg);
   if (!res.ok) throw new Error(`embedding API ${res.status}: ${await res.text()}`);
   const j = await res.json();
   return j.data.map((d) => {
@@ -1045,13 +1068,16 @@ function noIngestableFilesReason(dir, extSet = INGESTABLE_EXTS) {
 }
 
 /** Ingest every text file under `dir` into `org`. Returns the number of chunks stored, and
- * which mode was used — `vector` when an embedding provider is configured, `lexical` when not
- * (BM25-only: text is stored and searchable, just not semantically). Never errors out just
- * because no embedding provider exists; it degrades, it doesn't refuse. */
+ * which mode was used — `vector` when every chunk received a vector, `hybrid` when a provider
+ * became unavailable mid-run, or `lexical` when BM25 was the only available index. Every source
+ * chunk is persisted regardless: remote vector availability may change ranking quality, never
+ * ingest durability. */
 async function ingestDir(dir, org, cfg, onProgress) {
   const store = openStore(cfg, org);
   const files = walkText(dir);
   const vectorMode = embeddingsConfigured(cfg);
+  let embeddingsAvailable = vectorMode;
+  let usedVectors = false;
   const distillMode = llmConfigured(cfg);
   const signMode = signingEnabled(cfg);
   const zero = new Float32Array(cfg.dim); // BM25 needs no vector; a placeholder keeps every
@@ -1071,20 +1097,37 @@ async function ingestDir(dir, org, cfg, onProgress) {
       for (const t of chunks) distilled.push(await summarize(t, cfg));
       chunks = distilled;
     }
-    if (vectorMode) {
-      for (let i = 0; i < chunks.length; i += 16) {
-        const batch = chunks.slice(i, i + 16);
-        const vecs = await embed(batch, cfg);
-        batch.forEach((t, j) => {
-          const text = `${path.basename(f)}\n${t}`;
-          const slotId = store.insert(text, vecs[j], Date.now());
-          if (signMode && signSlot(slotId, text, cfg, org)) signed++;
-          appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-local', sourceFile: path.basename(f) });
-          n++;
-        });
-      }
-    } else {
-      for (const t of chunks) {
+    let nextChunk = 0;
+    while (embeddingsAvailable && nextChunk < chunks.length) {
+        const batch = chunks.slice(nextChunk, nextChunk + 16);
+        try {
+          const vecs = await embed(batch, cfg);
+          batch.forEach((t, j) => {
+            const text = `${path.basename(f)}\n${t}`;
+            const slotId = store.insert(text, vecs[j], Date.now());
+            if (signMode && signSlot(slotId, text, cfg, org)) signed++;
+            appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-local', sourceFile: path.basename(f) });
+            n++;
+          });
+          usedVectors = true;
+          nextChunk += batch.length;
+        } catch (_) {
+          // One bounded failure opens the circuit for this ingest. Do not repeatedly await an
+          // unreachable provider for every later batch; persist the failed batch and the rest
+          // immediately as lexical evidence under the exact same source/audit semantics.
+          embeddingsAvailable = false;
+          for (const t of batch) {
+            const text = `${path.basename(f)}\n${t}`;
+            const slotId = store.insert(text, zero, Date.now());
+            if (signMode && signSlot(slotId, text, cfg, org)) signed++;
+            appendAuditEntry(cfg, org, 'insert', slotId, { source: 'ingest-local', sourceFile: path.basename(f) });
+            n++;
+          }
+          nextChunk += batch.length;
+        }
+    }
+    if (!embeddingsAvailable) {
+      for (const t of chunks.slice(nextChunk)) {
         const text = `${path.basename(f)}\n${t}`;
         const slotId = store.insert(text, zero, Date.now());
         if (signMode && signSlot(slotId, text, cfg, org)) signed++;
@@ -1094,11 +1137,11 @@ async function ingestDir(dir, org, cfg, onProgress) {
     }
     if (onProgress) onProgress(n);
   }
-  if (vectorMode) store.enableHnsw();
+  if (usedVectors) store.enableHnsw();
   store.flush();
   return {
     files: files.length, chunks: n, live: store.liveCount(),
-    mode: vectorMode ? 'vector' : 'lexical', distilled: distillMode, signed,
+    mode: usedVectors ? (embeddingsAvailable ? 'vector' : 'hybrid') : 'lexical', distilled: distillMode, signed,
   };
 }
 
@@ -1129,7 +1172,8 @@ function rrfMerge(listA, listB, k = 60) {
  * actual hybrid retrieval stage, not a single-modality either/or fallback. `usePq` requires
  * trainPq() to have run first AND an embedding provider configured (PQ trains on real vectors,
  * no way around that) and bypasses this pipeline entirely — it's specifically about measuring/
- * using the trained PQ codebook directly.
+ * using the trained PQ codebook directly. If its remote query embedding is unavailable, it
+ * transparently resumes the normal local lexical/hybrid path rather than failing recall.
  *
  * The SECOND stage — narrow re-score via the real bge-reranker-v2-m3 cross-encoder — only runs
  * when HIVEMIND is connected (gated on hivemindConfigured(cfg), same convention as every other
@@ -1178,14 +1222,14 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   // PQ specifically requires the user's OWN provider — the codebook was trained on cfg.embeddings'
   // own vector space (train_pq itself requires embeddingsConfigured(cfg)), so query vectors for a
   // PQ search must come from that exact same space, not HIVEMIND's free fallback below.
-  if (usePq && !hasOwnEmbeddings) {
-    throw new Error('usePq requires an embedding provider — run `icarus connect-embeddings` first (PQ trains on real vectors)');
-  }
-  if (usePq) {
-    if (!store.pqTrained()) throw new Error(`no PQ codebook trained for org "${org}" yet — run train_pq first`);
-    const [qv] = await embed([query], cfg);
-    const hits = store.recallPq(qv, topK);
-    return dropSuperseded(hits.map((h) => unwrapHit({ score: h.score, text: h.text, mode: 'vector' })));
+  if (usePq && hasOwnEmbeddings && store.pqTrained()) {
+    try {
+      const [qv] = await embed([query], cfg);
+      const hits = store.recallPq(qv, topK);
+      return dropSuperseded(hits.map((h) => unwrapHit({ score: h.score, text: h.text, mode: 'vector' })));
+    } catch (_) {
+      // PQ is an optimization over the same local evidence, never an availability dependency.
+    }
   }
 
   const viaHivemind = hivemindConfigured(cfg);
@@ -1203,11 +1247,16 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   // configured but IS connected — without this, vectors written by the mirror path above would
   // sit in the shard unreachable, since a lexical-only query can't do a vector-space search.
   let qv = null;
+  let auxiliaryQueryAvailable = true;
   if (hasOwnEmbeddings || viaHivemind) {
     try {
-      [qv] = hasOwnEmbeddings ? await embed([query], cfg) : await embedViaHivemindService([query]);
+      [qv] = hasOwnEmbeddings ? await embed([query], cfg) : await embedViaHivemindService([query], cfg);
     } catch (_) {
       qv = null; // query embedding failed (network hiccup) — hybrid degrades to lexical-only below
+      // Do not spend a second timeout on reranking after the same recall's auxiliary path has
+      // already failed. The lexical candidate order is immediately usable and the caller asked
+      // for availability/low latency, not two remote recovery attempts.
+      auxiliaryQueryAvailable = false;
     }
   }
 
@@ -1223,14 +1272,14 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   }
   const merged = qv ? rrfMerge(denseHits, lexicalHits) : lexicalHits;
 
-  if (!viaHivemind) {
+  if (!viaHivemind || !auxiliaryQueryAvailable) {
     // Disconnected: the hybrid merge IS the final result — no rerank stage.
     return merged.slice(0, topK).map((h) => ({
       score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical', memoryId: h.memoryId, tags: h.tags,
     }));
   }
   // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
-  return rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK);
+  return rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK, cfg);
 }
 
 // "ICARUS v3" boundary starts here: v2 is the local `.amr` filesystem engine above (its own
@@ -1516,7 +1565,7 @@ async function saveLocalMemory(text, org, cfg, opts = {}) {
   // loses the save itself over a network hiccup.
   if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
     try {
-      [vec] = hasOwnEmbeddings ? await embed([text], cfg) : await embedViaHivemindService([text]);
+      [vec] = hasOwnEmbeddings ? await embed([text], cfg) : await embedViaHivemindService([text], cfg);
       vectorMode = true;
     } catch (_) { /* keep the zero-vector placeholder */ }
   }
@@ -1678,7 +1727,7 @@ async function saveStructuredMemory(content, org, cfg, opts = {}) {
   let vectorMode = false;
   if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
     try {
-      [vec] = hasOwnEmbeddings ? await embed([content], cfg) : await embedViaHivemindService([content]);
+      [vec] = hasOwnEmbeddings ? await embed([content], cfg) : await embedViaHivemindService([content], cfg);
       vectorMode = true;
     } catch (_) { /* keep the zero-vector placeholder — same degrade-gracefully rule as saveLocalMemory */ }
   }
@@ -1767,7 +1816,7 @@ async function updateStructuredMemory(memoryId, patch, org, cfg) {
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
   let vec = new Float32Array(cfg.dim);
   if (hasOwnEmbeddings || hivemindConfigured(cfg)) {
-    try { [vec] = hasOwnEmbeddings ? await embed([merged.content], cfg) : await embedViaHivemindService([merged.content]); }
+    try { [vec] = hasOwnEmbeddings ? await embed([merged.content], cfg) : await embedViaHivemindService([merged.content], cfg); }
     catch (_) { /* zero-vector placeholder */ }
   }
   const now = Date.now();
@@ -1861,12 +1910,12 @@ async function hivemindFetchDocumentSegments(documentId, cfg) {
 // dimension by coincidence.
 const HIVEMIND_EMBEDDINGS_URL = 'https://embeddings.singulancelabs.com/v1/embeddings';
 
-async function embedViaHivemindService(texts) {
-  const res = await fetch(HIVEMIND_EMBEDDINGS_URL, {
+async function embedViaHivemindService(texts, cfg) {
+  const res = await fetchAuxiliary(HIVEMIND_EMBEDDINGS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'bge-m3', input: texts }),
-  });
+  }, cfg);
   if (!res.ok) throw new Error(`HIVEMIND embeddings ${res.status}: ${await res.text()}`);
   const j = await res.json();
   return j.data.map((d) => {
@@ -1891,12 +1940,12 @@ async function embedViaHivemindService(texts) {
 // before this.
 const HIVEMIND_RERANK_URL = 'https://rerank.singulancelabs.com/api/v1/rerank';
 
-async function rerankViaHivemindService(query, documents, topN) {
-  const res = await fetch(HIVEMIND_RERANK_URL, {
+async function rerankViaHivemindService(query, documents, topN, cfg) {
+  const res = await fetchAuxiliary(HIVEMIND_RERANK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, documents, top_n: topN }),
-  });
+  }, cfg);
   if (!res.ok) throw new Error(`HIVEMIND rerank ${res.status}: ${await res.text()}`);
   const j = await res.json();
   return j.results; // [{index, relevance_score}], sorted desc by relevance_score
@@ -1907,18 +1956,16 @@ async function rerankViaHivemindService(query, documents, topN) {
  * cosine/BM25 alone — that's the whole point of a rerank stage). Falls back to the original
  * wide-search order (already-sorted, just truncated to topK) on any failure — a network hiccup on
  * the free rerank service must never make recall itself fail. */
-async function rerankHits(query, hits, topK) {
+async function rerankHits(query, hits, topK, cfg) {
   if (hits.length <= 1) return hits.slice(0, topK);
   try {
-    const results = await rerankViaHivemindService(query, hits.map((h) => h.text), topK);
+    const results = await rerankViaHivemindService(query, hits.map((h) => h.text), topK, cfg);
     return results.map((r) => ({ ...hits[r.index], score: r.relevance_score, mode: 'hybrid-reranked' }));
-  } catch (e) {
-    // Real failure mode caught in testing: a rerank-service blip (network/timeout/DNS) used to
-    // return here silently with the old RRF-scale score still attached, so a HIVEMIND-connected
-    // recall could show tiny [0.03]-style numbers indistinguishable from a real low-confidence
-    // hit. Tag mode so the CLI/TUI can surface "rerank failed, showing raw hybrid scores" instead
-    // of pretending a calibrated relevance score was returned.
-    return hits.slice(0, topK).map((h) => ({ ...h, rerankFailed: true, rerankError: e.message || String(e) }));
+  } catch (_) {
+    // The same wide retrieval result is already valid. Keep its existing RRF/BM25 ordering and
+    // provider-neutral mode rather than leaking a transient remote error into the user-facing
+    // answer. This is a quality downgrade, not a recall failure.
+    return hits.slice(0, topK);
   }
 }
 
@@ -1946,15 +1993,22 @@ async function mirrorHivemindDocumentLocally(documentId, sourceLabel, org, cfg) 
   // semantic vectors locally, not just BM25. Falls back to lexical-only per-batch (not aborting
   // the whole mirror) if even the free service errors — network hiccups shouldn't lose the text.
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
+  let embeddingsAvailable = hasOwnEmbeddings || hivemindConfigured(cfg);
   let usedVectors = false;
   for (let i = 0; i < texts.length; i += 16) {
     const batch = texts.slice(i, i + 16);
+    if (!embeddingsAvailable) {
+      batch.forEach((text) => insertOne(text, zero));
+      continue;
+    }
     try {
-      const vecs = hasOwnEmbeddings ? await embed(batch, cfg) : await embedViaHivemindService(batch);
+      const vecs = hasOwnEmbeddings ? await embed(batch, cfg) : await embedViaHivemindService(batch, cfg);
       batch.forEach((text, j) => insertOne(text, vecs[j]));
       usedVectors = true;
-    } catch (e) {
-      console.error(`icarus: local embedding failed for a batch of ${sourceLabel} — ${e.message} — storing lexical-only`);
+    } catch (_) {
+      // Auxiliary provider failures are intentionally silent: the evidence text is durable and
+      // BM25-searchable, so expose neither an error nor repeated per-batch timeout cost.
+      embeddingsAvailable = false;
       batch.forEach((text) => insertOne(text, zero));
     }
   }
@@ -2212,7 +2266,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.73';
+const ICARUS_VERSION = '0.3.74';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
