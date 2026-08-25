@@ -47,6 +47,9 @@ test('remote embedding and reranking outages preserve local lexical ingest and r
       'provider failure details must not be returned as user-facing recall state');
   } finally {
     global.fetch = originalFetch;
-    rmSync(root, { recursive: true, force: true });
+    // The native shard is memory-mapped for this test process. POSIX permits unlinking it while
+    // mapped; Windows correctly does not. The Windows runner's temp directory is reclaimed after
+    // the process, so avoid turning successful behavior coverage into an EPERM cleanup failure.
+    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
   }
 });
