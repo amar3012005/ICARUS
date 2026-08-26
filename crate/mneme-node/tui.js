@@ -40,6 +40,7 @@ const {
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
   hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, initRepoShard, listOrgsWithMeta, deleteOrgShard,
 } = require('./cli-lib.js');
+const { callMemory } = require('./daemon-client.js');
 
 // ── ANSI primitives ─────────────────────────────────────────────────────────────────────────
 const ENTER_ALT = '\x1b[?1049h';
@@ -947,7 +948,7 @@ async function dispatch(line, state, cfg) {
       const query = argStr.replace(/\s--org\s+[^\s]+/, '').trim();
       if (!query) { out(state, err('usage: /chat <query> [--org name]')); break; }
       out(state, c.running('  recalling local evidence and synthesizing...'));
-      const hits = await recallQuery(query, org, cfg, 8);
+      const hits = await callMemory('recall', { query, org, topK: 8, usePq: false }, cfg);
       chatRecallLines(hits).forEach((line) => out(state, line));
       out(state, `\n${heading(`chat · ${resolveSynthesisModel(cfg)}`)}\n`);
       let result;
@@ -1011,7 +1012,7 @@ async function dispatch(line, state, cfg) {
         out(state, c.dim(`  → ${ingestMode === 'evidence' ? 'evidence only' : 'evidence + memory generation'}`));
         out(state, bullet(c.system(`ingesting into HIVEMIND, org "${c.path(ingestOrg)}"...`)));
         let tick = 0;
-        const result = await hivemindIngestDir(dir, ingestOrg, cfg, (event) => updateIngestQueue(state, event, c.running(spinnerFrame(tick++))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
+        const result = await callMemory('ingest_hivemind', { dir, org: ingestOrg, options: { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode } }, cfg);
         state._ingestQueue = null;
         const notes = [];
         if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
@@ -1029,7 +1030,7 @@ async function dispatch(line, state, cfg) {
         out(state, `\n${ok(`${action} → ${outcome} (${ingestMode})`)}${notes.length ? c.dim(` — ${notes.join(', ')}`) : ''}`);
       } else {
         let tick = 0;
-        const result = await ingestDir(dir, ingestOrg, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${n} chunks`));
+        const result = await callMemory('ingest', { dir, org: ingestOrg }, cfg);
         out(state, `\n${ok(`ingested ${result.chunks} chunks from ${result.files} files (mode=${result.mode})`)}`);
       }
       break;
@@ -1038,7 +1039,7 @@ async function dispatch(line, state, cfg) {
       const q = argStr.trim();
       if (!q) { out(state, err('usage: /recall <query> [--org name] [--k 5]')); break; }
       const k = Number(flags.k || 5);
-      const hits = await recallQuery(q, org, cfg, k, !!flags.pq);
+      const hits = await callMemory('recall', { query: q, org, topK: k, usePq: !!flags.pq }, cfg);
       const modeLabel = hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked)')
         : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 local fallback)')
         : hits[0]?.mode === 'hybrid' ? c.dim(' (parallel hybrid, RRF-merged — too few candidates to rerank)')
@@ -1050,7 +1051,7 @@ async function dispatch(line, state, cfg) {
     case 'save': {
       const text = flags._.join(' ').trim();
       if (!text) { out(state, err('usage: /save <text> [--org name] [--cloud]')); break; }
-      const saved = await saveIntelligentMemory(text, org, cfg, { cloud: !!flags.cloud });
+      const saved = await callMemory('save_intelligent', { text, org, options: { cloud: !!flags.cloud } }, cfg);
       if (saved.mode === 'structured') {
         out(state, ok(`saved with save_memory schema (id ${saved.id}) — ${saved.draft.entities.length} entities, ${saved.draft.tags.length} tags${saved.edge ? `, ${saved.edge.type} relationship` : ''}${saved.remote ? ', cloud canonical save' : ''}.`));
       } else {
@@ -1081,7 +1082,7 @@ async function dispatch(line, state, cfg) {
       break;
     }
     case 'status': {
-      const s = statusReport(cfg);
+      const s = await callMemory('status', {}, cfg);
       out(state, `\n${heading('memory atlas')}  ${m.faint('local .amr index')}`);
       out(state, `${m.faint('root')} ${c.path(s.dataRoot)}  ${m.faint('dimension')} ${s.dim}`);
       out(state, `${m.faint('HIVEMIND')} ${s.hivemindConnected ? c.success('● connected') : c.dim('○ not connected')}   ${m.faint('SIGNING')} ${signingEnabled(cfg) ? c.success('● enabled') : c.dim('○ off')}`);
@@ -1094,7 +1095,7 @@ async function dispatch(line, state, cfg) {
         // the time, by design) used to mean a real ~6.7s freeze on EVERY /status just to render
         // one line of counts. unavailable:true is the instant, expected outcome now, not an
         // error -- the plain try/catch below still guards a genuinely different failure.
-        try { rich = richOrgStats(sh.org, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
+        try { rich = await callMemory('rich_org_stats', { org: sh.org }, cfg); } catch (e) { richErr = e.message.split('\n')[0]; }
         statusCardLines(sh, rich, richErr).forEach((line) => out(state, line));
       }
       break;
@@ -1144,7 +1145,7 @@ async function dispatch(line, state, cfg) {
       });
       if (!target) { out(state, c.dim('  cancelled — nothing deleted')); break; }
       const mb = (target.bytesOnDisk / (1024 * 1024)).toFixed(2);
-      const stats = richOrgStats(target.org, cfg);
+      const stats = await callMemory('rich_org_stats', { org: target.org }, cfg);
       const statsText = stats.unavailable
         ? '(memory count unavailable — actively open by another icarus process)'
         : `${stats.memories} memories, ${stats.relationships} relationships`;
@@ -1153,7 +1154,7 @@ async function dispatch(line, state, cfg) {
       const secondOk = await askYesNo(state, `FINAL CONFIRMATION — permanently delete "${target.org}" and everything in it right now?`);
       if (!secondOk) { out(state, c.dim('  cancelled — nothing deleted')); break; }
       try {
-        deleteOrgShard(cfg, target.org);
+        await callMemory('delete_org', { org: target.org }, cfg);
         if (state.org === target.org) state.org = 'default';
         out(state, ok(`deleted org "${target.org}"`));
       } catch (e) { out(state, err(e.message || String(e))); }

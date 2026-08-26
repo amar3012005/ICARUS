@@ -28,11 +28,10 @@ const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const {
-  loadCfg, ingestDir, recallQuery, statusReport, openStore,
-  hivemindConfigured, hivemindIngestDir, hivemindSaveMemory, saveLocalMemory,
-  saveStructuredMemory, getStructuredMemory, listStructuredMemories,
-  updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
+  loadCfg,
+  hivemindConfigured, hivemindIngestDir, hivemindSaveMemory,
 } = require('./cli-lib.js');
+const { callMemory } = require('./daemon-client.js');
 
 function textResult(obj) {
   return { content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] };
@@ -46,6 +45,7 @@ const RELATIONSHIP_ENUM_WITH_ALL = z.enum(['update', 'extend', 'derive', 'contra
 
 async function run() {
   const server = new McpServer({ name: 'icarus', version: '1.0.0' });
+  const memoryCall = (operation, args) => callMemory(operation, args, loadCfg());
 
   server.registerTool(
     'icarus_status',
@@ -55,7 +55,7 @@ async function run() {
       inputSchema: {},
     },
     async () => {
-      try { return textResult(statusReport(loadCfg())); } catch (e) { return errorResult(e); }
+      try { return textResult(await memoryCall('status', {})); } catch (e) { return errorResult(e); }
     },
   );
 
@@ -77,9 +77,9 @@ async function run() {
       try {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && !local) {
-          return textResult(await hivemindIngestDir(dir, org || 'default', cfg, undefined, { force: !!force, mirrorLocal: mirrorLocal !== false, purgeCloud: purgeCloud !== false }));
+          return textResult(await memoryCall('ingest_hivemind', { dir, org: org || 'default', options: { force: !!force, mirrorLocal: mirrorLocal !== false, purgeCloud: purgeCloud !== false } }));
         }
-        return textResult(await ingestDir(dir, org || 'default', cfg));
+        return textResult(await memoryCall('ingest', { dir, org: org || 'default' }));
       } catch (e) { return errorResult(e); }
     },
   );
@@ -99,7 +99,7 @@ async function run() {
     async ({ query, org, topK, usePq }) => {
       try {
         const cfg = loadCfg();
-        const hits = await recallQuery(query, org || 'default', cfg, topK || 5, !!usePq);
+        const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -121,10 +121,10 @@ async function run() {
         const cfg = loadCfg();
         if (hivemindConfigured(cfg) && cloud) {
           const r = await hivemindSaveMemory(text, org || 'default', cfg);
-          await saveLocalMemory(text, org || 'default', cfg, { viaCloud: true }); // mirror — icarus_recall is local-only
+          await memoryCall('save_raw', { text, org: org || 'default', options: { viaCloud: true } }); // mirror — icarus_recall is local-only
           return textResult(r);
         }
-        await saveLocalMemory(text, org || 'default', cfg);
+        await memoryCall('save_raw', { text, org: org || 'default' });
         return textResult({ ok: true, org: org || 'default', mode: 'local' });
       } catch (e) { return errorResult(e); }
     },
@@ -151,9 +151,9 @@ async function run() {
     async ({ title, content, tags, source_type, org, project, relationship, related_to }) => {
       try {
         const cfg = loadCfg();
-        const r = await saveStructuredMemory(content, org || 'default', cfg, {
+        const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title, tags, sourceType: source_type, project, relationship, relatedTo: related_to,
-        });
+        } });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -169,7 +169,7 @@ async function run() {
     async ({ memory_id, org }) => {
       try {
         const cfg = loadCfg();
-        const rec = getStructuredMemory(memory_id, org || 'default', cfg);
+        const rec = await memoryCall('get_structured', { memory_id, org: org || 'default' });
         if (!rec) return errorResult(new Error(`no live memory with id "${memory_id}" in org "${org || 'default'}"`));
         return textResult(rec);
       } catch (e) { return errorResult(e); }
@@ -191,7 +191,7 @@ async function run() {
     async ({ tags, org, limit, include_superseded }) => {
       try {
         const cfg = loadCfg();
-        const list = listStructuredMemories(org || 'default', cfg, { tags, limit: limit || 20, includeSuperseded: !!include_superseded });
+        const list = await memoryCall('list_structured', { org: org || 'default', options: { tags, limit: limit || 20, includeSuperseded: !!include_superseded } });
         return textResult(list);
       } catch (e) { return errorResult(e); }
     },
@@ -213,7 +213,7 @@ async function run() {
     async ({ memory_id, content, title, tags, org }) => {
       try {
         const cfg = loadCfg();
-        const r = await updateStructuredMemory(memory_id, { content, title, tags }, org || 'default', cfg);
+        const r = await memoryCall('update_structured', { memory_id, patch: { content, title, tags }, org: org || 'default' });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -233,7 +233,7 @@ async function run() {
     async ({ memory_id, reason, org }) => {
       try {
         const cfg = loadCfg();
-        return textResult(deleteStructuredMemory(memory_id, reason, org || 'default', cfg));
+        return textResult(await memoryCall('delete_structured', { memory_id, reason, org: org || 'default' }));
       } catch (e) { return errorResult(e); }
     },
   );
@@ -255,9 +255,9 @@ async function run() {
       try {
         const cfg = loadCfg();
         const content = messages.map((m) => `${m.role}: ${m.content}`).join('\n');
-        const r = await saveStructuredMemory(content, org || 'default', cfg, {
+        const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title, tags: [...tags, 'conversation', ...(platform ? [`platform:${platform}`] : [])], sourceType: 'conversation',
-        });
+        } });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -278,7 +278,7 @@ async function run() {
     async ({ memory_id, relationship, depth, org }) => {
       try {
         const cfg = loadCfg();
-        return textResult(traverseStructuredGraph(memory_id, org || 'default', cfg, { relationship, depth }));
+        return textResult(await memoryCall('traverse_structured', { memory_id, org: org || 'default', options: { relationship, depth } }));
       } catch (e) { return errorResult(e); }
     },
   );
@@ -303,12 +303,12 @@ async function run() {
       try {
         const cfg = loadCfg();
         const fileTag = `file:${file_path}`;
-        const prior = listStructuredMemories(org || 'default', cfg, { tags: [fileTag], limit: 1 })[0];
+        const prior = (await memoryCall('list_structured', { org: org || 'default', options: { tags: [fileTag], limit: 1 } }))[0];
         const body = summary ? `${summary}\n\n${content}` : content;
-        const r = await saveStructuredMemory(body, org || 'default', cfg, {
+        const r = await memoryCall('save_structured', { content: body, org: org || 'default', options: {
           title: file_path, tags: [...tags, 'code', fileTag], sourceType: 'code', project,
           ...(prior ? { relationship: 'update', relatedTo: prior.id } : {}),
-        });
+        } });
         return textResult({ ...r, previousVersion: prior ? prior.id : null });
       } catch (e) { return errorResult(e); }
     },
@@ -329,11 +329,11 @@ async function run() {
     async ({ context, file_path, limit, org }) => {
       try {
         const cfg = loadCfg();
-        const hits = await recallByTags(context, org || 'default', cfg, {
+        const hits = await memoryCall('recall_by_tags', { query: context, org: org || 'default', options: {
           requireAnyTags: ['bug', 'fix', 'gotcha'],
           requireAllTags: file_path ? [`file:${file_path}`] : [],
           limit: limit || 5,
-        });
+        } });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -362,11 +362,11 @@ async function run() {
         const parts = [`Decision: ${decision}`, `Rationale: ${rationale}`];
         if (alternatives.length) parts.push(`Alternatives considered: ${alternatives.join('; ')}`);
         if (affected_files.length) parts.push(`Affected files: ${affected_files.join(', ')}`);
-        const r = await saveStructuredMemory(parts.join('\n'), org || 'default', cfg, {
+        const r = await memoryCall('save_structured', { content: parts.join('\n'), org: org || 'default', options: {
           title, tags: [...tags, 'decision', ...affected_files.map((f) => `file:${f}`)],
           sourceType: 'decision', project,
           ...(related_to ? { relationship: 'derive', relatedTo: related_to } : {}),
-        });
+        } });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -392,12 +392,12 @@ async function run() {
       try {
         const cfg = loadCfg();
         const content = `${refactor_type}: "${old_name}" -> "${new_name}"\nReason: ${reason}${affected_files.length ? `\nAffected files: ${affected_files.join(', ')}` : ''}`;
-        const r = await saveStructuredMemory(content, org || 'default', cfg, {
+        const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title: `${refactor_type}: ${old_name} -> ${new_name}`,
           tags: ['refactor', refactor_type, ...affected_files.map((f) => `file:${f}`)],
           sourceType: 'code', project,
           ...(related_to ? { relationship: 'derive', relatedTo: related_to } : {}),
-        });
+        } });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -428,14 +428,14 @@ async function run() {
           if (test_file) parts.push(`Test file: ${test_file}`);
           if (test_cases.length) parts.push(`Cases: ${test_cases.join('; ')}`);
           if (coverage_pct != null) parts.push(`Coverage: ${coverage_pct}%`);
-          const r = await saveStructuredMemory(parts.join('\n'), org || 'default', cfg, {
+          const r = await memoryCall('save_structured', { content: parts.join('\n'), org: org || 'default', options: {
             title: `test-coverage: ${function_name}`,
             tags: ['test-coverage', fnTag, ...(file_path ? [`file:${file_path}`] : [])],
             sourceType: 'code', project,
-          });
+          } });
           return textResult(r);
         }
-        const hits = await recallByTags(function_name, org || 'default', cfg, { requireAnyTags: ['test-coverage'], requireAllTags: [fnTag], limit: 5 });
+        const hits = await memoryCall('recall_by_tags', { query: function_name, org: org || 'default', options: { requireAnyTags: ['test-coverage'], requireAllTags: [fnTag], limit: 5 } });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -462,8 +462,8 @@ async function run() {
           ...(function_name ? [`fn:${function_name}`] : []),
         ];
         const wide = requireAllTags.length
-          ? await recallByTags(query, org || 'default', cfg, { requireAllTags, limit: limit || 8 })
-          : (await recallQuery(query, org || 'default', cfg, limit || 8, false));
+          ? await memoryCall('recall_by_tags', { query, org: org || 'default', options: { requireAllTags, limit: limit || 8 } })
+          : (await memoryCall('recall', { query, org: org || 'default', topK: limit || 8, usePq: false }));
         const buckets = { decisions: [], refactors: [], bugs: [], other: [] };
         for (const h of wide) {
           const tags = h.tags || [];
@@ -490,12 +490,7 @@ async function run() {
     async ({ org, seed }) => {
       try {
         const cfg = loadCfg();
-        const store = openStore(cfg, org || "default");
-        const live = store.liveCount();
-        if (!live) throw new Error(`org "${org || 'default'}" has no memories yet — nothing to train on`);
-        const t0 = Date.now();
-        store.trainPq(seed ?? 42);
-        return textResult({ org: org || 'default', liveVectors: live, trainedInSeconds: (Date.now() - t0) / 1000 });
+        return textResult(await memoryCall('train_pq', { org: org || 'default', seed: seed ?? 42 }));
       } catch (e) { return errorResult(e); }
     },
   );
@@ -510,9 +505,7 @@ async function run() {
     async ({ org }) => {
       try {
         const cfg = loadCfg();
-        const store = openStore(cfg, org || "default");
-        const reclaimed = store.compact();
-        return textResult({ org: org || 'default', reclaimedBytes: Number(reclaimed) || 0 });
+        return textResult(await memoryCall('compact', { org: org || 'default' }));
       } catch (e) { return errorResult(e); }
     },
   );
@@ -799,9 +792,9 @@ async function run() {
         const draft = { title, content, tags: tags || [], source_type, project };
         const approval = harnessFor().approveLearningCapture(repo, capture_id, capture_digest, draft);
         const combinedTags = [...new Set([...(tags || []), ...approval.provenance_tags])];
-        const memory = await saveStructuredMemory(content, org || 'default', loadCfg(), {
+        const memory = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title, tags: combinedTags, sourceType: source_type, project,
-        });
+        } });
         const saved = harnessFor().recordLearningCaptureSaved(repo, capture_id, memory.id, approval.draft_digest);
         return textResult({ memory, saved, provenance_tags: combinedTags });
       } catch (e) { return errorResult(e); }

@@ -25,6 +25,7 @@ const {
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, noIngestableFilesReason, HIVEMIND_INGESTABLE_EXTS, pickFolderNative,
   hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, saveStructuredMemory,
 } = require('./cli-lib.js');
+const { callMemory } = require('./daemon-client.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -88,7 +89,7 @@ async function cmdIngest(flags, cfg) {
     console.log(bullet(c.system(`ingesting into HIVEMIND workspace, org tag "${c.path(`icarus-org:${org}`)}"${flags['no-mirror'] ? '' : c.dim(' (mirroring segments into the local shard too)')}`)));
     console.log(c.dim(`  mode: ${ingestMode === 'evidence' ? 'evidence only (fast)' : 'both (memory/entity generation)'}`));
     let tick = 0;
-    const result = await hivemindIngestDir(dir, org, cfg, (event) => process.stdout.write(formatHivemindProgress(event, c.running(spinnerFrame(tick++)))), { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode });
+    const result = await callMemory('ingest_hivemind', { dir, org, options: { force: !!flags.force, mirrorLocal: !flags['no-mirror'], purgeCloud: !flags['keep-cloud'], ingestMode } }, cfg);
     const notes = [];
     if (result.duplicates) notes.push(`${result.duplicates} already in your knowledge base`);
     if (result.unavailableDuplicates) notes.push(`${result.unavailableDuplicates} duplicate document(s) unavailable to mirror — server repair required`);
@@ -109,7 +110,7 @@ async function cmdIngest(flags, cfg) {
   }
   console.log(bullet(c.system(`ingesting into org "${c.path(org)}"`)));
   let tick = 0;
-  const result = await ingestDir(dir, org, cfg, (n) => process.stdout.write(`\r  ${c.running(spinnerFrame(tick++))} ${c.running(String(n))} chunks`));
+  const result = await callMemory('ingest', { dir, org }, cfg);
   console.log(`\n${ok(`ingested ${c.bold(result.chunks)} chunks from ${result.files} files into ${c.path(org)} (${result.live} live, mode=${result.mode})`)}`);
 }
 
@@ -790,7 +791,7 @@ async function cmdRecall(flags, cfg) {
   const k = Number(flags.k || 5);
   const usePq = flags.pq !== undefined;
   if (!q) throw new Error('usage: icarus recall "<query>" --org <name> [--k 5] [--pq]');
-  const hits = await recallQuery(q, org, cfg, k, usePq);
+  const hits = await callMemory('recall', { query: q, org, topK: k, usePq }, cfg);
   const modeLabel = usePq && hits[0]?.mode === 'vector' ? c.dim(' (PQ/ADC recall)')
     : hits[0]?.mode === 'hybrid-reranked' ? c.dim(' (parallel hybrid, reranked — bge-reranker-v2-m3)')
     : hits[0]?.mode === 'lexical' ? c.dim(' (lexical/BM25 local fallback)')
@@ -821,7 +822,7 @@ async function cmdSave(flags, cfg) {
   // permanent memory in HIVEMIND's cloud box on their own. --cloud opts back in explicitly when
   // a real, permanent, smart-routed HIVEMIND memory is actually wanted (still mirrored locally
   // too, same as before, so /recall keeps working either way).
-  const saved = await saveIntelligentMemory(text, org, cfg, { cloud: !!flags.cloud });
+  const saved = await callMemory('save_intelligent', { text, org, options: { cloud: !!flags.cloud } }, cfg);
   if (saved.mode === 'structured') {
     console.log(ok(`saved with save_memory schema (id ${c.path(saved.id)}) in ${c.path(org)} — ${saved.draft.entities.length} entities, ${saved.draft.tags.length} tags${saved.edge ? `, ${saved.edge.type} relationship` : ''}${saved.remote ? ', cloud canonical save' : ''}.`));
     return;
@@ -829,8 +830,8 @@ async function cmdSave(flags, cfg) {
   console.log(ok(`saved as a local memory in ${c.path(org)}'s shard${embeddingsConfigured(cfg) ? '' : c.dim(' (lexical-only — no LLM metadata available)')}.`));
 }
 
-function cmdStatus(_flags, cfg) {
-  const s = statusReport(cfg);
+async function cmdStatus(_flags, cfg) {
+  const s = await callMemory('status', {}, cfg);
   console.log(`${heading('icarus')} ${c.dim(`v${ICARUS_VERSION}`)}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
   console.log(rule());
   console.log(`${c.dim(glyphs.accentBar)} HIVEMIND   ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}`);
@@ -889,18 +890,17 @@ function renderUpdateProgress({ received = 0, total = null, phase = 'downloading
   return `  ${c.running(spinnerFrame(tick))} [${bar}] ${c.fg(amount)}  ${c.system(label)}`;
 }
 
-function cmdCompact(flags, cfg) {
+async function cmdCompact(flags, cfg) {
   const org = flags.org || 'default';
-  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
-  const reclaimed = store.compact();
-  console.log(ok(`compacted ${c.path(org)}: reclaimed ${c.bold((reclaimed / 1e3).toFixed(1))} KB`));
+  const { reclaimedBytes } = await callMemory('compact', { org }, cfg);
+  console.log(ok(`compacted ${c.path(org)}: reclaimed ${c.bold((reclaimedBytes / 1e3).toFixed(1))} KB`));
 }
 
 // PQ (Product Quantization) is a real alternative to HNSW, not a universal upgrade — see
 // trainPq()'s doc comment in amr-store.mjs for the measured tradeoff (fast build always, fast
 // QUERY only at small/medium shard sizes). This command is what makes it reachable without
 // writing code — before this, train_pq/recall_pq only existed in the Rust crate.
-function cmdTrainPq(flags, cfg) {
+async function cmdTrainPq(flags, cfg) {
   const org = flags.org || 'default';
   const seed = Number(flags.seed || 42);
   // PQ trains a codebook on the shard's raw vectors — in lexical-only mode those are zero
@@ -909,13 +909,9 @@ function cmdTrainPq(flags, cfg) {
   if (!embeddingsConfigured(cfg)) {
     throw new Error('train-pq needs real vectors — no embedding provider configured. Run `icarus connect-embeddings` first, then re-ingest and train.');
   }
-  const store = getMnemeStore().open(cfg.dataRoot, org, cfg.dim);
-  const live = store.liveCount();
-  if (!live) throw new Error(`org "${org}" has no memories yet — nothing to train on`);
-  console.log(bullet(c.system(`training PQ codebook for "${c.path(org)}" ${c.dim(`(${live} live vectors, seed=${seed})`)}...`)));
-  const t0 = Date.now();
-  store.trainPq(seed);
-  console.log(ok(`trained in ${c.bold(((Date.now() - t0) / 1000).toFixed(1) + 's')} — try: ${c.command(`icarus recall "..." --org ${org} --pq`)}`));
+  console.log(bullet(c.system(`training PQ codebook for "${c.path(org)}" ${c.dim(`(seed=${seed})`)}...`)));
+  const result = await callMemory('train_pq', { org, seed }, cfg);
+  console.log(ok(`trained ${c.bold(result.liveVectors + ' vectors')} in ${c.bold(result.trainedInSeconds.toFixed(1) + 's')} — try: ${c.command(`icarus recall "..." --org ${org} --pq`)}`));
 }
 
 // Two real, separate bugs were caught building this:
@@ -1439,9 +1435,9 @@ async function main() {
       case 'ingest': await cmdIngest(flags, cfg); break;
       case 'recall': await cmdRecall(flags, cfg); break;
       case 'save': await cmdSave(flags, cfg); break;
-      case 'status': cmdStatus(flags, cfg); break;
-      case 'compact': cmdCompact(flags, cfg); break;
-      case 'train-pq': cmdTrainPq(flags, cfg); break;
+      case 'status': await cmdStatus(flags, cfg); break;
+      case 'compact': await cmdCompact(flags, cfg); break;
+      case 'train-pq': await cmdTrainPq(flags, cfg); break;
       case 'connect': await cmdConnect(flags, cfg); break;
       case 'connect-embeddings': await cmdConnectEmbeddings(flags, cfg); break;
       case 'connect-llm': await cmdConnectLlm(flags, cfg); break;

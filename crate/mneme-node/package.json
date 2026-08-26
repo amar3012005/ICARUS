@@ -16,6 +16,7 @@
     "mcp-serve.js",
     "mcp-install.js",
     "daemon.js",
+    "daemon-client.js",
     "graph.js",
     "graph-native.js",
     "*.node",

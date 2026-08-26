@@ -15,17 +15,79 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
-const { loadCfg, ingestDir, recallQuery, statusReport, openStore } = require('./cli-lib.js');
+const {
+  HOME, loadCfg, ingestDir, recallQuery, statusReport, openStore, saveLocalMemory,
+  saveStructuredMemory, getStructuredMemory, listStructuredMemories, updateStructuredMemory,
+  deleteStructuredMemory, traverseStructuredGraph, recallByTags, saveIntelligentMemory,
+  hivemindIngestDir,
+  richOrgStats,
+  deleteOrgShard,
+} = require('./cli-lib.js');
 
 const DEFAULT_PORT = Number(process.env.ICARUS_DAEMON_PORT || 8137);
 
 function paths(cfg) {
-  const dir = path.dirname(require('./cli-lib.js').CFG_PATH);
+  const dir = HOME;
   return {
     pidFile: path.join(dir, 'daemon.pid'),
     logFile: path.join(dir, 'daemon.log'),
     portFile: path.join(dir, 'daemon.port'),
   };
+}
+
+function daemonTokenPath() { return path.join(HOME, 'daemon.token'); }
+function daemonToken() {
+  try { return fs.readFileSync(daemonTokenPath(), 'utf8').trim(); } catch (_) { return ''; }
+}
+
+const writeTails = new Map();
+function serializeWrite(org, operation) {
+  const prior = writeTails.get(org) || Promise.resolve();
+  const next = prior.catch(() => {}).then(operation);
+  const tail = next.finally(() => {
+    if (writeTails.get(org) === tail) writeTails.delete(org);
+  });
+  writeTails.set(org, tail);
+  return next;
+}
+
+function opOrg(args) { return args.org || 'default'; }
+function isWriteOperation(operation) {
+  return new Set(['ingest', 'ingest_hivemind', 'save_raw', 'save_intelligent', 'save_structured', 'update_structured', 'delete_structured', 'delete_org', 'train_pq', 'compact']).has(operation);
+}
+
+async function executeMemoryOperation(operation, args = {}, cfg) {
+  const org = opOrg(args);
+  switch (operation) {
+    case 'status': return statusReport(cfg);
+    case 'rich_org_stats': return richOrgStats(org, cfg);
+    case 'delete_org': return deleteOrgShard(cfg, org);
+    case 'ingest': return ingestDir(args.dir, org, cfg);
+    case 'ingest_hivemind': return hivemindIngestDir(args.dir, org, cfg, undefined, args.options || {});
+    case 'recall': return recallQuery(args.query, org, cfg, args.topK || 5, !!args.usePq);
+    case 'save_raw': return saveLocalMemory(args.text, org, cfg, args.options || {});
+    case 'save_intelligent': return saveIntelligentMemory(args.text, org, cfg, args.options || {});
+    case 'save_structured': return saveStructuredMemory(args.content, org, cfg, args.options || {});
+    case 'get_structured': return getStructuredMemory(args.memory_id, org, cfg);
+    case 'list_structured': return listStructuredMemories(org, cfg, args.options || {});
+    case 'update_structured': return updateStructuredMemory(args.memory_id, args.patch || {}, org, cfg);
+    case 'delete_structured': return deleteStructuredMemory(args.memory_id, args.reason, org, cfg);
+    case 'traverse_structured': return traverseStructuredGraph(args.memory_id, org, cfg, args.options || {});
+    case 'recall_by_tags': return recallByTags(args.query, org, cfg, args.options || {});
+    case 'train_pq': {
+      const store = openStore(cfg, org);
+      const live = store.liveCount();
+      if (!live) throw new Error(`org "${org}" has no memories yet — nothing to train on`);
+      const t0 = Date.now();
+      store.trainPq(args.seed ?? 42);
+      return { org, liveVectors: live, trainedInSeconds: (Date.now() - t0) / 1000 };
+    }
+    case 'compact': {
+      const store = openStore(cfg, org);
+      return { org, reclaimedBytes: Number(store.compact()) || 0 };
+    }
+    default: throw new Error(`unsupported ICARUS daemon operation: ${operation}`);
+  }
 }
 
 function readPid(pidFile) {
@@ -57,6 +119,26 @@ function createServer(cfg) {
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
+      const expectedToken = daemonToken();
+      if (expectedToken && req.headers['x-icarus-daemon-token'] !== expectedToken) {
+        return send(res, 401, { error: 'unauthorized local ICARUS daemon client' });
+      }
+      if (req.method === 'GET' && url.pathname === '/health') {
+        return send(res, 200, { service: 'icarus-daemon', pid: process.pid });
+      }
+      if (req.method === 'POST' && url.pathname === '/shutdown') {
+        send(res, 200, { stopping: true });
+        setImmediate(() => process.kill(process.pid, 'SIGTERM'));
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/rpc') {
+        const { operation, args, cfg: requestCfg } = await readJsonBody(req);
+        if (!operation || typeof operation !== 'string') return send(res, 400, { error: 'operation is required' });
+        const activeCfg = requestCfg && typeof requestCfg === 'object' ? requestCfg : cfg;
+        const run = () => executeMemoryOperation(operation, args || {}, activeCfg);
+        const value = isWriteOperation(operation) ? await serializeWrite(opOrg(args || {}), run) : await run();
+        return send(res, 200, { value });
+      }
       if (req.method === 'GET' && url.pathname === '/status') {
         return send(res, 200, statusReport(cfg));
       }
@@ -111,8 +193,13 @@ function run(port) {
   server.listen(port, '127.0.0.1', () => {
     console.log(`icarus daemon listening on http://127.0.0.1:${port}`);
     fs.writeFileSync(p.portFile, String(port)); // only written on a CONFIRMED successful bind
+    fs.writeFileSync(p.pidFile, String(process.pid));
   });
-  const shutdown = () => { try { fs.unlinkSync(p.portFile); } catch (_) {} server.close(() => process.exit(0)); };
+  const shutdown = () => {
+    try { fs.unlinkSync(p.portFile); } catch (_) {}
+    try { fs.unlinkSync(p.pidFile); } catch (_) {}
+    server.close(() => process.exit(0));
+  };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }

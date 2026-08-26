@@ -4,7 +4,8 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,23 @@ async function stopChildren() {
     child.kill('SIGTERM');
   })));
   children.clear();
+}
+
+async function stopDaemonAt(home) {
+  const portFile = join(home, 'daemon.port');
+  const tokenFile = join(home, 'daemon.token');
+  if (!existsSync(portFile) || !existsSync(tokenFile)) return;
+  const port = Number(readFileSync(portFile, 'utf8').trim());
+  const token = readFileSync(tokenFile, 'utf8').trim();
+  if (!port || !token) return;
+  await new Promise((resolve) => {
+    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/shutdown', headers: { 'x-icarus-daemon-token': token } }, (response) => {
+      response.resume();
+      response.once('end', resolve);
+    });
+    request.once('error', resolve);
+    request.end();
+  });
 }
 
 afterEach(stopChildren);
@@ -139,7 +157,40 @@ test('native MCP round-trip persists local evidence and structured memory withou
   } finally {
     // Wait until the child closes the native shard before deleting only this test-owned tree.
     await stopChildren();
+    await stopDaemonAt(home);
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('two MCP sessions share one daemon-owned shard without a lock error', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-shared-daemon-'));
+  const home = join(root, 'home');
+  try {
+    const first = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const second = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    for (const [id, mcp] of [[1, first], [2, second]]) {
+      const initialized = await mcp.request(id, 'initialize', {
+        protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-shared-daemon', version: '1.0.0' },
+      });
+      assert.equal(initialized.result.serverInfo.name, 'icarus');
+      mcp.notify('notifications/initialized', {});
+    }
+
+    const saved = await tool(first, 3, 'icarus_save_memory', {
+      org: 'shared-daemon', title: 'Shared daemon memory',
+      content: 'A second coding-agent session can recall this committed memory without opening the shard directly.',
+      tags: ['daemon', 'concurrency'], source_type: 'decision',
+    });
+    assert.match(saved.id, /^[0-9a-f-]{36}$/i);
+
+    const recalled = await tool(second, 4, 'icarus_recall', {
+      org: 'shared-daemon', query: 'second coding agent session committed memory', topK: 5,
+    });
+    assert.ok(recalled.some((hit) => /second coding-agent session/i.test(hit.text)), JSON.stringify(recalled));
+  } finally {
+    await stopChildren();
+    await stopDaemonAt(home);
+    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
   }
 });
 
