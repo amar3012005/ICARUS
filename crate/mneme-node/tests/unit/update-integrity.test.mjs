@@ -59,6 +59,7 @@ test('Windows self-update handoff waits for exit, uses literal paths, and restor
   assert.match(script, /Wait-Process -Id \$ParentPid/);
   assert.match(script, /Move-Item -LiteralPath \$Target -Destination \$Previous -Force/);
   assert.match(script, /Move-Item -LiteralPath \$Candidate -Destination \$Target -Force/);
+  assert.match(script, /Start-Process -FilePath \$Target/);
   assert.match(script, /-not \(Test-Path -LiteralPath \$Target\)/);
   assert.match(script, /Remove-Item -LiteralPath \$Helper -Force/);
   assert.doesNotMatch(script, /Invoke-Expression|& \$Target/);

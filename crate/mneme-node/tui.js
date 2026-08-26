@@ -31,6 +31,7 @@
 // line instead of appending, so progress ticks still read as one evolving status line.
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { c, heading, ok, err, bullet, glyphs, rule, spinnerFrame } = require('./theme.js');
 const {
   loadCfg, saveCfg, ingestDir, recallQuery, statusReport, richOrgStats, signingEnabled, embeddingsConfigured,
@@ -759,6 +760,20 @@ function exitScreen() {
   realWrite(DISABLE_MOUSE + SHOW_CURSOR + EXIT_ALT);
 }
 
+/** Relaunch the just-replaced compiled executable on POSIX. A TUI must not ask a human to
+ * manually reconstruct a session after /update: the old process still owns the old inode, while
+ * process.execPath now names the verified replacement. */
+function restartUpdatedSession() {
+  const child = spawn(process.execPath, process.argv.slice(2), {
+    stdio: 'inherit',
+    env: process.env,
+    detached: true,
+  });
+  child.unref();
+  exitScreen();
+  process.exit(0);
+}
+
 async function run() {
   const cfg = loadCfg();
   const state = {
@@ -771,6 +786,15 @@ async function run() {
   out(state, m.faint(`◆ ${process.cwd().replace(process.env.HOME || '', '~')}`));
   out(state, '');
   out(state, m.faint('Type /help for the full command list.'));
+
+  // This is deliberately background-only: a release check must never delay a usable prompt or
+  // turn a temporary GitHub/network failure into terminal noise. It is a gentle discovery cue;
+  // /update remains the explicit action that downloads a signed release asset.
+  void checkForUpdate().then(({ latest, upToDate }) => {
+    if (upToDate !== false || !latest) return;
+    out(state, c.system(`  update available: ${c.dim(`v${ICARUS_VERSION}`)} → ${c.bold(latest)}  ${c.dim('run /update to install and restart')}`));
+    scheduleRedraw(state);
+  }).catch(() => {});
 
   process.on('exit', exitScreen);
   process.on('SIGINT', () => { exitScreen(); process.exit(0); });
@@ -1182,11 +1206,15 @@ async function dispatch(line, state, cfg) {
       else out(state, c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
       out(state, bullet(c.system('downloading and verifying the new binary...')));
       let progressTick = 0;
-      const update = await performSelfUpdate((progress) => writeProgressTick(state, `\r${tuiUpdateProgressLine(progress, c.running(spinnerFrame(progressTick++)))}`));
+      const update = await performSelfUpdate((progress) => writeProgressTick(state, `\r${tuiUpdateProgressLine(progress, c.running(spinnerFrame(progressTick++)))}`), { restartTui: true });
       out(state, ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).`));
-      out(state, c.dim(update.restartRequired
-        ? '  Windows will replace the binary after this session exits — /quit, then restart icarus.'
-        : '  this running session is still on the old build — /quit and restart icarus to use the new one.'));
+      if (update.restartRequired) {
+        out(state, c.dim('  Windows will replace the binary after this session exits, then relaunch ICARUS.'));
+        setTimeout(() => { exitScreen(); process.exit(0); }, 80);
+        break;
+      }
+      out(state, c.dim('  restarting ICARUS with the verified new build...'));
+      setTimeout(restartUpdatedSession, 80);
       break;
     }
     case 'setup': {

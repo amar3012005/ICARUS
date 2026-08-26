@@ -2266,7 +2266,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.76';
+const ICARUS_VERSION = '0.3.77';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2329,7 +2329,8 @@ function windowsUpdateHandoffScript() {
   [string]$Target,
   [string]$Candidate,
   [string]$Previous,
-  [string]$Helper
+  [string]$Helper,
+  [bool]$RestartTui
 )
 $ErrorActionPreference = 'Stop'
 try {
@@ -2340,6 +2341,7 @@ try {
     Move-Item -LiteralPath $Target -Destination $Previous -Force
   }
   Move-Item -LiteralPath $Candidate -Destination $Target -Force
+  if ($RestartTui) { Start-Process -FilePath $Target }
 } catch {
   if (-not (Test-Path -LiteralPath $Target) -and (Test-Path -LiteralPath $Previous)) {
     Move-Item -LiteralPath $Previous -Destination $Target -Force
@@ -2350,7 +2352,7 @@ try {
 }`;
 }
 
-function stageWindowsSelfUpdate(target, candidate) {
+function stageWindowsSelfUpdate(target, candidate, restartTui = false) {
   const { spawn } = require('child_process');
   const helper = `${target}.update-handoff.ps1`;
   const previous = `${target}.previous.exe`;
@@ -2361,14 +2363,14 @@ function stageWindowsSelfUpdate(target, candidate) {
   try {
     const child = spawn(powershell, [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
-      String(process.pid), target, candidate, previous, helper,
+      String(process.pid), target, candidate, previous, helper, String(Boolean(restartTui)),
     ], { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
   } catch (error) {
     try { fs.unlinkSync(helper); } catch (_) { /* preserve the verified candidate for manual recovery */ }
     throw new Error(`could not schedule the Windows update handoff (${error.message}) — kept your current install`);
   }
-  return { bytes: fs.statSync(candidate).size, restartRequired: true };
+  return { bytes: fs.statSync(candidate).size, restartRequired: true, restartScheduled: restartTui };
 }
 
 /** Self-update: download the latest release's binary for this platform, sanity-check it
@@ -2409,7 +2411,7 @@ async function readReleaseAsset(response, onProgress) {
   return Buffer.concat(chunks, received);
 }
 
-async function performSelfUpdate(onProgress) {
+async function performSelfUpdate(onProgress, { restartTui = false } = {}) {
   if (typeof Bun === 'undefined') {
     throw new Error('running from source (node mneme-cli.js), not the compiled binary — update via `git pull` in your ICARUS checkout instead');
   }
@@ -2435,7 +2437,7 @@ async function performSelfUpdate(onProgress) {
     fs.unlinkSync(tmp);
     throw new Error(`downloaded binary failed to run (${e.message}) — kept your current install`);
   }
-  if (process.platform === 'win32') return stageWindowsSelfUpdate(target, tmp);
+  if (process.platform === 'win32') return stageWindowsSelfUpdate(target, tmp, restartTui);
   fs.renameSync(tmp, target); // same filesystem (same dir) -> atomic; safe even while target is
   // the currently-executing binary — POSIX keeps the old inode open under this process until it
   // exits, exactly how rustup/gh/other self-updating CLIs replace themselves while running.
