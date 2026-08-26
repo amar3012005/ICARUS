@@ -281,6 +281,41 @@ ${STANDING_MARK_END}`;
 
 function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
 
+// A curl-installed ICARUS binary cannot rely on a repo-local document being present before a
+// coding agent opens its first project. Install the same concise operating skill in clients that
+// have a confirmed global skill directory. The project rule remains the source of repo-specific
+// org and harness instructions; this skill makes the behavior discoverable on every new machine.
+const GLOBAL_SKILL_NAME = 'icarus-agent-memory';
+function globalSkillPath(agent) {
+  if (agent === 'codex') return path.join(HOME, '.codex', 'skills', GLOBAL_SKILL_NAME, 'SKILL.md');
+  if (agent === 'claude') return path.join(HOME, '.claude', 'skills', GLOBAL_SKILL_NAME, 'SKILL.md');
+  return null; // Cursor's confirmed durable mechanism is its project .mdc rule.
+}
+function globalSkillBody(agent) {
+  return `---
+name: ${GLOBAL_SKILL_NAME}
+description: Bootstrap ICARUS and use its durable memory plus risk-based harness when building or modifying a repository.
+---
+
+# ICARUS Agent Memory
+
+At the start of a repository session, without asking the user, ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. Then run \`icarus harness init --agent ${agent} --repo .\`; it is idempotent. If registration changed, restart ${agent} before using MCP tools. Never hand-write \`.icarus\` state.
+
+Before non-trivial work, retrieve only targeted prior context with \`icarus_recall\`, \`icarus_recall_bugs\`, \`icarus_why_code\`, or \`icarus_graph_query\`. After a confirmed outcome, persist durable decisions, invariants, root causes, verified patches, refactors, code summaries, and meaningful test coverage. Do not save transcripts, routine progress, secrets, or speculation.
+
+Use full task governance only for production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work requiring an auditable cross-session handoff. For ordinary low-risk work, keep moving with targeted memory and normal repository inspection. Vector, reranker, graph, or harness outages must not block safe low-risk work or discard lexical local recall.`;
+}
+function installGlobalSkill(agent) {
+  const p = globalSkillPath(agent);
+  if (!p) return { installed: false, reason: 'no confirmed global skills directory', path: null };
+  const content = globalSkillBody(agent);
+  const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+  if (existing === content) return { installed: false, reason: 'already installed', path: p };
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content);
+  return { installed: true, reason: existing == null ? 'added' : 'updated', path: p };
+}
+
 // Generic marker-wrapped block writer/remover — the same idempotent-append, surgical-remove
 // pattern used for the global CLAUDE.md standing instructions, generalized so every per-project
 // instruction file (Claude Code's project CLAUDE.md, Codex's AGENTS.md, Cursor's .mdc rule) can
@@ -464,6 +499,8 @@ async function run(flags) {
       if (g.installed) console.log(`  ✓ standing instructions: added to ${g.path}`);
       else if (g.reason === 'already installed') console.log(`  · standing instructions: already in ${g.path}`);
     }
+    const skill = installGlobalSkill(agentArg);
+    if (skill.path) console.log(`  ${skill.installed ? '✓' : '·'} global ICARUS skill: ${skill.installed ? skill.reason : skill.reason} in ${skill.path}`);
     const p = project(process.cwd());
     if (p.installed) console.log(`  ✓ project instructions: ${p.reason === 'updated' ? 'updated' : 'added to'} ${p.path} (org: "${p.orgName}")`);
     else if (p.reason === 'already installed') console.log(`  · project instructions: already in ${p.path} (org: "${p.orgName}")`);
@@ -512,6 +549,15 @@ async function run(flags) {
   } else if (std.reason === 'already installed') {
     console.log(`  · standing instructions: already in ${std.path}`);
   }
+  for (const agent of ['codex', 'claude']) {
+    const skill = installGlobalSkill(agent);
+    if (skill.installed) {
+      any = true;
+      console.log(`  ✓ ${agent} global ICARUS skill: ${skill.reason} in ${skill.path}`);
+    } else if (skill.path) {
+      console.log(`  · ${agent} global ICARUS skill: ${skill.reason} in ${skill.path}`);
+    }
+  }
   if (any) {
     console.log('\nRestart the agent(s) above to pick up the new MCP server.');
   } else {
@@ -528,6 +574,7 @@ module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
   detectRemovable, removeAll, detectHook, installHook, removeHook,
   detectStandingInstructions, installStandingInstructions, removeStandingInstructions,
+  globalSkillPath, globalSkillBody, installGlobalSkill,
   AGENT_INSTALLERS, repoOrgName,
   installProjectClaude, installProjectAgents, installProjectCursor,
   detectProjectClaude, detectProjectAgents, detectProjectCursor,

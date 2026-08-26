@@ -78,6 +78,17 @@ test('the project block makes bootstrap and durable memory use explicit without 
   });
 });
 
+test('global agent skills contain self-bootstrap and risk-based memory guidance', () => {
+  for (const agent of ['codex', 'claude']) {
+    const text = mi.globalSkillBody(agent);
+    assert.ok(text.includes(`icarus mcp install ${agent}`));
+    assert.ok(text.includes(`icarus harness init --agent ${agent} --repo .`));
+    assert.ok(text.includes('icarus_recall_bugs'));
+    assert.ok(text.includes('Use full task governance only for'));
+  }
+  assert.equal(mi.globalSkillPath('cursor'), null, 'do not invent a Cursor global skill location');
+});
+
 test('installProjectClaude PRESERVES pre-existing user content', () => {
   withRepo((repo) => {
     const original = '# My Project\n\nHand-written rules that must survive.\n';
