@@ -339,14 +339,14 @@ function removeStandingInstructions() { return removeMarkedBlock(globalClaudeMdP
 // .cursor/rules/*.mdc — YAML-frontmattered rule files, `alwaysApply: true` making one load on
 // every request the same way CLAUDE.md/AGENTS.md do.
 
-function projectBlockBody(orgName) {
+function projectBlockBody(orgName, agentName) {
   return `## ICARUS memory (this project)
 
 This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.
 
 ### Mandatory first-session bootstrap
 
-At the beginning of **every new agent session**, check for \`.icarus/manifest.yaml\`. If it is absent, call \`icarus_harness_init\` with this repository root (or run \`icarus harness init --repo <repo-root>\`) exactly once. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
+At the beginning of **every new agent session**, check for \`.icarus/manifest.yaml\` and bootstrap ICARUS without asking the user: ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable, then run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`). Both are idempotent. If MCP registration changes, restart ${agentName} before relying on the new tools. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
 
 ### Risk-based operating policy
 
@@ -393,19 +393,19 @@ function projectCursorRulePath(repo) { return path.join(repo || process.cwd(), '
 
 function installProjectClaude(repo) {
   const orgName = repoOrgName(repo);
-  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'claude')}\n${PROJECT_MARK_END}`;
   return { agent: 'claude-code (project)', orgName, ...writeMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
 function installProjectAgents(repo) {
   const orgName = repoOrgName(repo);
-  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'codex')}\n${PROJECT_MARK_END}`;
   return { agent: 'codex (AGENTS.md)', orgName, ...writeMarkedBlock(projectAgentsMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
 function installProjectCursor(repo) {
   const orgName = repoOrgName(repo);
   // .mdc frontmatter: alwaysApply makes Cursor load this rule on every request, the same "always
   // present, no opt-in needed" behavior CLAUDE.md/AGENTS.md get for free.
-  const block = `${PROJECT_MARK_START}\n---\ndescription: ICARUS memory — this project's org\nalwaysApply: true\n---\n\n${projectBlockBody(orgName)}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n---\ndescription: ICARUS memory — this project's org\nalwaysApply: true\n---\n\n${projectBlockBody(orgName, 'cursor')}\n${PROJECT_MARK_END}`;
   return { agent: 'cursor (.mdc rule)', orgName, ...writeMarkedBlock(projectCursorRulePath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
 function detectProjectClaude(repo) { return detectMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START); }
@@ -478,6 +478,12 @@ async function run(flags) {
       console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (added .icarus/data/ to .gitignore)`);
     } catch (e) {
       console.log(`  · shard creation skipped: ${e.message}`);
+    }
+    try {
+      const harness = require('./harness.js').initHarness(process.cwd(), { agents: [agentArg] });
+      console.log(`  ✓ harness ${harness.created ? 'initialized' : 'already initialized'} (${harness.repository_id || 'repository ready'})`);
+    } catch (e) {
+      console.log(`  · harness initialization skipped: ${e.message}`);
     }
     console.log(`\nRestart ${agentArg} to pick up the MCP server. This project's icarus org is "${p.orgName}" — pass org: "${p.orgName}" on tool calls here.`);
     printToolSummary();

@@ -55,6 +55,8 @@ test('the project block makes bootstrap and durable memory use explicit without 
     mi.installProjectAgents(repo);
     const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
     assert.ok(text.includes('every new agent session'));
+    assert.ok(text.includes('icarus mcp install codex'));
+    assert.ok(text.includes('icarus harness init --agent codex --repo .'));
     assert.ok(text.includes('.icarus/manifest.yaml'));
     assert.ok(text.includes('icarus_harness_init'));
     assert.ok(text.includes('Treat an initialization failure as a blocker'));
