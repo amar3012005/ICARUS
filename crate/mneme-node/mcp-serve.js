@@ -894,11 +894,14 @@ async function run() {
     'icarus_graph_build',
     {
       title: 'Build the native symbol/call graph for a codebase',
-      description: 'Call once per codebase before using icarus_graph_query -- Tree-sitter parse (JS/TS + Rust) into a local symbol/call-graph SQLite index at <repo>/.icarus-graph/graph.db. Full rebuild each call -- run again after significant changes. Native, no Python/uvx dependency.',
-      inputSchema: { repo: z.string().describe('Absolute path to the codebase root') },
+      description: 'Optional structural accelerator for an explicitly requested code-graph lookup or after a major refactor. Never make graph construction a prerequisite for investigation, planning, or an ordinary fix: if no graph exists, inspect the relevant repository files directly. ICARUS stops a default build within 45 seconds without writing a partial graph; it is safe to continue without one.',
+      inputSchema: {
+        repo: z.string().describe('Absolute path to the codebase root or a narrower source directory'),
+        timeout_ms: z.number().int().min(1).max(120_000).default(45_000).describe('Bounded graph-build budget; default 45 seconds, never an unbounded background wait'),
+      },
     },
-    async ({ repo }) => {
-      try { return textResult(await require('./graph-native.js').buildAndStore(repo)); } catch (e) { return errorResult(e); }
+    async ({ repo, timeout_ms }) => {
+      try { return textResult(await require('./graph-native.js').buildAndStore(repo, null, { timeoutMs: timeout_ms })); } catch (e) { return errorResult(e); }
     },
   );
 
@@ -906,11 +909,11 @@ async function run() {
     'icarus_graph_status',
     {
       title: 'Graph build status for a codebase',
-      description: 'Check before icarus_graph_query if unsure whether icarus_graph_build has run for this repo yet. Node/edge/file counts and last-build time. Returns null if never built.',
+      description: 'Fast metadata check for an already-built optional graph. Do not call it ritualistically before normal repository work. It reports whether a stored index exists; if it does not, use targeted repository inspection rather than automatically building one.',
       inputSchema: { repo: z.string().describe('Absolute path to the codebase root') },
     },
     async ({ repo }) => {
-      try { return textResult(await require('./graph-native.js').status(repo)); } catch (e) { return errorResult(e); }
+      try { return textResult(await require('./graph-native.js').status(repo, { verifyFreshness: false })); } catch (e) { return errorResult(e); }
     },
   );
 
@@ -918,7 +921,7 @@ async function run() {
     'icarus_graph_query',
     {
       title: 'Query the symbol/call graph',
-      description: 'Use when the user asks "who calls X", "what does X import", or "where is X defined" in a codebase icarus_graph_build has already indexed. callers_of/callees_of: who calls, or is called by, a function (bare name match). imports_of: which files import a given module. find: locate a symbol by name across the codebase.',
+      description: 'Use for “who calls X”, “what imports X”, or “where is X defined” only when a graph is already available. If it is unavailable or stale, use targeted repository inspection; do not wait for graph construction during an ordinary task.',
       inputSchema: {
         repo: z.string().describe('Absolute path to the codebase root'),
         kind: z.enum(['callers_of', 'callees_of', 'imports_of', 'find']),

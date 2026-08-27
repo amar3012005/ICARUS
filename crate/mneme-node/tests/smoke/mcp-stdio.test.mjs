@@ -125,7 +125,9 @@ test('MCP graph build returns a result and keeps the transport live', async () =
     assert.equal(JSON.parse(built.result.content[0].text).files, 1);
     const status = await mcp.request(3, 'tools/call', { name: 'icarus_graph_status', arguments: { repo } });
     assert.equal(status.result.isError, undefined, JSON.stringify(status.result));
-    assert.equal(JSON.parse(status.result.content[0].text).current, true);
+    const graphStatus = JSON.parse(status.result.content[0].text);
+    assert.equal(graphStatus.current, null, 'MCP status must stay metadata-only and avoid re-fingerprinting the repository');
+    assert.equal(graphStatus.freshness, 'not_checked');
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

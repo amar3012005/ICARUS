@@ -69,7 +69,14 @@ function walkFiles(dir) {
   // Nested worktrees are agent execution state, not part of the repository being indexed. In
   // particular, Claude stores copies below `.claude/worktrees`; including them duplicates every
   // symbol and makes a repository's graph depend on whatever sessions happen to be open.
-  const skip = new Set(['node_modules', '.git', 'target', '.icarus-graph', '.claude', 'dist', 'build']);
+  // These directories either contain generated/vendor output or a second checkout. None is
+  // source ICARUS can faithfully model, and walking them turns an optional lookup index into a
+  // multi-minute surprise on ordinary application repositories.
+  const skip = new Set([
+    'node_modules', '.git', 'target', '.icarus', '.icarus-graph', '.claude',
+    'dist', 'build', '.next', '.nuxt', '.turbo', '.cache', 'coverage',
+    'vendor', 'Pods', 'DerivedData', '.venv', 'venv', '__pycache__',
+  ]);
   (function rec(d) {
     let entries;
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
@@ -81,6 +88,39 @@ function walkFiles(dir) {
     }
   })(dir);
   return out;
+}
+
+const DEFAULT_GRAPH_MAX_FILES = 2_000;
+const DEFAULT_GRAPH_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_GRAPH_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_GRAPH_TIMEOUT_MS = 45_000;
+
+function graphBudget(repoDir, files, options = {}) {
+  const maxFiles = options.maxFiles ?? DEFAULT_GRAPH_MAX_FILES;
+  const maxSourceBytes = options.maxSourceBytes ?? DEFAULT_GRAPH_MAX_SOURCE_BYTES;
+  const maxFileBytes = options.maxFileBytes ?? DEFAULT_GRAPH_MAX_FILE_BYTES;
+  if (files.length > maxFiles) {
+    throw new Error(`graph build skipped: ${files.length} supported files exceed the ${maxFiles}-file safety limit. Use targeted repository search now, or build a smaller source directory explicitly.`);
+  }
+  let sourceBytes = 0;
+  for (const file of files) {
+    let bytes = 0;
+    try { bytes = fs.statSync(file).size; } catch (_) { continue; }
+    if (bytes > maxFileBytes) {
+      throw new Error(`graph build skipped: ${path.relative(repoDir, file)} is ${(bytes / 1024 / 1024).toFixed(1)} MB, above the ${(maxFileBytes / 1024 / 1024).toFixed(1)} MB per-file safety limit. Use targeted repository search now.`);
+    }
+    sourceBytes += bytes;
+    if (sourceBytes > maxSourceBytes) {
+      throw new Error(`graph build skipped: supported source exceeds the ${(maxSourceBytes / 1024 / 1024).toFixed(0)} MB safety limit. Use targeted repository search now, or build a smaller source directory explicitly.`);
+    }
+  }
+  return { files: files.length, sourceBytes };
+}
+
+function assertBeforeDeadline(deadlineAt, timeoutMs = DEFAULT_GRAPH_TIMEOUT_MS) {
+  if (deadlineAt && Date.now() > deadlineAt) {
+    throw new Error(`graph build timed out within its ${(timeoutMs / 1000).toFixed(timeoutMs % 1000 === 0 ? 0 : 1)}s safety budget. ICARUS did not write a partial graph; continue with targeted repository search, or rerun graph build with a narrower source directory.`);
+  }
 }
 
 // A graph is current only for the exact supported-source file set it was built from. Metadata
@@ -288,9 +328,12 @@ function extractRust(tree, relPath) {
   return { nodes, calls, imports };
 }
 
-async function build(repoDir, onProgress = null) {
+async function build(repoDir, onProgress = null, options = {}) {
   const Parser = await getParser();
   const files = walkFiles(repoDir);
+  const deadlineAt = options.deadlineAt;
+  graphBudget(repoDir, files, options);
+  assertBeforeDeadline(deadlineAt, options.timeoutMs);
   onProgress?.({ stage: 'parsing', completed: 0, total: files.length });
   const allNodes = [];
   const allCalls = []; // {calleeName, line, enclosingQualified, filePath}
@@ -299,6 +342,7 @@ async function build(repoDir, onProgress = null) {
 
   let lastProgressAt = Date.now();
   for (const [index, abs] of files.entries()) {
+    assertBeforeDeadline(deadlineAt, options.timeoutMs);
     const rel = path.relative(repoDir, abs);
     const lang = EXT_TO_LANG[path.extname(abs)];
     if (!parsersByLang[lang]) {
@@ -329,11 +373,13 @@ async function build(repoDir, onProgress = null) {
   onProgress?.({ stage: 'resolving', completed: files.length, total: files.length });
   const byName = new Map();
   for (const n of allNodes) {
+    assertBeforeDeadline(deadlineAt, options.timeoutMs);
     if (!byName.has(n.name)) byName.set(n.name, []);
     byName.get(n.name).push(n.qualifiedName);
   }
   const edges = [];
   for (const c of allCalls) {
+    assertBeforeDeadline(deadlineAt, options.timeoutMs);
     const targets = byName.get(c.calleeName);
     if (!targets) continue; // not a locally-defined symbol (external lib call, builtin, etc.) — no edge, not an error
     for (const t of targets) {
@@ -426,15 +472,23 @@ function run(db, sql, params = []) {
   stmt.free();
 }
 
-async function buildAndStore(repoDir, onProgress = null) {
+async function buildAndStore(repoDir, onProgress = null, options = {}) {
   let stage = 'fingerprinting supported source';
   try {
+  const files = walkFiles(repoDir);
+  graphBudget(repoDir, files, options);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GRAPH_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+    throw new Error('graph build timeout_ms must be an integer between 1 and 120000');
+  }
+  const deadlineAt = Date.now() + timeoutMs;
   // Rust verifies graph receipts and owns the supported-source fingerprint contract. Asking it
   // for the build fingerprint prevents a second traversal/sort implementation from drifting.
   const fingerprint = authoritativeSourceFingerprint(repoDir);
+  assertBeforeDeadline(deadlineAt, timeoutMs);
   onProgress?.({ stage, completed: 0, total: null });
   stage = 'parsing supported files';
-  const result = await build(repoDir, onProgress);
+  const result = await build(repoDir, onProgress, { ...options, deadlineAt });
   stage = 'opening graph database';
   onProgress?.({ stage, completed: result.files, total: result.files });
   const db = await openDb(repoDir);
@@ -443,10 +497,12 @@ async function buildAndStore(repoDir, onProgress = null) {
   db.run('BEGIN;');
   db.run('DELETE FROM nodes; DELETE FROM edges;'); // full rebuild for v1 — no incremental update yet
   for (const n of result.nodes) {
+    assertBeforeDeadline(deadlineAt, timeoutMs);
     run(db, 'INSERT INTO nodes (kind,name,qualified_name,file_path,start_line,end_line,language) VALUES (?,?,?,?,?,?,?)',
       [n.kind, n.name, n.qualifiedName, n.filePath, n.startLine, n.endLine, n.language]);
   }
   for (const e of result.edges) {
+    assertBeforeDeadline(deadlineAt, timeoutMs);
     run(db, 'INSERT INTO edges (kind,source_qualified,target_qualified,file_path,line) VALUES (?,?,?,?,?)',
       [e.kind, e.sourceQualified, e.targetQualified, e.filePath, e.line]);
   }
@@ -470,7 +526,7 @@ async function buildAndStore(repoDir, onProgress = null) {
   }
 }
 
-async function status(repoDir) {
+async function status(repoDir, { verifyFreshness = true } = {}) {
   if (!fs.existsSync(dbPath(repoDir))) return null;
   const db = await openDb(repoDir);
   const nodes = queryAll(db, 'SELECT COUNT(*) c FROM nodes')[0].c;
@@ -480,8 +536,23 @@ async function status(repoDir) {
   const lastUpdated = queryAll(db, "SELECT value FROM metadata WHERE key='last_updated'")[0];
   const buildFingerprint = queryAll(db, "SELECT value FROM metadata WHERE key='source_fingerprint'")[0];
   db.close();
+  // A source fingerprint reads every supported file. MCP agents often call status merely to
+  // discover whether an optional graph exists, so make that path metadata-only by default at
+  // the transport boundary. The CLI keeps the explicit, exact freshness check below.
+  if (!verifyFreshness) {
+    return {
+      nodes, edges, files, languages, lastUpdated: lastUpdated?.value,
+      buildFingerprint: buildFingerprint?.value, currentFingerprint: null,
+      current: null, freshness: 'not_checked',
+    };
+  }
   const currentFingerprint = authoritativeSourceFingerprint(repoDir);
-  return { nodes, edges, files, languages, lastUpdated: lastUpdated?.value, buildFingerprint: buildFingerprint?.value, currentFingerprint, current: buildFingerprint?.value === currentFingerprint };
+  return {
+    nodes, edges, files, languages, lastUpdated: lastUpdated?.value,
+    buildFingerprint: buildFingerprint?.value, currentFingerprint,
+    current: buildFingerprint?.value === currentFingerprint,
+    freshness: buildFingerprint?.value === currentFingerprint ? 'current' : 'stale',
+  };
 }
 
 // query kinds: callers_of, callees_of, imports_of, find (by bare name)

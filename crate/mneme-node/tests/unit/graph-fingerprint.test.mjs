@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -45,5 +45,19 @@ test('graph build reports parse progress and wraps failures with the current sta
       buildAndStore(invalidTarget),
       /graph build failed during opening graph database for .*not-a-directory/,
     );
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('graph build refuses oversized source sets before parsing or writing a database', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'icarus-graph-budget-'));
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      writeFileSync(join(repo, `file-${index}.js`), `export const value${index} = ${index};\n`);
+    }
+    await assert.rejects(
+      buildAndStore(repo, null, { maxFiles: 2 }),
+      /3 supported files exceed the 2-file safety limit/,
+    );
+    assert.equal(existsSync(join(repo, '.icarus-graph', 'graph.db')), false, 'budget refusal must not leave a partial graph');
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
