@@ -9,6 +9,12 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Persistent shell command discovery:** first install now writes one managed, idempotent PATH
+  block to POSIX login, interactive Bash, and Zsh startup files (plus any existing Bash login
+  file), regardless of the installer child process's temporary PATH. `icarus prune` removes the
+  same blocks without touching unrelated shell configuration. The installer now explains the
+  unavoidable parent-shell boundary while guaranteeing that every newly opened terminal resolves
+  `icarus` normally.
 - **Offline-first embedding and rerank fallback:** local ingestion now persists every evidence
   chunk as BM25-searchable lexical data if a configured embedding provider is unavailable, and
   opens a per-ingest circuit after the first failure instead of waiting again for every batch.

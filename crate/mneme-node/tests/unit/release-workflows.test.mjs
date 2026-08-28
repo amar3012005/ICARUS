@@ -141,3 +141,11 @@ test('REGRESSION: installer preserves a rollback binary and recovers an interrup
   assert.match(installer, /could not commit the new CLI — restoring the previous install/);
   assert.ok(installer.indexOf('commit_verified_binary "$BIN_DIR/icarus.tmp"') > installer.indexOf('downloaded binary failed SHA-256 verification'));
 });
+
+test('REGRESSION: installer persists its command path independently of the child shell PATH', () => {
+  const installer = readFileSync(join(ROOT, 'install.sh'), 'utf8');
+  assert.match(installer, /ICARUS command path configured for new Bash, Zsh, and POSIX-shell terminals/);
+  assert.match(installer, /\$HOME\/\.profile.*\$HOME\/\.bashrc.*\$HOME\/\.zshrc/s);
+  assert.match(installer, /# >>> ICARUS PATH >>>/);
+  assert.match(installer, /This installer cannot change the shell that launched it/);
+});

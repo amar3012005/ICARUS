@@ -1323,9 +1323,25 @@ async function cmdHookSessionEnd(_flags, cfg) {
 function pathLine() {
   return `export PATH="${path.join(HOME, 'bin')}:$PATH"`;
 }
+const PATH_MARKER_START = '# >>> ICARUS PATH >>>';
+const PATH_MARKER_END = '# <<< ICARUS PATH <<<';
 function shellRcFiles() {
   const h = os.homedir();
-  return [path.join(h, '.zshrc'), path.join(h, '.bashrc'), path.join(h, '.profile')].filter((p) => fs.existsSync(p));
+  return [
+    path.join(h, '.zshrc'), path.join(h, '.bashrc'), path.join(h, '.profile'),
+    path.join(h, '.bash_profile'), path.join(h, '.bash_login'),
+  ].filter((p) => fs.existsSync(p));
+}
+function removeIcarusPathBlock(content, line) {
+  const lines = content.split('\n');
+  const kept = [];
+  let inside = false;
+  for (const current of lines) {
+    if (current === PATH_MARKER_START) { inside = true; continue; }
+    if (inside && current === PATH_MARKER_END) { inside = false; continue; }
+    if (!inside && current.trim() !== line) kept.push(current);
+  }
+  return kept.join('\n');
 }
 
 function dirSizeMb(dir) {
@@ -1349,7 +1365,10 @@ async function cmdPrune(flags, _cfg) {
   const { detectRemovable, removeAll } = require('./mcp-install.js');
   const icarusExists = fs.existsSync(HOME);
   const line = pathLine();
-  const rcHits = shellRcFiles().filter((rc) => fs.readFileSync(rc, 'utf8').includes(line));
+  const rcHits = shellRcFiles().filter((rc) => {
+    const content = fs.readFileSync(rc, 'utf8');
+    return content.includes(line) || content.includes(PATH_MARKER_START);
+  });
   const mcpHits = detectRemovable().filter((r) => r.found);
 
   console.log(`${heading('icarus prune')} — this will remove:\n`);
@@ -1373,7 +1392,7 @@ async function cmdPrune(flags, _cfg) {
   for (const r of removed) if (r.removed) console.log(ok(`removed icarus MCP registration from ${c.path(r.path)}`));
   for (const rc of rcHits) {
     const content = fs.readFileSync(rc, 'utf8');
-    fs.writeFileSync(rc, content.split('\n').filter((l) => l.trim() !== line).join('\n'));
+    fs.writeFileSync(rc, removeIcarusPathBlock(content, line));
     console.log(ok(`removed PATH line from ${c.path(rc)}`));
   }
   if (icarusExists) {

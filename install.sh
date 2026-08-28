@@ -334,25 +334,57 @@ EOF
 }
 
 ensure_path() {
-  # `curl | bash` always runs THIS script under bash, regardless of the user's actual login
-  # shell — so checking $BASH_VERSION here checks the wrong thing and picks .bashrc even for a
-  # zsh user (the macOS default since Catalina), leaving `icarus` silently unreachable after a
-  # "successful" install. $SHELL is the user's configured login shell, inherited from the
-  # parent process that ran this pipe — check THAT instead.
+  # The installer always runs in a child shell (especially under `curl | bash`), so its current
+  # $PATH tells us nothing about the user's *next* terminal.  The old "only modify the rc file
+  # for $SHELL when BIN_DIR is absent right now" check was therefore wrong in two ways: a child
+  # process could suppress persistent setup, and Bash login shells, interactive Bash, Zsh, and
+  # POSIX shells did not all receive the command path.  Install an idempotent managed block in
+  # every normal shell entry point instead.  Do not create .bash_profile: creating it changes
+  # Bash's startup precedence and can prevent an existing .profile from being read.
+  local line="export PATH=\"$BIN_DIR:\$PATH\""
   local rc
-  case "$(basename "${SHELL:-}")" in
-    zsh) rc="$HOME/.zshrc" ;;
-    bash) rc="$HOME/.bashrc" ;;
-    *) rc="$HOME/.profile" ;;
-  esac
-  if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    if [ -w "$rc" ] || [ ! -e "$rc" ]; then
-      echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$rc"
-      warn "Added $BIN_DIR to PATH in $rc — run: source $rc"
-    else
-      warn "Add to PATH manually: export PATH=\"$BIN_DIR:\$PATH\""
+  local -a rcs=("$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc")
+  [ -e "$HOME/.bash_profile" ] && rcs+=("$HOME/.bash_profile")
+  [ -e "$HOME/.bash_login" ] && rcs+=("$HOME/.bash_login")
+
+  for rc in "${rcs[@]}"; do
+    if ! install_path_block "$rc" "$line"; then
+      warn "Could not persist ICARUS PATH in $rc — add manually: $line"
     fi
+  done
+
+  # Updating this process makes every remaining installer command use the normal command name.
+  # A child cannot mutate its parent shell, so make the one-command recovery explicit while the
+  # persistent setup guarantees that all subsequently opened terminals work without it.
+  case ":$PATH:" in *":$BIN_DIR:"*) ;; *) export PATH="$BIN_DIR:$PATH" ;; esac
+  hash -r 2>/dev/null || true
+  ok "ICARUS command path configured for new Bash, Zsh, and POSIX-shell terminals"
+  dim "    This installer cannot change the shell that launched it; use it here now with: export PATH=\"$BIN_DIR:\$PATH\""
+}
+
+install_path_block() {
+  local rc="$1" line="$2" tmp
+  local start='# >>> ICARUS PATH >>>' end='# <<< ICARUS PATH <<<'
+  if [ -e "$rc" ] && [ ! -w "$rc" ]; then return 1; fi
+  mkdir -p "$(dirname "$rc")" || return 1
+  [ -e "$rc" ] || : > "$rc" || return 1
+  tmp="$rc.icarus-path.$$"
+  # Remove our previous marked block and the old one-line installer form, then append exactly
+  # one current block.  A malformed block is left untouched rather than risking loss of a user
+  # startup file.
+  if ! awk -v start="$start" -v end="$end" -v legacy="$line" '
+    $0 == start { if (inside) exit 2; inside = 1; next }
+    inside && $0 == end { inside = 0; next }
+    !inside && $0 != legacy { print }
+    END { if (inside) exit 3 }
+  ' "$rc" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
   fi
+  {
+    printf '\n%s\n%s\n%s\n' "$start" "$line" "$end"
+  } >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$rc"
 }
 
 # `curl -fsSL ... | bash` makes bash's OWN stdin the pipe FROM curl, not the user's keyboard —
