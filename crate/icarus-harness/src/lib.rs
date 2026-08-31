@@ -6555,6 +6555,9 @@ impl ContextItem {
 
     /// Rendered context can be canonically compacted, but its provenance must remain tied to the
     /// original immutable snapshot rather than to that presentation format.
+    // Each parameter maps directly to a serialized, audited context field. Keeping this
+    // constructor explicit prevents provenance fields from being silently omitted at call sites.
+    #[allow(clippy::too_many_arguments)]
     fn with_source_digest(
         kind: impl Into<String>,
         source: impl Into<String>,
