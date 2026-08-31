@@ -7,6 +7,8 @@ ICARUS has two independent roles:
 
 Do not make normal development wait on the harness. A coding agent should use the memory engine on every non-trivial project as a small retrieval-and-save loop.
 
+The intended experience is similar to managed agent-memory systems: durable facts, events, instructions, and explicit task state can survive the chat that created them, while an agent retrieves only the small slice relevant to its next action. ICARUS does this locally by default; it does **not** need an LLM, embedding API key, or remote reranker to save and recall project knowledge.
+
 ## One-time repository setup
 
 From the repository root:
@@ -50,6 +52,20 @@ Save facts that would be expensive, risky, or ambiguous to rediscover:
 
 Never save secrets, credentials, raw customer data, routine command output, or every conversational turn.
 
+### Make memory type explicit
+
+Add one of these tags to a durable record so later agents understand how long it should govern their work:
+
+| Tag | Meaning | Examples |
+|---|---|---|
+| `memory:fact` | Current verified state | supported runtime, data ownership, known endpoint behavior |
+| `memory:decision` | A choice and its rationale | database boundary, rejected alternative, compatibility rule |
+| `memory:instruction` | A standing project rule | release order, required canary, privacy constraint |
+| `memory:event` | A completed significant event | incident, release, migration, customer-impacting regression |
+| `memory:task` | Short-lived state that must survive a handoff | an active investigation's evidence and next safe step |
+
+Do not use `memory:task` as a second transcript store. Delete or supersede it once the task closes; facts and decisions should be the durable source of truth.
+
 ## What to recall
 
 Retrieve before planning or changing a subsystem when prior knowledge might matter:
@@ -77,7 +93,7 @@ optional dense vectors       → used when embeddings are reachable
 optional reranking           → used when the reranker is reachable
 ```
 
-If remote embedding or reranking is unavailable, ICARUS still stores evidence locally and returns local lexical results. These optional services must never produce a user-facing recall failure or repeatedly delay an ingest/recall operation.
+If remote embedding or reranking is unavailable, ICARUS still stores evidence locally and returns local lexical results. These optional services must never produce a user-facing recall failure or repeatedly delay an ingest/recall operation. This makes the memory engine safe to bootstrap before an organization has selected any model provider.
 
 Run `icarus compact --org <repo-org>` after meaningful deletion or cleanup; it reclaims obsolete shard bytes without changing active knowledge.
 

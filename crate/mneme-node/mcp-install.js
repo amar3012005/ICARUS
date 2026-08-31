@@ -301,6 +301,8 @@ description: Bootstrap ICARUS and use its durable memory plus risk-based harness
 
 At the start of a repository session, without asking the user, ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. Then run \`icarus harness init --agent ${agent} --repo .\`; it is idempotent. If registration changed, restart ${agent} before using MCP tools. Never hand-write \`.icarus\` state.
 
+ICARUS is primarily the repository's persistent memory filesystem, not a task gate. It needs no LLM key, embedding key, or remote service to save and retrieve local durable knowledge: local lexical recall remains the baseline, while vectors and reranking are optional quality improvements. Treat facts, decisions, instructions, and meaningful events as distinct memory types through precise tags such as \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, and \`memory:event\`. Keep temporary task state short-lived unless it matters to a later session.
+
 Before non-trivial work, retrieve only targeted prior context with \`icarus_recall\`, \`icarus_recall_bugs\`, \`icarus_why_code\`, or \`icarus_graph_query\`. After a confirmed outcome, persist durable decisions, invariants, root causes, verified patches, refactors, code summaries, and meaningful test coverage. Do not save transcripts, routine progress, secrets, or speculation.
 
 Use full task governance only for production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work requiring an auditable cross-session handoff. For ordinary low-risk work, keep moving with targeted memory and normal repository inspection. Vector, reranker, graph, or harness outages must not block safe low-risk work or discard lexical local recall.`;
@@ -389,11 +391,11 @@ Use the relevant ICARUS and available HIVEMIND MCP tools deliberately; **do not 
 
 ### Default memory-engine loop
 
-ICARUS's default job in this repository is a lightweight, durable memory filesystem — **not** a task gate. Use it to avoid re-reading large repositories and losing important reasoning between sessions:
+ICARUS's default job in this repository is a lightweight, durable memory filesystem — **not** a task gate. It works without an LLM, embedding key, or reachable remote provider: local lexical recall is the baseline; vectors and reranking only improve ranking when available. Use it to avoid re-reading large repositories and losing important reasoning between sessions:
 
 1. Before a non-trivial change, call targeted \`icarus_recall\`, \`icarus_recall_bugs\`, \`icarus_why_code\`, or \`icarus_graph_query\` for the decision, subsystem, bug, or symbol actually in scope.
 2. Keep only the returned, task-relevant evidence in working context. Do not paste whole documents, previous transcripts, or broad repository dumps into the context window.
-3. After a confirmed outcome, save durable knowledge: decisions, invariants, root causes, non-obvious patches, verification facts, and safe handoff notes.
+3. After a confirmed outcome, save durable knowledge: decisions, invariants, root causes, non-obvious patches, verification facts, and safe handoff notes. Tag the record precisely: \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, or \`memory:event\`; reserve \`memory:task\` for time-bounded state that must survive a handoff.
 4. On a later session or resumed task, recall the saved material instead of reconstructing it from scratch. Use \`icarus_compact\` occasionally after substantial deletion or cleanup.
 
 Remote embeddings and reranking improve recall quality when available, but local lexical evidence remains usable when they are unavailable. Do not treat a vector, reranker, graph, or harness outage as a reason to discard local evidence or block safe low-risk work.

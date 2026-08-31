@@ -74,6 +74,12 @@ test('the project block makes bootstrap and durable memory use explicit without 
     assert.ok(text.includes('planned → executing'));
     assert.ok(text.includes('icarus_task_verify'));
     assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
+    assert.ok(text.includes('without an LLM, embedding key, or reachable remote provider'));
+    assert.ok(text.includes('memory:fact'));
+    assert.ok(text.includes('memory:decision'));
+    assert.ok(text.includes('memory:instruction'));
+    assert.ok(text.includes('memory:event'));
+    assert.ok(text.includes('memory:task'));
     assert.ok(!text.includes('For every coding task, call `icarus_context_get`'));
   });
 });
@@ -85,6 +91,8 @@ test('global agent skills contain self-bootstrap and risk-based memory guidance'
     assert.ok(text.includes(`icarus harness init --agent ${agent} --repo .`));
     assert.ok(text.includes('icarus_recall_bugs'));
     assert.ok(text.includes('Use full task governance only for'));
+    assert.ok(text.includes('no LLM key, embedding key, or remote service'));
+    assert.ok(text.includes('memory:fact'));
   }
   assert.equal(mi.globalSkillPath('cursor'), null, 'do not invent a Cursor global skill location');
 });

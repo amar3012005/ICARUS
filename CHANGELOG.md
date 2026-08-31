@@ -9,6 +9,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Installer runtime false fallback:** downloaded release binaries are now preflighted with
+  `icarus --version` rather than `icarus status`. A new installation no longer mistakes an
+  uninitialized local runtime for an unusable CLI, then incorrectly falls into the Node/Rust
+  source-build path. Native Windows shells now receive the PowerShell installer command instead
+  of a misleading unsupported-platform fallback.
 - **Persistent shell command discovery:** first install now writes one managed, idempotent PATH
   block to POSIX login, interactive Bash, and Zsh startup files (plus any existing Bash login
   file), regardless of the installer child process's temporary PATH. `icarus prune` removes the
@@ -60,6 +65,10 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
   exact downloaded Windows binary against its single expected SHA-256 record.
 
 ### Added
+- **Memory-first agent setup:** installed skills and project instructions now explicitly treat
+  ICARUS as a persistent, local-first agent memory filesystem. They document fact, decision,
+  instruction, event, and short-lived task tags; clarify that save/recall needs no LLM or
+  embedding provider; and retain the governed harness only for high-risk work.
 - **Mandatory agent-session bootstrap:** project instruction installers now require every new
   agent session to initialize a missing repository harness through the new native-backed
   `icarus_harness_init` MCP tool before search, planning, or edits. The rule is idempotent,
