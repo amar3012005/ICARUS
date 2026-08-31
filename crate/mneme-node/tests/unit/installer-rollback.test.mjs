@@ -111,7 +111,12 @@ test('installer keeps the working CLI intact when a downloaded release fails che
   assert.ok(true);
 });
 
-test('installer validates a release binary with --version, not runtime status', () => {
+test('installer validates a release binary with --version, not runtime status', {
+  // install.sh is intentionally a POSIX installer. Native Windows is covered by install.ps1;
+  // Git Bash translates temp paths differently from the POSIX test fixture, so this focused
+  // shell-level regression belongs on Linux/macOS where the installer actually runs.
+  skip: process.platform === 'win32',
+}, () => {
   const fixture = mkdtempSync(join(tmpdir(), 'icarus-installer-version-preflight-'));
   try {
     const installerLibrary = join(fixture, 'install-lib.sh');

@@ -544,8 +544,9 @@ pub fn harness_approve_learning_capture(
     capture_digest: String,
     draft_json: String,
 ) -> Result<String> {
-    let draft = serde_json::from_str(&draft_json)
-        .map_err(|error| Error::from_reason(format!("invalid learning memory draft JSON: {error}")))?;
+    let draft = serde_json::from_str(&draft_json).map_err(|error| {
+        Error::from_reason(format!("invalid learning memory draft JSON: {error}"))
+    })?;
     let approval = harness::approve_learning_capture(
         std::path::Path::new(&repo_root),
         &capture_id,
