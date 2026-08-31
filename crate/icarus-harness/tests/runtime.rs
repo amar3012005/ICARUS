@@ -1,18 +1,19 @@
 use icarus_harness::{
-    amend_task_contract, append_event, attest_release_candidate_dogfood, attest_task_criterion,
-    authority_snapshot_digest, authorize_action, authorize_adapter_write,
-    approve_learning_capture, bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
-    codex_app_server_resume_session, decide_codex_app_server_approval, doctor, evaluate_skill,
-    export_task, graph_source_fingerprint, handoff_managed_task, init, inspect_authority_sync,
-    install_authority_snapshot, install_authority_snapshot_with_replacement,
-    load_repository_policy, migrate, prepare_run, read_snapshot, reconcile_run,
-    create_learning_capture, record_active_skill_outcome, record_adapter_lifecycle, record_adapter_post_action,
-    record_codex_app_server_event, record_graph_receipt, release_candidate_dogfood_report,
-    render_context_markdown, resume_codex_app_server_thread, resume_task, retire_skill,
-    record_learning_capture_saved, review_active_skills, seal_task, skill_authoring_brief, start_release_candidate_dogfood,
-    start_task, task_status, transition_task, validate_agent_arguments, verify_event_chain,
-    verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
-    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, LearningMemoryDraft, TaskContract,
+    amend_task_contract, append_event, approve_learning_capture, attest_release_candidate_dogfood,
+    attest_task_criterion, authority_snapshot_digest, authorize_action, authorize_adapter_write,
+    bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
+    codex_app_server_resume_session, create_learning_capture, decide_codex_app_server_approval,
+    doctor, evaluate_skill, export_task, graph_source_fingerprint, handoff_managed_task, init,
+    inspect_authority_sync, install_authority_snapshot,
+    install_authority_snapshot_with_replacement, load_repository_policy, migrate, prepare_run,
+    read_snapshot, reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
+    record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
+    record_learning_capture_saved, release_candidate_dogfood_report, render_context_markdown,
+    resume_codex_app_server_thread, resume_task, retire_skill, review_active_skills, seal_task,
+    skill_authoring_brief, start_release_candidate_dogfood, start_task, task_status,
+    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
+    write_snapshot, Action, AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem,
+    EventInput, HarnessSkill, InitOptions, LearningMemoryDraft, TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -735,12 +736,9 @@ fn direct_mcp_execution_transition_prepares_a_handoffable_current_workspace_reco
         transition_task(repo.path(), &task.task_id, state).unwrap();
     }
 
-    let run = read_snapshot(
-        repo.path(),
-        &format!("state/run-{}.json", task.task_id),
-    )
-    .unwrap()
-    .expect("direct MCP execution must create a durable run record");
+    let run = read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
+        .unwrap()
+        .expect("direct MCP execution must create a durable run record");
     assert_eq!(run["agent"], "mcp");
     assert_eq!(run["workspace_mode"], "current");
     assert_eq!(run["execution_id"], task.execution_id);
@@ -1610,7 +1608,9 @@ fn context_compiler_compacts_mandatory_metadata_for_a_scoped_task() {
         {"id":"authorization","description":"Only administrators may mutate organization facts."},
         {"id":"ui","description":"Members see organization facts read-only."}
     ]);
-    scoped.authority = "User approved a narrowly scoped organization-profile repair and read-only verification.".into();
+    scoped.authority =
+        "User approved a narrowly scoped organization-profile repair and read-only verification."
+            .into();
     scoped.external_write_policy = "Source edits and verification are allowed; production tenant facts remain immutable during testing.".into();
     let task = start_task(repo.path(), "repair one profile path", scoped).unwrap();
 
@@ -1618,8 +1618,14 @@ fn context_compiler_compacts_mandatory_metadata_for_a_scoped_task() {
     // small enough for a narrow task without discarding any mandatory contract field.
     let pack = build_context(repo.path(), &task.task_id, 2_500).unwrap();
     assert!(pack.upper_bound_tokens <= 2_500);
-    assert!(pack.items.iter().any(|item| item.kind == "contract" && item.mandatory));
-    assert!(pack.items.iter().any(|item| item.kind == "policy" && item.mandatory));
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "contract" && item.mandatory));
+    assert!(pack
+        .items
+        .iter()
+        .any(|item| item.kind == "policy" && item.mandatory));
 }
 
 #[test]
@@ -1785,9 +1791,20 @@ fn learning_capture_requires_sealed_evidence_explicit_approval_and_a_real_memory
     let mut task_contract = contract();
     task_contract.acceptance_criteria = serde_json::json!([]);
     task_contract.task_type = Some("feature".into());
-    let task = start_task(repo.path(), "capture a verified implementation lesson", task_contract).unwrap();
+    let task = start_task(
+        repo.path(),
+        "capture a verified implementation lesson",
+        task_contract,
+    )
+    .unwrap();
     assert!(create_learning_capture(repo.path(), &task.task_id).is_err());
-    for state in ["orienting", "contracted", "planned", "executing", "verifying"] {
+    for state in [
+        "orienting",
+        "contracted",
+        "planned",
+        "executing",
+        "verifying",
+    ] {
         transition_task(repo.path(), &task.task_id, state).unwrap();
     }
     assert!(seal_task(repo.path(), &task.task_id).unwrap().sealed);
@@ -1795,16 +1812,23 @@ fn learning_capture_requires_sealed_evidence_explicit_approval_and_a_real_memory
     assert_eq!(capture.status, "pending_review");
     assert_eq!(capture.source_task_id, task.task_id);
     assert!(!capture.capture_digest.is_empty());
-    assert_eq!(create_learning_capture(repo.path(), &task.task_id).unwrap(), capture);
+    assert_eq!(
+        create_learning_capture(repo.path(), &task.task_id).unwrap(),
+        capture
+    );
 
     let draft = LearningMemoryDraft {
         title: "Verified capture rule".into(),
-        content: "Create a local learning memory only from sealed task evidence after explicit review.".into(),
+        content:
+            "Create a local learning memory only from sealed task evidence after explicit review."
+                .into(),
         tags: vec!["harness".into()],
         source_type: Some("decision".into()),
         project: Some("icarus".into()),
     };
-    assert!(approve_learning_capture(repo.path(), &capture.capture_id, "wrong", draft.clone()).is_err());
+    assert!(
+        approve_learning_capture(repo.path(), &capture.capture_id, "wrong", draft.clone()).is_err()
+    );
     let approval = approve_learning_capture(
         repo.path(),
         &capture.capture_id,
@@ -1812,8 +1836,16 @@ fn learning_capture_requires_sealed_evidence_explicit_approval_and_a_real_memory
         draft,
     )
     .unwrap();
-    assert!(approval.provenance_tags.contains(&format!("task:{}", task.task_id)));
-    assert!(record_learning_capture_saved(repo.path(), &capture.capture_id, "", &approval.draft_digest).is_err());
+    assert!(approval
+        .provenance_tags
+        .contains(&format!("task:{}", task.task_id)));
+    assert!(record_learning_capture_saved(
+        repo.path(),
+        &capture.capture_id,
+        "",
+        &approval.draft_digest
+    )
+    .is_err());
     let saved = record_learning_capture_saved(
         repo.path(),
         &capture.capture_id,

@@ -98,6 +98,9 @@ binary_asset_name() {
   case "$(uname -s)" in
     Linux)  os="linux" ;;
     Darwin) os="darwin" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      die "Windows shell detected. Use PowerShell: irm https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.ps1 | iex"
+      ;;
     *) return 1 ;; # Windows/other: no prebuilt binary yet, fall back to source build
   esac
   case "$(uname -m)" in
@@ -223,10 +226,12 @@ try_binary_install() {
   fi
   rm -f "$BIN_DIR/icarus.tmp.sha256"
   chmod +x "$BIN_DIR/icarus.tmp"
-  # sanity check before committing to this path — a corrupt/incompatible download must not
-  # silently replace a working install
-  if ! "$BIN_DIR/icarus.tmp" status >/dev/null 2>&1; then
-    warn "downloaded binary failed to run — building from source instead"
+  # Preflight the executable itself, not `icarus status`. Status starts the local runtime and
+  # can fail on a perfectly valid fresh install before its data directory is ready. The release
+  # contract guarantees `--version`, so this detects an actually incompatible executable
+  # without incorrectly falling through to the Node/Rust source-build path.
+  if ! "$BIN_DIR/icarus.tmp" --version >/dev/null 2>&1; then
+    warn "downloaded binary failed its version preflight — building from source instead"
     rm -f "$BIN_DIR/icarus.tmp"
     return 1
   fi
@@ -499,7 +504,7 @@ guided_setup() {
 verify() {
   info "Verifying"
   if [ "$USED_BINARY" = "1" ]; then
-    "$BIN_DIR/icarus" status >/dev/null 2>&1 || die "binary failed to run"
+    "$BIN_DIR/icarus" --version >/dev/null 2>&1 || die "binary failed its version preflight after install"
   else
     # Load through native.js's own platform-triple resolver — the same path mneme-cli.js uses —
     # instead of a hardcoded filename, so this check tracks whatever napi actually names the addon.

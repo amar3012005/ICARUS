@@ -73,7 +73,7 @@ test('installer keeps the working CLI intact when a downloaded release fails che
       { mode: 0o700 },
     );
     const good = join(fixture, 'good-cli');
-    writeFileSync(good, '#!/usr/bin/env bash\n[ "${1:-}" = status ]\n', { mode: 0o700 });
+    writeFileSync(good, '#!/usr/bin/env bash\n[ "${1:-}" = --version ]\n', { mode: 0o700 });
     const home = join(fixture, 'home');
     const script = `
       set -euo pipefail
@@ -99,10 +99,57 @@ test('installer keeps the working CLI intact when a downloaded release fails che
       ! try_binary_install
       after="$(sha256_file "$BIN_DIR/icarus")"
       [ "$before" = "$after" ]
-      "$BIN_DIR/icarus" status
+      "$BIN_DIR/icarus" --version
       test ! -e "$BIN_DIR/icarus.tmp"
       test ! -e "$BIN_DIR/icarus.tmp.sha256"
       test ! -e "$BIN_DIR/icarus.rollback-tmp"
+    `;
+    execFileSync('bash', ['-c', script], { cwd: ROOT, stdio: 'pipe' });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+  assert.ok(true);
+});
+
+test('installer validates a release binary with --version, not runtime status', {
+  // install.sh is intentionally a POSIX installer. Native Windows is covered by install.ps1;
+  // Git Bash translates temp paths differently from the POSIX test fixture, so this focused
+  // shell-level regression belongs on Linux/macOS where the installer actually runs.
+  skip: process.platform === 'win32',
+}, () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'icarus-installer-version-preflight-'));
+  try {
+    const installerLibrary = join(fixture, 'install-lib.sh');
+    writeFileSync(
+      installerLibrary,
+      readFileSync(INSTALLER, 'utf8').replace(/\nmain "\$@"\s*$/, '\n'),
+      { mode: 0o700 },
+    );
+    const candidate = join(fixture, 'release-cli');
+    // A fresh CLI can report its version before the local runtime has started. This fixture
+    // deliberately rejects `status` to protect the preflight boundary from regressing.
+    writeFileSync(candidate, '#!/usr/bin/env bash\nif [ "${1:-}" = --version ]; then echo "icarus vtest"; exit 0; fi\nif [ "${1:-}" = status ]; then exit 1; fi\nexit 1\n', { mode: 0o700 });
+    const home = join(fixture, 'home');
+    const script = `
+      set -euo pipefail
+      export ICARUS_HOME=${JSON.stringify(home)}
+      source ${JSON.stringify(installerLibrary)}
+      mkdir -p "$BIN_DIR"
+      curl() {
+        out=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = -o ]; then out="$2"; shift 2; continue; fi
+          shift
+        done
+        case "$out" in
+          *.sha256) sha256_file ${JSON.stringify(candidate)} | awk -v a="$(binary_asset_name)" '{ print $1 "  " a }' > "$out" ;;
+          *) cp ${JSON.stringify(candidate)} "$out" ;;
+        esac
+      }
+      try_binary_install
+      [ "$USED_BINARY" = 1 ]
+      "$BIN_DIR/icarus" --version >/dev/null
+      ! "$BIN_DIR/icarus" status
     `;
     execFileSync('bash', ['-c', script], { cwd: ROOT, stdio: 'pipe' });
   } finally {

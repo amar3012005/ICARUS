@@ -5183,13 +5183,19 @@ pub fn approve_learning_capture(
     let task = task_status(&root, &capture.source_task_id)?;
     verify_sealed_task_receipt(&root, &task)?;
     if capture.capture_digest != capture_digest {
-        return Err(HarnessError::invalid("learning capture digest does not match"));
+        return Err(HarnessError::invalid(
+            "learning capture digest does not match",
+        ));
     }
     if draft.title.trim().is_empty() || draft.content.trim().is_empty() {
-        return Err(HarnessError::invalid("learning memory title and content are required"));
+        return Err(HarnessError::invalid(
+            "learning memory title and content are required",
+        ));
     }
     if draft.title.len() > 240 || draft.content.len() > 12_000 || draft.tags.len() > 32 {
-        return Err(HarnessError::invalid("learning memory draft exceeds bounded review limits"));
+        return Err(HarnessError::invalid(
+            "learning memory draft exceeds bounded review limits",
+        ));
     }
     let draft_digest = sha256(serde_json::to_vec(&draft)?.as_slice());
     let mut provenance_tags = vec![
@@ -5247,14 +5253,19 @@ pub fn record_learning_capture_saved(
     let root = canonical_root(repo_root)?;
     let capture = load_learning_capture(&root, capture_id)?;
     let approval: LearningCaptureApproval = serde_json::from_reader(
-        File::open(learning_capture_approval_path(&root, capture_id))
-            .map_err(|_| HarnessError::invalid("learning capture must be approved before it is saved"))?,
+        File::open(learning_capture_approval_path(&root, capture_id)).map_err(|_| {
+            HarnessError::invalid("learning capture must be approved before it is saved")
+        })?,
     )?;
     if approval.capture_digest != capture.capture_digest || approval.draft_digest != draft_digest {
-        return Err(HarnessError::invalid("learning save does not match the approved draft"));
+        return Err(HarnessError::invalid(
+            "learning save does not match the approved draft",
+        ));
     }
     if memory_id.trim().is_empty() {
-        return Err(HarnessError::invalid("learning save requires the local AMR memory id"));
+        return Err(HarnessError::invalid(
+            "learning save requires the local AMR memory id",
+        ));
     }
     let saved = LearningCaptureSave {
         schema_version: 1,
@@ -6072,7 +6083,8 @@ pub fn build_context(repo_root: &Path, task_id: &str, budget_tokens: usize) -> R
         upper_bound_tokens: 0,
         items: Vec::new(),
     };
-    let contract_source = fs::read_to_string(contract_path(&root, task_id, task.contract_version)?)?;
+    let contract_source =
+        fs::read_to_string(contract_path(&root, task_id, task.contract_version)?)?;
     // The compact canonical JSON keeps every contract field available to the agent while the
     // digest continues to identify the immutable, pretty-printed source snapshot on disk.
     let contract: Value = serde_json::from_str(&contract_source)?;
@@ -6543,6 +6555,9 @@ impl ContextItem {
 
     /// Rendered context can be canonically compacted, but its provenance must remain tied to the
     /// original immutable snapshot rather than to that presentation format.
+    // Each parameter maps directly to a serialized, audited context field. Keeping this
+    // constructor explicit prevents provenance fields from being silently omitted at call sites.
+    #[allow(clippy::too_many_arguments)]
     fn with_source_digest(
         kind: impl Into<String>,
         source: impl Into<String>,
@@ -6600,11 +6615,7 @@ pub fn render_context_markdown(pack: &ContextPack) -> String {
     // so mandatory governance does not spend hundreds of units repeating presentation labels.
     let mut rendered = format!(
         "# ICARUS context pack\ntask=`{}` execution=`{}` status=`{}` budget={}/{}\n",
-        pack.task_id,
-        pack.execution_id,
-        pack.status,
-        pack.upper_bound_tokens,
-        pack.budget_tokens
+        pack.task_id, pack.execution_id, pack.status, pack.upper_bound_tokens, pack.budget_tokens
     );
     for (index, item) in pack.items.iter().enumerate() {
         rendered.push_str(&format!(
