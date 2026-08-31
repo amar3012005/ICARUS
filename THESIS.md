@@ -1,8 +1,10 @@
 # mneme: A Memory Filesystem for AI Agents — v2
 
+> **License:** This thesis is licensed under the [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/) (CC BY 4.0). © 2026 mneme authors. See [THESIS-LICENSE.md](./THESIS-LICENSE.md). The ICARUS/mneme software and source code remain separately licensed under [Apache-2.0](./LICENSE).
+
 **A purpose-built storage engine where the byte layout — not the query engine — is the innovation.**
 
-*Apache-2.0 · Rust core · Node bindings · single-file-per-tenant*
+*CC BY 4.0 thesis · Apache-2.0 code · Rust core · Node bindings · single-file-per-tenant*
 
 > **v2 (2026-06-26):** adds §5.9 — a real **production-org end-to-end**. A live customer's
 > document corpus (the `sai` org) was extracted, embedded (bge-m3, 1024-d), ingested, and
