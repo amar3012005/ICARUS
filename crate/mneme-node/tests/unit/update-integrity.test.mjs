@@ -2,9 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const require = createRequire(import.meta.url);
-const { readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, windowsUpdateHandoffScript } = require('../../cli-lib.js');
+const { preflightReleaseBinary, readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, windowsUpdateHandoffScript } = require('../../cli-lib.js');
 
 const asset = 'icarus-darwin-arm64';
 const bytes = Buffer.from('ICARUS release update integrity fixture');
@@ -35,6 +38,18 @@ test('release update rejects ambiguous duplicate entries for one asset', () => {
     () => releaseAssetChecksum(`${digest}  ${asset}\n${digest}  ${asset}\n`, asset),
     /exactly one digest/,
   );
+});
+
+test('release update preflights a fresh binary with --version, not runtime status', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'icarus-update-preflight-'));
+  const binary = join(dir, 'icarus');
+  try {
+    writeFileSync(binary, '#!/usr/bin/env bash\nif [ "${1:-}" = --version ]; then exit 0; fi\nif [ "${1:-}" = status ]; then exit 1; fi\nexit 1\n');
+    chmodSync(binary, 0o755);
+    assert.doesNotThrow(() => preflightReleaseBinary(binary));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('release asset streaming reports incremental download progress and the verification boundary', async () => {

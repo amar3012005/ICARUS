@@ -9,6 +9,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Self-update runtime false fallback:** `/update` now preflights its staged release binary with
+  `icarus --version` rather than `icarus status`. It no longer rejects a valid update simply
+  because the new binary has not started its local runtime yet.
 - **Installer runtime false fallback:** downloaded release binaries are now preflighted with
   `icarus --version` rather than `icarus status`. A new installation no longer mistakes an
   uninitialized local runtime for an unusable CLI, then incorrectly falls into the Node/Rust
