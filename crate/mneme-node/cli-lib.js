@@ -2266,7 +2266,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.82';
+const ICARUS_VERSION = '0.3.83';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2352,6 +2352,14 @@ try {
 }`;
 }
 
+// A fresh binary must be validated without starting its local runtime. `status` can legitimately
+// fail before a data directory or daemon exists, even though the executable is correct. The
+// release contract guarantees the lightweight `--version` path instead.
+function preflightReleaseBinary(binaryPath) {
+  const { execFileSync } = require('child_process');
+  execFileSync(binaryPath, ['--version'], { stdio: 'ignore', timeout: 15000 });
+}
+
 function stageWindowsSelfUpdate(target, candidate, restartTui = false) {
   const { spawn } = require('child_process');
   const helper = `${target}.update-handoff.ps1`;
@@ -2430,12 +2438,11 @@ async function performSelfUpdate(onProgress, { restartTui = false } = {}) {
   fs.writeFileSync(tmp, buf, { mode: 0o755 });
   // Sanity check BEFORE committing — a corrupt/incompatible download must never replace a
   // working install (same principle install.sh's own try_binary_install already applies).
-  const { execFileSync } = require('child_process');
   try {
-    execFileSync(tmp, ['status'], { stdio: 'ignore', timeout: 15000 });
+    preflightReleaseBinary(tmp);
   } catch (e) {
     fs.unlinkSync(tmp);
-    throw new Error(`downloaded binary failed to run (${e.message}) — kept your current install`);
+    throw new Error(`downloaded binary failed its version preflight (${e.message}) — kept your current install`);
   }
   if (process.platform === 'win32') return stageWindowsSelfUpdate(target, tmp, restartTui);
   fs.renameSync(tmp, target); // same filesystem (same dir) -> atomic; safe even while target is
@@ -2458,7 +2465,7 @@ module.exports = {
   hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally, isInaccessibleHivemindDuplicate,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
-  ICARUS_VERSION, checkForUpdate, performSelfUpdate, readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
+  ICARUS_VERSION, checkForUpdate, performSelfUpdate, preflightReleaseBinary, readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,
   purgeHivemindDocument,
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
