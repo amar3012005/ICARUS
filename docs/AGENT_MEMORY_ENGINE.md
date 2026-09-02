@@ -22,6 +22,10 @@ Use `claude` or `cursor` instead of `codex` when appropriate. Installation regis
 
 Restart the coding agent after installation or an ICARUS upgrade so it starts the current MCP binary.
 
+## Session update policy
+
+At the start of each new agent session, run `icarus update --check`. If it reports an available release, start `icarus update` in the background and continue the user's task immediately. A download, network failure, or pending restart must never delay safe work. Restart the coding agent only after the background update completes, before invoking a newly updated MCP binary.
+
 ## Default coding-agent loop
 
 ```text

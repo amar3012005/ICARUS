@@ -9,6 +9,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 ## Unreleased
 
 ### Fixed
+- **Non-blocking agent update checks:** `icarus update --check` now reports whether a newer
+  release exists without downloading it. Installed agent instructions check first and run a
+  needed update in the background, so release maintenance never stalls the user's task.
 - **Self-update runtime false fallback:** `/update` now preflights its staged release binary with
   `icarus --version` rather than `icarus status`. It no longer rejects a valid update simply
   because the new binary has not started its local runtime yet.
