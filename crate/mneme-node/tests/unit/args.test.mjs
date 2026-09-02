@@ -49,8 +49,8 @@ test('boolean flags do not consume the following token', () => {
 });
 
 test('all documented boolean flags parse as true', () => {
-  const f = parseArgs('--local --force --pq --no-mirror --keep-cloud --cloud');
-  for (const k of ['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud']) {
+  const f = parseArgs('--local --force --pq --no-mirror --keep-cloud --cloud --check');
+  for (const k of ['local', 'force', 'pq', 'no-mirror', 'keep-cloud', 'cloud', 'check']) {
     assert.equal(f[k], true, `${k} should be boolean true`);
   }
   assert.deepEqual(f._, []);

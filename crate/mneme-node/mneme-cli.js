@@ -34,7 +34,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -844,9 +844,21 @@ async function cmdStatus(_flags, cfg) {
   }
 }
 
-async function cmdUpdate(_flags, _cfg) {
+async function cmdUpdate(flags, _cfg) {
   console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
   const { current, latest, upToDate } = await checkForUpdate();
+  if (flags.check) {
+    if (upToDate === null) {
+      console.log(c.dim('  could not check the latest version.'));
+      process.exitCode = 2;
+    } else if (upToDate) {
+      console.log(ok(`already up to date (${current}).`));
+    } else {
+      console.log(c.system(`  update available: ${c.dim(current)} → ${c.bold(latest)}`));
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (upToDate === null) {
     // Network hiccup or GitHub API rate-limit -- try the update anyway rather than block on a
     // check that couldn't complete; performSelfUpdate's own sanity-check (run the download once

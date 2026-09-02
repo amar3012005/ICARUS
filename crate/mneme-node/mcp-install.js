@@ -299,7 +299,7 @@ description: Bootstrap ICARUS and use its durable memory plus risk-based harness
 
 # ICARUS Agent Memory
 
-At the start of a repository session, without asking the user, ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. Then run \`icarus harness init --agent ${agent} --repo .\`; it is idempotent. If registration changed, restart ${agent} before using MCP tools. Never hand-write \`.icarus\` state.
+At the start of a repository session, without asking the user, first run \`icarus update --check\`. If it reports an update, launch \`icarus update\` in the background and continue the user's task; do not wait for, retry, or let an update block safe work. Then ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. Run \`icarus harness init --agent ${agent} --repo .\`; it is idempotent. If registration changed or a background update finishes, restart ${agent} before relying on MCP tools. Never hand-write \`.icarus\` state.
 
 ICARUS is primarily the repository's persistent memory filesystem, not a task gate. It needs no LLM key, embedding key, or remote service to save and retrieve local durable knowledge: local lexical recall remains the baseline, while vectors and reranking are optional quality improvements. Treat facts, decisions, instructions, and meaningful events as distinct memory types through precise tags such as \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, and \`memory:event\`. Keep temporary task state short-lived unless it matters to a later session.
 
@@ -383,7 +383,7 @@ This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icaru
 
 ### Mandatory first-session bootstrap
 
-At the beginning of **every new agent session**, check for \`.icarus/manifest.yaml\` and bootstrap ICARUS without asking the user: ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable, then run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`). Both are idempotent. If MCP registration changes, restart ${agentName} before relying on the new tools. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
+At the beginning of **every new agent session**, first run \`icarus update --check\`. If it reports an update, start \`icarus update\` in the background and immediately continue the user's task—never wait for it or make safe work depend on it. Check for \`.icarus/manifest.yaml\` and bootstrap ICARUS without asking the user: ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable, then run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`). Both are idempotent. If MCP registration changes or the background update finishes, restart ${agentName} before relying on the new MCP binary. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
 
 ### Risk-based operating policy
 
