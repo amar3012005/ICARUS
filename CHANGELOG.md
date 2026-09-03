@@ -8,6 +8,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.86
+
+### Fixed
+- **CLI release Node tests:** `harnessStartTask` now forwards optional `worktree` and `branch` (undefined when unbound). The lifecycle unit test matches that arity so `release-cli` can publish `/update` assets.
+
 ## v0.3.85
 
 ### Fixed

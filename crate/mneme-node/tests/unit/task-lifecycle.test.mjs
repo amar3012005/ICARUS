@@ -21,6 +21,7 @@ test('task lifecycle commands transport values to the Rust authority unchanged',
   });
   const contract = { allowed_paths: ['src/**'], forbidden_paths: [], acceptance_criteria: [], risk: 'low', budgets: {}, authority: 'local', external_write_policy: 'approval_required' };
   assert.equal(startTask('/repo', { objective: 'safe change', contract }).status, 'created');
+  assert.equal(startTask('/repo', { objective: 'bound change', contract, worktree: '/repo/.codex/worktrees/fast', branch: 'fast' }).status, 'created');
   assert.equal(transitionTask('/repo', 'TASK-ABCDEFGHIJKL', 'orienting').status, 'orienting');
   assert.equal(authorizeAction('/repo', 'TASK-ABCDEFGHIJKL', { kind: 'write', path: 'src/new.js' }).allowed, true);
   assert.equal(authorizeAdapterWrite('/repo', 'TASK-ABCDEFGHIJKL', 'claude', 'Edit', 'src/new.js').event_sequence, 6);
@@ -28,10 +29,11 @@ test('task lifecycle commands transport values to the Rust authority unchanged',
   assert.equal(handoffManagedTask('/repo', 'TASK-ABCDEFGHIJKL').status, 'verifying');
   assert.equal(recordAdapterLifecycle('/repo', 'TASK-ABCDEFGHIJKL', 'adapter_session_ended', 0).event_sequence, 9);
   assert.equal(exportTask('/repo', 'TASK-ABCDEFGHIJKL', true).redacted, true);
-  assert.deepEqual(calls[0], ['start', '/repo', 'safe change', JSON.stringify(contract)]);
-  assert.deepEqual(calls[3], ['adapter-authorize', '/repo', 'TASK-ABCDEFGHIJKL', 'claude', 'Edit', 'src/new.js']);
-  assert.deepEqual(calls[4], ['adapter-post-action', '/repo', 'TASK-ABCDEFGHIJKL', 'claude', 'Edit', 'src/new.js']);
-  assert.deepEqual(calls[5], ['handoff', '/repo', 'TASK-ABCDEFGHIJKL']);
-  assert.deepEqual(calls[6], ['lifecycle', '/repo', 'TASK-ABCDEFGHIJKL', 'adapter_session_ended', 0]);
-  assert.deepEqual(calls[7], ['export', '/repo', 'TASK-ABCDEFGHIJKL', true]);
+  assert.deepEqual(calls[0], ['start', '/repo', 'safe change', JSON.stringify(contract), undefined, undefined]);
+  assert.deepEqual(calls[1], ['start', '/repo', 'bound change', JSON.stringify(contract), '/repo/.codex/worktrees/fast', 'fast']);
+  assert.deepEqual(calls[4], ['adapter-authorize', '/repo', 'TASK-ABCDEFGHIJKL', 'claude', 'Edit', 'src/new.js']);
+  assert.deepEqual(calls[5], ['adapter-post-action', '/repo', 'TASK-ABCDEFGHIJKL', 'claude', 'Edit', 'src/new.js']);
+  assert.deepEqual(calls[6], ['handoff', '/repo', 'TASK-ABCDEFGHIJKL']);
+  assert.deepEqual(calls[7], ['lifecycle', '/repo', 'TASK-ABCDEFGHIJKL', 'adapter_session_ended', 0]);
+  assert.deepEqual(calls[8], ['export', '/repo', 'TASK-ABCDEFGHIJKL', true]);
 });
