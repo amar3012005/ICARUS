@@ -23,6 +23,7 @@ const require = createRequire(import.meta.url);
 const {
   repoOrgName, findRepoIcarusDataRoot, scanIngestable, noIngestableFilesReason, chunk,
   INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE, harnessSafeGitignore, cfgForMemoryScope, userOrgName,
+  localOnly, hivemindConfigured,
 } = require('../../cli-lib.js');
 const { daemonCommand, isCompiledIcarusBinary } = require('../../daemon-client.js');
 
@@ -130,6 +131,22 @@ test('cfgForMemoryScope user lane writes the global data root', () => {
   const normalized = String(resolved.cfg.dataRoot).replace(/\\/g, '/');
   assert.match(normalized, /\.icarus\/data$/);
   assert.equal(resolved.org, userOrgName());
+});
+
+test('localOnly is on by default so a connected HIVEMIND token is not the memory store', () => {
+  const prev = process.env.ICARUS_LOCAL_ONLY;
+  try {
+    delete process.env.ICARUS_LOCAL_ONLY;
+    const connected = { hivemind: { connected: true, token: 'tok', apiUrl: 'https://example.invalid' } };
+    assert.equal(localOnly(connected), true);
+    assert.equal(hivemindConfigured(connected), false);
+    process.env.ICARUS_LOCAL_ONLY = '0';
+    assert.equal(localOnly(connected), false);
+    assert.equal(hivemindConfigured(connected), true);
+  } finally {
+    if (prev === undefined) delete process.env.ICARUS_LOCAL_ONLY;
+    else process.env.ICARUS_LOCAL_ONLY = prev;
+  }
 });
 
 test('daemonCommand uses source daemon.js when it exists on this checkout', () => {
