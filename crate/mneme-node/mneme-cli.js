@@ -270,11 +270,11 @@ function cmdTask(flags) {
   const harness = require('./harness.js');
   if (subcommand === 'start') {
     const objective = flags.objective || taskId;
-    if (!objective || !flags.contract) throw new Error('usage: icarus task start --objective <text> --contract <contract.json> [--repo <dir>]');
+    if (!objective || !flags.contract) throw new Error('usage: icarus task start --objective <text> --contract <contract.json> [--worktree <path> --branch <name>] [--repo <dir>]');
     let contract;
     try { contract = JSON.parse(fs.readFileSync(flags.contract, 'utf8')); } catch (error) { throw new Error(`cannot read task contract ${flags.contract}: ${error.message}`); }
-    const task = harness.startTask(repo, { objective, contract });
-    console.log(ok(`started ${c.path(task.task_id)} · ${task.status} · contract v${task.contract_version}`));
+    const task = harness.startTask(repo, { objective, contract, worktree: flags.worktree, branch: flags.branch });
+    console.log(ok(`started ${c.path(task.task_id)} · ${task.status} · contract v${task.contract_version}${task.workspace ? ` · ${task.workspace.worktree_id}` : ''}`));
     return;
   }
   if (subcommand === 'dogfood') {
@@ -313,7 +313,22 @@ function cmdTask(flags) {
   // Resolve it here, after `dogfood` consumes its own positional action, so a flag can never be
   // mistaken for a dogfood subcommand or an objective fallback for `task start`.
   const resolvedTaskId = taskId || flags.task;
-  if (!resolvedTaskId) throw new Error('usage: icarus task <status|resume|transition|reconcile|authorize> <TASK-ID> [state] [--task <TASK-ID>] [--repo <dir>]');
+  if (!resolvedTaskId) throw new Error('usage: icarus task <status|resume|transition|doctor|reconcile|authorize> <TASK-ID> [state] [--task <TASK-ID>] [--repo <dir>]');
+  if (subcommand === 'doctor') {
+    const report = harness.doctorTask(repo, resolvedTaskId, flags.worktree, flags.branch);
+    console.log(`\n${heading(`ICARUS task doctor · ${report.task_id}`)}\n`);
+    console.log(c.dim(`  status ${report.status}${report.workspace ? ` · ${report.workspace.path}` : ''}\n`));
+    for (const check of report.checks) {
+      const marker = check.status === 'pass' ? c.success('✓') : check.status === 'warn' ? c.command('!') : c.error('✗');
+      console.log(`  ${marker} ${c.bold(check.id.padEnd(18))} ${check.detail}`);
+    }
+    if (report.repairs && report.repairs.length) {
+      console.log(`\n  ${c.command('safe repairs')}`);
+      for (const repair of report.repairs) console.log(c.dim(`  · ${repair}`));
+    }
+    if (!report.healthy) throw new Error(`task doctor found ${report.issues.length} blocking issue(s)`);
+    return;
+  }
   if (subcommand === 'status') {
     const task = harness.taskStatus(repo, resolvedTaskId);
     console.log(`${c.bold(task.task_id)}  ${c.system(task.status)}  contract v${task.contract_version}`);

@@ -29,6 +29,10 @@ function doctor(repoRoot) {
   return invoke('harnessDoctor', [repoRoot]);
 }
 
+function doctorTask(repoRoot, taskId, worktree, branch) {
+  return invoke('harnessDoctorTask', [repoRoot, taskId, worktree, branch]);
+}
+
 function policyCheck(repoRoot) {
   return invoke('harnessPolicyCheck', [repoRoot]);
 }
@@ -41,8 +45,8 @@ function policyExplain(repoRoot, denialId) {
   return invoke('harnessPolicyExplain', [repoRoot, denialId]);
 }
 
-function startTask(repoRoot, { objective, contract }) {
-  return invoke('harnessStartTask', [repoRoot, objective, JSON.stringify(contract)]);
+function startTask(repoRoot, { objective, contract, worktree, branch }) {
+  return invoke('harnessStartTask', [repoRoot, objective, JSON.stringify(contract), worktree, branch]);
 }
 
 function taskStatus(repoRoot, taskId) {
@@ -220,6 +224,7 @@ module.exports = {
   initHarness,
   migrateHarness,
   doctor,
+  doctorTask,
   policyCheck,
   repositoryIdentity,
   policyExplain,

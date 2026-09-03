@@ -8,7 +8,13 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.85
+
 ### Fixed
+- **Task-bound Git worktrees:** governed `planned → executing`, checkpoint, verify, seal, and resume now inspect only the worktree recorded on the task (`git worktree list --porcelain`). A dirty repository root or a stale sibling under `.codex/worktrees/` no longer blocks a healthy bound checkout. `icarus task start --worktree` / `icarus_task_start` bind path and branch; `icarus task doctor` / `icarus_task_doctor` report missing/stale registrations and can rebind the same task id. Repair is `git worktree prune` or rebind — never deleting `.codex`.
+- **Memory-first agent contract:** installed MCP instructions and harness tool copy keep recall/save as the default session loop. `icarus_harness_init` is once-if-missing and does not block memory tools. Full task lifecycle remains high-risk only and requires an explicit worktree.
+
+### Fixed (prior unreleased)
 - **Non-blocking agent update checks:** `icarus update --check` now reports whether a newer
   release exists without downloading it. Installed agent instructions check first and run a
   needed update in the background, so release maintenance never stalls the user's task.

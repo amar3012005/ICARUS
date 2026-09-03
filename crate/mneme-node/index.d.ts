@@ -25,7 +25,8 @@ export declare function harnessRepositoryIdentity(repoRoot: string): string
  * reasons from current files, because current policy can differ from the decision-time state.
  */
 export declare function harnessPolicyExplain(repoRoot: string, denialId: string): string
-export declare function harnessStartTask(repoRoot: string, objective: string, contractJson: string): string
+export declare function harnessStartTask(repoRoot: string, objective: string, contractJson: string, workspacePath?: string, expectedBranch?: string): string
+export declare function harnessDoctorTask(repoRoot: string, taskId: string, rebindPath?: string, expectedBranch?: string): string
 export declare function harnessTaskStatus(repoRoot: string, taskId: string): string
 export declare function harnessStartReleaseCandidateDogfood(repoRoot: string, releaseId: string): string
 export declare function harnessReleaseCandidateDogfoodReport(repoRoot: string): string

@@ -74,6 +74,31 @@ pub fn harness_doctor(repo_root: String) -> Result<String> {
     }))
 }
 
+#[napi]
+pub fn harness_doctor_task(
+    repo_root: String,
+    task_id: String,
+    rebind_path: Option<String>,
+    expected_branch: Option<String>,
+) -> Result<String> {
+    let report = harness::doctor_task(
+        std::path::Path::new(&repo_root),
+        &task_id,
+        rebind_path.map(std::path::PathBuf::from),
+        expected_branch,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
+    harness_json(serde_json::json!({
+        "healthy": report.healthy,
+        "task_id": report.task_id,
+        "status": report.status,
+        "workspace": report.workspace,
+        "checks": report.checks.into_iter().map(|check| serde_json::json!({"id": check.id, "status": check.status, "detail": check.detail})).collect::<Vec<_>>(),
+        "issues": report.issues,
+        "repairs": report.repairs,
+    }))
+}
+
 /// Read and validate the repository policy in the Rust authority. The Node CLI/MCP layer may
 /// display the result, but cannot parse YAML or decide whether an invalid policy is acceptable.
 #[napi]
@@ -112,11 +137,19 @@ pub fn harness_start_task(
     repo_root: String,
     objective: String,
     contract_json: String,
+    workspace_path: Option<String>,
+    expected_branch: Option<String>,
 ) -> Result<String> {
     let contract = serde_json::from_str(&contract_json)
         .map_err(|error| Error::from_reason(format!("invalid task contract JSON: {error}")))?;
-    let task = harness::start_task(std::path::Path::new(&repo_root), objective, contract)
-        .map_err(|error| Error::from_reason(error.to_string()))?;
+    let task = harness::start_task_in_worktree(
+        std::path::Path::new(&repo_root),
+        objective,
+        contract,
+        workspace_path.map(std::path::PathBuf::from),
+        expected_branch,
+    )
+    .map_err(|error| Error::from_reason(error.to_string()))?;
     harness_json(serde_json::to_value(task).map_err(|error| Error::from_reason(error.to_string()))?)
 }
 

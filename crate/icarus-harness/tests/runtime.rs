@@ -3,17 +3,18 @@ use icarus_harness::{
     attest_task_criterion, authority_snapshot_digest, authorize_action, authorize_adapter_write,
     bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
     codex_app_server_resume_session, create_learning_capture, decide_codex_app_server_approval,
-    doctor, evaluate_skill, export_task, graph_source_fingerprint, handoff_managed_task, init,
+    doctor, doctor_task, evaluate_skill, export_task, graph_source_fingerprint, handoff_managed_task, init,
     inspect_authority_sync, install_authority_snapshot,
     install_authority_snapshot_with_replacement, load_repository_policy, migrate, prepare_run,
     read_snapshot, reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
     record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
     record_learning_capture_saved, release_candidate_dogfood_report, render_context_markdown,
     resume_codex_app_server_thread, resume_task, retire_skill, review_active_skills, seal_task,
-    skill_authoring_brief, start_release_candidate_dogfood, start_task, task_status,
-    transition_task, validate_agent_arguments, verify_event_chain, verify_task_criterion,
-    write_snapshot, Action, AuthorityDecision, AuthorityScope, AuthoritySnapshot, ContextItem,
-    EventInput, HarnessSkill, InitOptions, LearningMemoryDraft, TaskContract,
+    skill_authoring_brief, start_release_candidate_dogfood, start_task, start_task_in_worktree,
+    task_status, transition_task, validate_agent_arguments, verify_event_chain,
+    verify_task_criterion, write_snapshot, Action, AuthorityDecision, AuthorityScope,
+    AuthoritySnapshot, ContextItem, EventInput, HarnessSkill, InitOptions, LearningMemoryDraft,
+    TaskContract,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -2165,6 +2166,137 @@ fn managed_run_prepares_an_isolated_worktree_and_requires_current_acknowledgment
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn task_bound_worktree_enters_execution_despite_a_dirty_parent_checkout() {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["config", "user.email", "test@example.invalid"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    fs::write(repo.path().join("README.md"), "fixture\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "fixture"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    init(repo.path(), InitOptions::default()).unwrap();
+    assert!(Command::new("git")
+        .args(["add", ".icarus", ".gitignore"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "initialize harness"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+
+    let workspace = repo.path().join(".codex/worktrees/chat-orchestration-fast");
+    fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    assert!(Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "chat-orchestration-fast",
+            workspace.to_str().unwrap()
+        ])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let stale = repo.path().join(".codex/worktrees/abandoned-agent");
+    assert!(Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "abandoned-agent",
+            stale.to_str().unwrap()
+        ])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    fs::remove_dir_all(&stale).unwrap();
+
+    let task = start_task_in_worktree(
+        repo.path(),
+        "work only in the isolated checkout",
+        contract(),
+        Some(workspace.clone()),
+        Some("chat-orchestration-fast".into()),
+    )
+    .unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let run = read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run["workspace_path"],
+        workspace
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(run["worktree_id"], "branch:chat-orchestration-fast");
+
+    fs::write(repo.path().join("root-noise.txt"), "unrelated root dirt\n").unwrap();
+    let checkpoint = checkpoint_task(
+        repo.path(),
+        &task.task_id,
+        "implementation",
+        serde_json::json!({"open_risks": []}),
+    )
+    .unwrap();
+    assert!(!checkpoint
+        .files_touched
+        .iter()
+        .any(|path| path.contains("root-noise")));
+
+    let report = doctor_task(repo.path(), &task.task_id, None, None).unwrap();
+    assert!(report.healthy);
+    assert!(report.checks.iter().any(|check| check.id == "git_worktree"
+        && check.status == "pass"));
+    let repo_doctor = doctor(repo.path()).unwrap();
+    assert!(repo_doctor
+        .checks
+        .iter()
+        .any(|check| check.id == "worktrees" && check.status == "warn"));
+    let resumed = resume_task(repo.path(), &task.task_id).unwrap();
+    assert_eq!(resumed.task_id, task.task_id);
+    assert_eq!(resumed.status, "executing");
 }
 
 #[test]
