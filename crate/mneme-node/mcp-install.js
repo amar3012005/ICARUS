@@ -277,6 +277,11 @@ ICARUS is a local, persistent memory tool registered as an MCP server. Use it re
 - When a stored fact changes, prefer \`relationship: "update"\` (or \`icarus_update_memory\` for
   an in-place correction) over saving a duplicate — the old version is marked superseded and
   excluded from future recall automatically.
+- Durable memories live in \`.amr\` files under \`<repo>/.icarus/data/<org>\` (default save)
+  and \`~/.icarus/data/<org>\`. Use \`scope: "user"\` on save for facts that must survive
+  leaving this checkout. \`icarus_recall\` searches both unless you pass \`scope: "repo"\`
+  or \`scope: "user"\`. A daemon failure must not stop save/recall — the files are the
+  source of truth.
 ${STANDING_MARK_END}`;
 
 function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
@@ -515,7 +520,7 @@ async function run(flags) {
     // memory per project, not three isolated silos.
     try {
       const shard = initRepoShard(process.cwd(), p.orgName);
-      console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (added .icarus/data/ to .gitignore)`);
+      console.log(`  ✓ shard created: ${shard.dataRoot}/${shard.org} (.icarus/data is tracked; runtime/graph stay gitignored)`);
     } catch (e) {
       console.log(`  · shard creation skipped: ${e.message}`);
     }
@@ -526,6 +531,7 @@ async function run(flags) {
       console.log(`  · harness initialization skipped: ${e.message}`);
     }
     console.log(`\nRestart ${agentArg} to pick up the MCP server. This project's icarus org is "${p.orgName}" — pass org: "${p.orgName}" on tool calls here.`);
+    installLaunchAgent();
     printToolSummary();
     return;
   }
@@ -566,6 +572,7 @@ async function run(flags) {
   } else {
     console.log('\nNothing to do — either no supported agent was found, or icarus is already registered everywhere it was.');
   }
+  installLaunchAgent();
   printToolSummary();
   console.log('\nCodex/Cursor: no equally-confirmed global standing-instruction file for those agents yet —');
   console.log('consider adding a similar "recall before you answer, save what\'s durable" line to their own config by hand.');
@@ -573,8 +580,52 @@ async function run(flags) {
   console.log('CLAUDE.md/AGENTS.md/.cursor rule with a stable, repo-derived org name so this project\'s memories stay separate.');
 }
 
+function launchAgentPlistPath() {
+  return path.join(HOME, 'Library', 'LaunchAgents', 'ai.icarus.daemon.plist');
+}
+
+function installLaunchAgent() {
+  if (process.platform !== 'darwin') return { installed: false, reason: 'not darwin' };
+  const command = resolveIcarusCommand();
+  if (command === 'icarus') return { installed: false, reason: 'icarus binary path not resolved' };
+  const plistPath = launchAgentPlistPath();
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.icarus.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${command}</string>
+    <string>daemon</string>
+    <string>--run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${path.join(HOME, '.icarus', 'daemon.log')}</string>
+  <key>StandardErrorPath</key>
+  <string>${path.join(HOME, '.icarus', 'daemon.log')}</string>
+</dict>
+</plist>
+`;
+  fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+  fs.writeFileSync(plistPath, body);
+  try {
+    const { spawnSync } = require('child_process');
+    spawnSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+    spawnSync('launchctl', ['load', plistPath], { stdio: 'ignore' });
+  } catch (_) { /* load is best-effort; KeepAlive applies next login */ }
+  console.log(`  ✓ launchd KeepAlive: ${plistPath}`);
+  return { installed: true, path: plistPath };
+}
+
 module.exports = {
   run, resolveIcarusCommand, detectAgents, installClaudeCode, installCodex, installCursor,
+  installLaunchAgent, launchAgentPlistPath,
   detectRemovable, removeAll, detectHook, installHook, removeHook,
   detectStandingInstructions, installStandingInstructions, removeStandingInstructions,
   globalSkillPath, globalSkillBody, installGlobalSkill,

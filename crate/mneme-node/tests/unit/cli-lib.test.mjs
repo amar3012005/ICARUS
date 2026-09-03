@@ -22,8 +22,9 @@ import { join } from 'node:path';
 const require = createRequire(import.meta.url);
 const {
   repoOrgName, findRepoIcarusDataRoot, scanIngestable, noIngestableFilesReason, chunk,
-  INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE, harnessSafeGitignore,
+  INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE, harnessSafeGitignore, cfgForMemoryScope, userOrgName,
 } = require('../../cli-lib.js');
+const { daemonCommand, isCompiledIcarusBinary } = require('../../daemon-client.js');
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'icarus-test-'));
@@ -109,16 +110,36 @@ test('findRepoIcarusDataRoot stops at the repo root and ignores an ancestor .ica
   } finally { rmSync(outer, { recursive: true, force: true }); }
 });
 
-test('project memory ignores only data so Harness configuration remains trackable', () => {
-  const result = harnessSafeGitignore('# project rules\n.icarus/\n');
+test('project memory gitignore tracks .amr data and ignores only runtime/graph', () => {
+  const result = harnessSafeGitignore('# project rules\n.icarus/\n.icarus/data/\n');
   assert.ok(!/^\.icarus\/?\s*$/m.test(result), 'legacy broad ignore must be removed');
-  assert.match(result, /^\.icarus\/data\/$/m, 'only local shard data stays ignored');
+  assert.ok(!/^\.icarus\/data\/?\s*$/m.test(result), 'durable .amr shards must not be gitignored');
+  assert.match(result, /^\.icarus\/runtime\/$/m);
+  assert.match(result, /^\.icarus-graph\/$/m);
   assert.match(result, /# project rules/, 'unrelated gitignore content survives');
 });
 
 test('project memory gitignore migration is idempotent', () => {
-  const once = harnessSafeGitignore('.icarus/runtime/\n.icarus/data/\n');
+  const once = harnessSafeGitignore('.icarus/runtime/\n.icarus-graph/\n');
   assert.equal(harnessSafeGitignore(once), once);
+});
+
+test('cfgForMemoryScope user lane writes the global data root', () => {
+  const cfg = { dataRoot: '/tmp/repo/.icarus/data', dim: 1024 };
+  const resolved = cfgForMemoryScope(cfg, 'default', { scope: 'user' });
+  const normalized = String(resolved.cfg.dataRoot).replace(/\\/g, '/');
+  assert.match(normalized, /\.icarus\/data$/);
+  assert.equal(resolved.org, userOrgName());
+});
+
+test('daemonCommand uses source daemon.js when it exists on this checkout', () => {
+  const [cmd, args] = daemonCommand(23269);
+  assert.ok(cmd);
+  assert.ok(args.includes('--run'));
+  assert.ok(args.includes('23269'));
+  if (!isCompiledIcarusBinary()) {
+    assert.ok(args.some((a) => String(a).endsWith('daemon.js')));
+  }
 });
 
 // ── scanIngestable / noIngestableFilesReason ───────────────────────────────────────────

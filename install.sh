@@ -500,6 +500,39 @@ guided_setup() {
   esac
 }
 
+install_launchd() {
+  if [ "$(uname -s)" != "Darwin" ]; then return 0; fi
+  local plist="$HOME/Library/LaunchAgents/ai.icarus.daemon.plist"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.icarus.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BIN_DIR/icarus</string>
+    <string>daemon</string>
+    <string>--run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME_DIR/daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME_DIR/daemon.log</string>
+</dict>
+</plist>
+EOF
+  launchctl unload "$plist" >/dev/null 2>&1 || true
+  launchctl load "$plist" >/dev/null 2>&1 || true
+  ok "launchd KeepAlive: $plist"
+}
+
 # --- 6. verify (both paths) --------------------------------------------------
 verify() {
   info "Verifying"
@@ -531,6 +564,7 @@ main() {
   fi
 
   guided_setup
+  install_launchd
 
   printf '\n'
   ok "Done. Try:  icarus status"

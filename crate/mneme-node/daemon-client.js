@@ -14,6 +14,23 @@ const PORT_FILE = 'daemon.port';
 const PID_FILE = 'daemon.pid';
 const DAEMON_ENTRY = path.join(__dirname, 'daemon.js');
 
+/// How to spawn the memory daemon. A Bun-compiled `icarus` binary must NEVER pass a
+/// source-tree `daemon.js` path (`__dirname` is the GitHub Actions checkout after compile).
+/// Use the same executable plus `daemon --run <port>`. Node/source tests keep spawning
+/// `node daemon.js --run`.
+function isCompiledIcarusBinary() {
+  const exe = path.basename(process.execPath).replace(/\.exe$/i, '');
+  return exe === 'icarus' || exe.startsWith('icarus-');
+}
+
+function daemonCommand(port) {
+  const portStr = String(port);
+  if (!isCompiledIcarusBinary() && fs.existsSync(DAEMON_ENTRY)) {
+    return [process.execPath, [DAEMON_ENTRY, '--run', portStr]];
+  }
+  return [process.execPath, ['daemon', '--run', portStr]];
+}
+
 function runtimeDir() { return HOME; }
 function tokenPath() { return path.join(runtimeDir(), TOKEN_FILE); }
 function portPath() { return path.join(runtimeDir(), PORT_FILE); }
@@ -72,7 +89,8 @@ async function ensureDaemon() {
   try { await health(port, token); return { port, token }; } catch (_) {}
 
   const env = { ...process.env, ICARUS_DAEMON_PORT: String(port) };
-  const child = spawn(process.execPath, [DAEMON_ENTRY, '--run', String(port)], {
+  const [cmd, args] = daemonCommand(port);
+  const child = spawn(cmd, args, {
     detached: true, stdio: 'ignore', env,
   });
   child.unref();
@@ -89,9 +107,16 @@ async function ensureDaemon() {
 }
 
 async function callMemory(operation, args, cfg) {
-  const { port, token } = await ensureDaemon();
-  const result = await request(port, 'POST', '/rpc', { operation, args, cfg }, token);
-  return result.value;
+  try {
+    const { port, token } = await ensureDaemon();
+    const result = await request(port, 'POST', '/rpc', { operation, args, cfg }, token);
+    return result.value;
+  } catch (_) {
+    // Daemon is an optimization for many MCP clients. A single agent session must still
+    // read/write the .amr file if spawn/health fails (compiled-path bugs, port fights).
+    const { executeMemoryOperation } = require('./daemon.js');
+    return executeMemoryOperation(operation, args, cfg);
+  }
 }
 
 async function stopDaemon() {
@@ -100,4 +125,7 @@ async function stopDaemon() {
   try { await request(port, 'POST', '/shutdown', {}, token); } catch (_) { /* already stopped */ }
 }
 
-module.exports = { callMemory, ensureDaemon, stopDaemon, defaultPort, daemonToken, TOKEN_FILE, PORT_FILE, PID_FILE };
+module.exports = {
+  callMemory, ensureDaemon, stopDaemon, defaultPort, daemonToken, daemonCommand,
+  isCompiledIcarusBinary, TOKEN_FILE, PORT_FILE, PID_FILE, DAEMON_ENTRY,
+};

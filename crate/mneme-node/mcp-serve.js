@@ -94,12 +94,13 @@ async function run() {
         org: z.string().default('default'),
         topK: z.number().int().positive().max(200).default(5),
         usePq: z.boolean().default(false).describe('Use PQ/ADC recall instead of the default hybrid recall — requires icarus_train_pq to have run first for this org'),
+        scope: z.enum(['repo', 'user', 'all']).default('all').describe('repo = this checkout shard only; user = ~/.icarus/data; all = both (default)'),
       },
     },
-    async ({ query, org, topK, usePq }) => {
+    async ({ query, org, topK, usePq, scope }) => {
       try {
         const cfg = loadCfg();
-        const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq });
+        const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq, scope: scope || 'all' });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -144,15 +145,16 @@ async function run() {
         source_type: z.enum(['text', 'code', 'conversation', 'documentation', 'decision']).optional(),
         org: z.string().default('default'),
         project: z.string().optional().describe('Project this belongs to'),
+        scope: z.enum(['repo', 'user']).default('repo').describe('repo writes <repo>/.icarus/data (default); user writes ~/.icarus/data so it survives leaving this checkout'),
         relationship: RELATIONSHIP_ENUM.optional().describe('Real typed edge to an existing memory -- update|extend|derive|contradict|partof|mentions. "update" also marks the target superseded (excluded from future recall).'),
         related_to: z.string().optional().describe('Memory id this relates to -- required together with relationship'),
       },
     },
-    async ({ title, content, tags, source_type, org, project, relationship, related_to }) => {
+    async ({ title, content, tags, source_type, org, project, relationship, related_to, scope }) => {
       try {
         const cfg = loadCfg();
         const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
-          title, tags, sourceType: source_type, project, relationship, relatedTo: related_to,
+          title, tags, sourceType: source_type, project, relationship, relatedTo: related_to, scope: scope || 'repo',
         } });
         return textResult(r);
       } catch (e) { return errorResult(e); }

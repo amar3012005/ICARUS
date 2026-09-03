@@ -404,18 +404,74 @@ function repoOrgName(repo) {
 // Keep only runtime memory private. This is deliberately pure so the project-installer contract
 // can be tested without loading the native shard addon.
 function harnessSafeGitignore(existing = '') {
-  const narrowed = existing.replace(/^\.icarus\/?\s*(?:\r?\n|$)/gm, '');
-  if (/^\.icarus\/data\/?\s*$/m.test(narrowed)) return narrowed;
-  const sep = narrowed && !narrowed.endsWith('\n') ? '\n' : '';
-  return narrowed + sep + '.icarus/data/\n';
+  // Project .amr shards are durable agent memory and may be committed. Ignore only
+  // ephemeral runtime/graph caches — never the memory files themselves.
+  let narrowed = existing.replace(/^\.icarus\/?\s*(?:\r?\n|$)/gm, '');
+  narrowed = narrowed.replace(/^\.icarus\/data\/?\s*(?:\r?\n|$)/gm, '');
+  for (const line of ['.icarus/runtime/', '.icarus-graph/']) {
+    if (new RegExp('^' + line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'm').test(narrowed)) continue;
+    const sep = narrowed && !narrowed.endsWith('\n') ? '\n' : '';
+    narrowed += sep + line + '\n';
+  }
+  return narrowed;
+}
+
+function globalDataRoot() {
+  return path.join(HOME, 'data');
+}
+
+function userOrgName() {
+  const raw = String(process.env.ICARUS_USER_ORG || 'amar');
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  return cleaned || 'amar';
+}
+
+function gitRepoRoot(startDir) {
+  let dir = path.resolve(startDir || process.cwd());
+  const fsRoot = path.parse(dir).root;
+  for (let i = 0; i < 40 && dir !== fsRoot; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function ensureWorkingTreeShard() {
+  const root = gitRepoRoot();
+  if (!root) return null;
+  if (findRepoIcarusDataRoot(root)) return findRepoIcarusDataRoot(root);
+  return initRepoShard(root, repoOrgName(root)).dataRoot;
+}
+
+function backupMemoryShards(cfg) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = path.join(HOME, 'backups', stamp);
+  fs.mkdirSync(dest, { recursive: true });
+  const copies = [];
+  const copyRoot = (src, name) => {
+    if (!src || !fs.existsSync(src)) return;
+    const target = path.join(dest, name);
+    fs.cpSync(src, target, { recursive: true });
+    copies.push(target);
+  };
+  copyRoot(globalDataRoot(), 'global');
+  if (cfg && cfg.dataRoot && path.resolve(cfg.dataRoot) !== path.resolve(globalDataRoot())) {
+    copyRoot(cfg.dataRoot, 'repo');
+  }
+  const repo = findRepoIcarusDataRoot();
+  if (repo) copyRoot(repo, 'repo-cwd');
+  return { dest, copies };
 }
 
 /** Physically creates a repo-local shard NOW (setup time), not lazily on first save — matches
  * the real ask: running setup should leave a real, existing org slot behind, not just a name
  * referenced in some instruction text with nothing backing it yet. Idempotent: opening an
- * already-existing shard is just a normal open, not a reset. Only `.icarus/data/` is ignored:
- * the Harness keeps its manifest and policies in that same directory and those files must remain
- * reviewable/tracked. A legacy broad `.icarus/` rule is narrowed on re-run for the same reason. */
+ * already-existing shard is just a normal open, not a reset. `.icarus/data/` is NOT gitignored:
+ * project .amr shards are durable memory and may be committed. Only `.icarus/runtime/` and
+ * `.icarus-graph/` stay ignored. A legacy broad `.icarus/` or `.icarus/data/` rule is narrowed
+ * on re-run. */
 function initRepoShard(repo, orgName, dim = 1024) {
   const dataRoot = path.join(path.resolve(repo), '.icarus', 'data');
   fs.mkdirSync(dataRoot, { recursive: true });
@@ -1216,7 +1272,7 @@ async function recallByTags(query, org, cfg, { requireAnyTags = [], requireAllTa
     .slice(0, limit);
 }
 
-async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
+async function recallQueryOn(query, org, cfg, topK = 5, usePq = false) {
   const store = openStore(cfg, org);
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
   // PQ specifically requires the user's OWN provider — the codebook was trained on cfg.embeddings'
@@ -1280,6 +1336,56 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false) {
   }
   // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
   return rerankHits(query, merged.map((h) => ({ ...h, mode: qv ? 'hybrid' : 'lexical' })), topK, cfg);
+}
+
+function uniqueDataRoots(cfg) {
+  const seen = new Set();
+  const roots = [];
+  const add = (root, source) => {
+    if (!root) return;
+    const resolved = path.resolve(root);
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    roots.push({ root: resolved, source });
+  };
+  if (cfg && cfg.dataRoot) add(cfg.dataRoot, 'primary');
+  add(globalDataRoot(), 'global');
+  return roots;
+}
+
+/** Dual-scope recall: the client's cfg.dataRoot (repo shard when present) plus ~/.icarus/data.
+ * Daemon RPC already sends the agent's cfg — never rediscover from daemon cwd. */
+async function recallQuery(query, org, cfg, topK = 5, usePq = false, scope = 'all') {
+  if (cfg && cfg._singleRoot) return recallQueryOn(query, org, cfg, topK, usePq);
+  if (scope === 'repo') return recallQueryOn(query, org, { ...cfg, _singleRoot: true }, topK, usePq);
+  if (scope === 'user') {
+    return recallQueryOn(query, org && org !== 'default' ? org : userOrgName(), { ...cfg, dataRoot: globalDataRoot(), _singleRoot: true }, topK, usePq);
+  }
+  const roots = uniqueDataRoots(cfg);
+  const byId = new Map();
+  const pushHits = (hits, source, hitOrg) => {
+    for (const hit of hits || []) {
+      const key = hit.memoryId || `${source}:${hitOrg}:${String(hit.text || '').slice(0, 80)}`;
+      const tagged = { ...hit, source, org: hitOrg };
+      const prev = byId.get(key);
+      if (!prev || (tagged.score || 0) > (prev.score || 0)) byId.set(key, tagged);
+    }
+  };
+  for (const { root, source } of roots) {
+    const rootCfg = { ...cfg, dataRoot: root, _singleRoot: true };
+    try {
+      pushHits(await recallQueryOn(query, org, rootCfg, topK, usePq), source, org);
+    } catch (_) { /* missing shard is empty, not a failure */ }
+    const userOrg = userOrgName();
+    if (userOrg && userOrg !== org) {
+      try {
+        pushHits(await recallQueryOn(query, userOrg, rootCfg, topK, usePq), source, userOrg);
+      } catch (_) { /* optional user-org lane */ }
+    }
+  }
+  return [...byId.values()]
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, topK);
 }
 
 // "ICARUS v3" boundary starts here: v2 is the local `.amr` filesystem engine above (its own
@@ -1713,7 +1819,16 @@ function memoryDisplayText(rec) {
  * memory to the target — a genuinely SEPARATE memory that relates to an existing one, distinct
  * from icarus_update_memory below (which corrects an EXISTING memory in place, same id). Returns
  * the new memory's real id (a UUID an agent can pass back into related_to/get/update/delete). */
+function cfgForMemoryScope(cfg, org, opts = {}) {
+  const scope = String(opts.scope || 'repo').toLowerCase();
+  if (scope === 'user') {
+    return { cfg: { ...cfg, dataRoot: globalDataRoot() }, org: org && org !== 'default' ? org : userOrgName() };
+  }
+  return { cfg, org };
+}
+
 async function saveStructuredMemory(content, org, cfg, opts = {}) {
+  ({ cfg, org } = cfgForMemoryScope(cfg, org, opts));
   const store = openStore(cfg, org);
   const hasOwnEmbeddings = embeddingsConfigured(cfg);
   const id = newMemoryId();
@@ -2172,23 +2287,41 @@ function realDiskBytes(stat) {
   return (typeof stat.blocks === 'number' && stat.blocks >= 0) ? stat.blocks * 512 : stat.size;
 }
 
-function statusReport(cfg) {
+function shardsInRoot(dataRoot) {
   let orgs = [];
   try {
-    orgs = fs.readdirSync(cfg.dataRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
-  } catch (_) { /* no shards yet */ }
-  return {
-    dataRoot: cfg.dataRoot,
-    dim: cfg.dim,
-    hivemindConnected: !!(cfg.hivemind && cfg.hivemind.connected),
-    shards: orgs.map((o) => {
-      const dir = path.join(cfg.dataRoot, o.name);
-      let bytes = 0;
+    orgs = fs.readdirSync(dataRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch (_) { return []; }
+  return orgs.map((o) => {
+    const dir = path.join(dataRoot, o.name);
+    let bytes = 0;
+    try {
       for (const f of fs.readdirSync(dir)) {
         try { bytes += realDiskBytes(fs.statSync(path.join(dir, f))); } catch (_) { /* race with a concurrent writer */ }
       }
-      return { org: o.name, bytesOnDisk: bytes };
-    }),
+    } catch (_) { /* dir vanished */ }
+    return { org: o.name, bytesOnDisk: bytes, dataRoot };
+  });
+}
+
+function statusReport(cfg) {
+  const roots = uniqueDataRoots(cfg);
+  const shards = [];
+  const seenOrgRoot = new Set();
+  for (const { root } of roots) {
+    for (const sh of shardsInRoot(root)) {
+      const key = `${sh.dataRoot}:${sh.org}`;
+      if (seenOrgRoot.has(key)) continue;
+      seenOrgRoot.add(key);
+      shards.push(sh);
+    }
+  }
+  return {
+    dataRoot: cfg.dataRoot,
+    globalDataRoot: globalDataRoot(),
+    dim: cfg.dim,
+    hivemindConnected: !!(cfg.hivemind && cfg.hivemind.connected),
+    shards,
   };
 }
 
@@ -2266,7 +2399,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.86';
+const ICARUS_VERSION = '0.3.87';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.
@@ -2455,7 +2588,7 @@ module.exports = {
   HOME, CFG_PATH, loadCfg, saveCfg, embed, chunk, walkText, walkHivemindIngestable,
   INGESTABLE_EXTS, HIVEMIND_INGESTABLE_EXTS, HIVEMIND_UPLOAD_EXTS, IMAGE_EXTS, scanIngestable, noIngestableFilesReason,
   pickFolderNative,
-  ingestDir, recallQuery, statusReport,
+  ingestDir, recallQuery, recallQueryOn, statusReport,
   embeddingsConfigured, openStore, llmConfigured, summarize, extractSkill, skillSave, skillList,
   OPENROUTER_KEYCHAIN_SERVICE, DEFAULT_OPENROUTER_SYNTHESIS_MODEL, openRouterApiKey, setOpenRouterApiKey, resolveSynthesisModel, fetchOpenRouterModels, fetchOpenRouterModel,
   selectOpenRouterModels, reasoningForModel, buildGroundedChatRequest, consumeOpenRouterSse, classifyChatFailure, chatWithOpenRouter, createPersonaSkill, selectPersonaSkill, clearPersonaSkill, activePersonaSkill,
@@ -2470,4 +2603,5 @@ module.exports = {
   REL_TYPE, REL_NAME, REL_WORD_TO_TYPE, saveStructuredMemory, getStructuredMemory, listStructuredMemories,
   updateStructuredMemory, deleteStructuredMemory, traverseStructuredGraph, recallByTags,
   richOrgStats, findRepoIcarusDataRoot, repoOrgName, harnessSafeGitignore, initRepoShard, listOrgsWithMeta, deleteOrgShard,
+  globalDataRoot, userOrgName, gitRepoRoot, ensureWorkingTreeShard, backupMemoryShards, cfgForMemoryScope,
 };

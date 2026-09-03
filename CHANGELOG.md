@@ -8,6 +8,13 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.87
+
+### Added
+- **Durable dual-scope memory:** `.amr` shards under `<repo>/.icarus/data` and `~/.icarus/data` are the source of truth. `icarus_recall` unions both; `icarus_save_memory` accepts `scope: repo|user`. `icarus backup` copies both trees. Project gitignore no longer ignores `.icarus/data/`.
+- **Compiled daemon + MCP fallback:** `icarus daemon --run` works from a Bun-compiled binary (no baked GHA `daemon.js` path). MCP `callMemory` falls back to in-process `executeMemoryOperation` if the daemon never becomes ready.
+- **launchd KeepAlive:** `icarus mcp install` and `install.sh` write `ai.icarus.daemon.plist` so the lock-server stays up without being the durability path.
+
 ## v0.3.86
 
 ### Fixed

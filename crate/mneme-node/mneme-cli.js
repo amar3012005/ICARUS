@@ -1447,10 +1447,16 @@ async function cmdDaemon(flags, _cfg) {
   // require lazy anyway for consistency — the daemon subcommands are the only callers.
   const daemon = require('./daemon.js');
   const sub = flags._[0];
+  // Compiled binary spawn: `icarus daemon --run <port>`. launchd may omit the port.
+  if (Object.prototype.hasOwnProperty.call(flags, 'run') || sub === 'run' || sub === '--run') {
+    const { defaultPort } = require('./daemon-client.js');
+    const port = Number(flags.run) || Number(sub === 'run' || sub === '--run' ? flags._[1] : 0) || Number(process.env.ICARUS_DAEMON_PORT) || defaultPort();
+    return daemon.run(port);
+  }
   if (sub === 'start') return daemon.start(flags);
   if (sub === 'stop') return daemon.stop();
   if (sub === 'status') return daemon.status();
-  throw new Error('usage: icarus daemon <start|stop|status> [--port 8137]');
+  throw new Error('usage: icarus daemon <start|stop|status|--run> [--port 8137]');
 }
 
 async function main() {
@@ -1497,6 +1503,11 @@ async function main() {
         break;
       }
       case 'daemon': await cmdDaemon(flags, cfg); break;
+      case 'backup': {
+        const report = require('./cli-lib.js').backupMemoryShards(cfg);
+        console.log(ok(`backed up ${report.copies.length} shard tree(s) → ${c.path(report.dest)}`));
+        break;
+      }
       case 'prune': await cmdPrune(flags, cfg); break;
       case 'hook': {
         const sub = flags._[0];
@@ -1703,6 +1714,7 @@ async function main() {
                                         process reached over http://127.0.0.1:<port>.
   icarus daemon stop
   icarus daemon status
+  icarus backup                        copy repo + ~/.icarus/data shards into ~/.icarus/backups/<iso>
   icarus update                        self-update: download + verify the latest release binary,
                                         atomically replace the currently running one. Compiled-
                                         binary installs only (source builds: git pull instead).
