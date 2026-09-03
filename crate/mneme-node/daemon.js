@@ -64,7 +64,7 @@ async function executeMemoryOperation(operation, args = {}, cfg) {
     case 'delete_org': return deleteOrgShard(cfg, org);
     case 'ingest': return ingestDir(args.dir, org, cfg);
     case 'ingest_hivemind': return hivemindIngestDir(args.dir, org, cfg, undefined, args.options || {});
-    case 'recall': return recallQuery(args.query, org, cfg, args.topK || 5, !!args.usePq);
+    case 'recall': return recallQuery(args.query, org, cfg, args.topK || 5, !!args.usePq, args.scope || 'all');
     case 'save_raw': return saveLocalMemory(args.text, org, cfg, args.options || {});
     case 'save_intelligent': return saveIntelligentMemory(args.text, org, cfg, args.options || {});
     case 'save_structured': return saveStructuredMemory(args.content, org, cfg, args.options || {});
@@ -218,7 +218,9 @@ async function start(flags) {
   fs.mkdirSync(path.dirname(p.pidFile), { recursive: true });
   try { fs.unlinkSync(p.portFile); } catch (_) {} // stale from a previous crashed run, if any
   const log = fs.openSync(p.logFile, 'a');
-  const child = spawn(process.execPath, [__filename, '--run', String(port)], {
+  const { daemonCommand } = require('./daemon-client.js');
+  const [cmd, args] = daemonCommand(port);
+  const child = spawn(cmd, args, {
     detached: true,
     stdio: ['ignore', log, log],
   });
@@ -271,8 +273,10 @@ function status() {
 
 // Invoked directly (as the detached child) with `--run <port>`, not through the normal CLI
 // dispatch — this is the ONE place a bare `require('./daemon.js')` also has to work standalone.
-if (require.main === module && process.argv[2] === '--run') {
-  run(Number(process.argv[3]) || DEFAULT_PORT);
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const runIdx = args.indexOf('--run');
+  if (runIdx >= 0) run(Number(args[runIdx + 1]) || DEFAULT_PORT);
 }
 
-module.exports = { start, stop, status, run };
+module.exports = { start, stop, status, run, executeMemoryOperation };
