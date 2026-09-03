@@ -8,6 +8,9 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+### Changed
+- **Local-only memory by default:** HIVEMIND and any cloud memory API are not the store. `localOnly` defaults on (`ICARUS_LOCAL_ONLY=0` to opt out). Save/recall/ingest stay on `.amr` files. Optional embeddings remain auxiliary; lexical recall still works offline.
+
 ## v0.3.87
 
 ### Added

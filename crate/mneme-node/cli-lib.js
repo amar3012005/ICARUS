@@ -514,6 +514,7 @@ function loadCfg() {
   } catch (_) {
     return {
       dataRoot: repoDataRoot || path.join(HOME, 'data'),
+      localOnly: true,
       dim: 1024,
       // No `enabled` flag to flip — presence of a key (env var OR stored) is what turns on
       // vector recall, `.env`-style (export OPENROUTER_API_KEY and it just works, no interactive
@@ -1410,7 +1411,18 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false, scope = 'al
 // does) — so remote-mode recall searches the user's WHOLE workspace, not scoped to one ICARUS
 // "org". Org name is still stamped as a tag on every uploaded file (`icarus-org:<org>`) for
 // whenever server-side filtering becomes verifiable, but nothing here claims it's enforced today.
+/** ICARUS is a local, self-hosted memory filesystem. Cloud stores (HIVEMIND, Cloudflare
+ * Agent Memory) are never the source of truth. Default ON. Opt out only with
+ * ICARUS_LOCAL_ONLY=0 or cfg.localOnly === false. */
+function localOnly(cfg) {
+  const env = process.env.ICARUS_LOCAL_ONLY;
+  if (env === '0' || String(env).toLowerCase() === 'false') return false;
+  if (cfg && cfg.localOnly === false) return false;
+  return true;
+}
+
 function hivemindConfigured(cfg) {
+  if (localOnly(cfg)) return false;
   const hasApiBase = !!(process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl);
   return !!(cfg.hivemind && cfg.hivemind.connected && cfg.hivemind.token && hasApiBase);
 }
@@ -2595,7 +2607,7 @@ module.exports = {
   parseClaudeTranscript, SKILLS_DIR, LAYER_MEMORY, LAYER_EVIDENCE, LAYER_COGNITIVE, LAYER_SKILL,
   signingEnabled, ensureSigningKeys, signSlot, verifySlot, canonicalPayload, SIGN_KEYS_DIR,
   ensureAuditKeys, appendAuditEntry, checkpointAudit, verifyAuditChain,
-  hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
+  localOnly, hivemindConfigured, hivemindIngestDir, hivemindUploadFile, hivemindPollJob, formatHivemindProgress, attemptHivemindOAuth,
   hivemindFetchDocumentSegments, mirrorHivemindDocumentLocally, isInaccessibleHivemindDuplicate,
   DEFAULT_HIVEMIND_AUTH_URL, DEFAULT_HIVEMIND_API_URL,
   ICARUS_VERSION, checkForUpdate, performSelfUpdate, preflightReleaseBinary, readReleaseAsset, releaseAssetChecksum, verifyReleaseAsset, updateAssetName, windowsUpdateHandoffScript, hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, normalizeStructuredSaveToolCall,

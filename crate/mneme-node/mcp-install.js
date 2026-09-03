@@ -282,6 +282,9 @@ ICARUS is a local, persistent memory tool registered as an MCP server. Use it re
   leaving this checkout. \`icarus_recall\` searches both unless you pass \`scope: "repo"\`
   or \`scope: "user"\`. A daemon failure must not stop save/recall — the files are the
   source of truth.
+- ICARUS is local and self-hosted only. Never treat HIVEMIND, Cloudflare Agent Memory, or
+  any remote API as the memory store. Optional embeddings/rerank may use a network, but
+  save and recall must keep working with lexical search if that network is down.
 ${STANDING_MARK_END}`;
 
 function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
