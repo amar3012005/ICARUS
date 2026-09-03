@@ -127,7 +127,8 @@ test('project memory gitignore migration is idempotent', () => {
 test('cfgForMemoryScope user lane writes the global data root', () => {
   const cfg = { dataRoot: '/tmp/repo/.icarus/data', dim: 1024 };
   const resolved = cfgForMemoryScope(cfg, 'default', { scope: 'user' });
-  assert.match(resolved.cfg.dataRoot, /\.icarus\/data$/);
+  const normalized = String(resolved.cfg.dataRoot).replace(/\\/g, '/');
+  assert.match(normalized, /\.icarus\/data$/);
   assert.equal(resolved.org, userOrgName());
 });
 
