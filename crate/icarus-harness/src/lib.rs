@@ -239,6 +239,31 @@ pub struct TaskRecord {
     pub contract: TaskContract,
     pub execution_id: String,
     pub previous_execution_id: Option<String>,
+    /// A task may be bound to one real Git worktree.  It is intentionally outside the immutable
+    /// change contract: it describes where the contract may run, not what it may change.
+    #[serde(default)]
+    pub workspace: Option<TaskWorkspace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskWorkspace {
+    pub path: String,
+    pub worktree_id: String,
+    pub branch: Option<String>,
+    pub base_git_sha: Option<String>,
+}
+
+/// Task-scoped workspace diagnosis. Never deletes `.codex` or other agent folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskDoctorReport {
+    pub healthy: bool,
+    pub task_id: String,
+    pub status: String,
+    pub workspace: Option<TaskWorkspace>,
+    pub checks: Vec<DoctorCheck>,
+    pub issues: Vec<String>,
+    pub repairs: Vec<String>,
 }
 
 /// A Rust-authorized launch workspace. Adapters receive this value but do not choose the task
@@ -2026,6 +2051,7 @@ pub fn start_task(
         contract,
         execution_id: String::new(),
         previous_execution_id: None,
+        workspace: None,
     };
     let mut task = task;
     task.execution_id = task_execution_id(&task.task_id);
@@ -2047,6 +2073,116 @@ pub fn start_task(
         },
     )?;
     Ok(task)
+}
+
+/// Start a task bound to one registered Git worktree.  This is the worktree that later
+/// lifecycle operations inspect; sibling worktrees and a dirty repository root are irrelevant.
+pub fn start_task_in_worktree(
+    repo_root: &Path,
+    objective: impl Into<String>,
+    contract: TaskContract,
+    workspace: Option<PathBuf>,
+    expected_branch: Option<String>,
+) -> Result<TaskRecord> {
+    let root = canonical_root(repo_root)?;
+    let mut task = start_task(&root, objective, contract)?;
+    if let Some(workspace) = workspace {
+        task.workspace = Some(bind_task_workspace(&root, &workspace, expected_branch)?);
+        save_task(&root, &task)?;
+        append_event(
+            &root,
+            EventInput {
+                execution_id: task.execution_id.clone(),
+                task_id: task.task_id.clone(),
+                event_type: "task_workspace_bound".into(),
+                worktree_id: task.workspace.as_ref().unwrap().worktree_id.clone(),
+                timestamp: None,
+                payload: serde_json::to_value(task.workspace.as_ref().unwrap())?,
+            },
+        )?;
+    }
+    Ok(task)
+}
+
+fn registered_worktrees(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = git_checked_bytes(root, &["worktree", "list", "--porcelain"])?;
+    let mut worktrees = Vec::new();
+    for line in String::from_utf8(output)
+        .map_err(|_| HarnessError::invalid("Git returned non-UTF-8 worktree metadata"))?
+        .lines()
+    {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            // A stale sibling registration must never make a valid task worktree ineligible.
+            // The caller validates the selected worktree explicitly; doctor reports the stale
+            // registration and recommends `git worktree prune` without deleting anything.
+            if let Ok(canonical) = PathBuf::from(path).canonicalize() {
+                worktrees.push(canonical);
+            }
+        }
+    }
+    Ok(worktrees)
+}
+
+fn git_branch(root: &Path) -> Option<String> {
+    git_output(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+}
+
+fn bind_task_workspace(
+    root: &Path,
+    workspace: &Path,
+    expected_branch: Option<String>,
+) -> Result<TaskWorkspace> {
+    let path = workspace.canonicalize().map_err(HarnessError::from)?;
+    if !path.is_dir() {
+        return Err(HarnessError::invalid(
+            "task worktree path must be an existing directory",
+        ));
+    }
+    if !registered_worktrees(root)?
+        .iter()
+        .any(|registered| registered == &path)
+    {
+        return Err(HarnessError::invalid("task worktree is not registered by Git; run `git worktree list --porcelain` and repair with `git worktree prune` only if Git reports it stale"));
+    }
+    let branch = git_branch(&path);
+    if let Some(expected) = expected_branch {
+        if branch.as_deref() != Some(expected.as_str()) {
+            return Err(HarnessError::invalid(format!(
+                "task worktree branch mismatch: expected `{expected}`, found `{}`",
+                branch.as_deref().unwrap_or("detached HEAD")
+            )));
+        }
+    }
+    let branch_for_id = branch.clone().unwrap_or_else(|| "detached".into());
+    Ok(TaskWorkspace {
+        path: external_path(&path),
+        worktree_id: format!("branch:{branch_for_id}"),
+        branch,
+        base_git_sha: git_output(&path, &["rev-parse", "HEAD"]),
+    })
+}
+
+fn task_workspace(root: &Path, task: &TaskRecord, require_base_head: bool) -> Result<PathBuf> {
+    let Some(binding) = &task.workspace else {
+        return Ok(root.to_path_buf());
+    };
+    let path = PathBuf::from(&binding.path).canonicalize().map_err(|_| HarnessError::invalid(format!("task worktree is missing: {}; safe repair: restore or re-register that worktree with Git, then run `icarus task doctor --task {}`", binding.path, task.task_id)))?;
+    if !path.is_dir()
+        || !registered_worktrees(root)?
+            .iter()
+            .any(|registered| registered == &path)
+    {
+        return Err(HarnessError::invalid(format!("task worktree is not a live Git worktree: {}; run `icarus task doctor --task {}` for a safe repair", binding.path, task.task_id)));
+    }
+    if git_branch(&path) != binding.branch {
+        return Err(HarnessError::invalid(
+            "task worktree branch no longer matches its task binding",
+        ));
+    }
+    if require_base_head && git_output(&path, &["rev-parse", "HEAD"]) != binding.base_git_sha {
+        return Err(HarnessError::invalid("task worktree HEAD changed before execution; resume or create a new task from the current branch state"));
+    }
+    Ok(path)
 }
 
 pub fn task_status(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
@@ -2190,7 +2326,8 @@ pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<
     // Create an explicitly compatibility-mode current-workspace record at that boundary. A
     // launcher-created record already exists and is validated rather than replaced.
     if target == "executing" {
-        ensure_execution_preparation(&root, &task)?;
+        let workspace = task_workspace(&root, &task, true)?;
+        ensure_execution_preparation(&root, &task, &workspace)?;
     }
     let previous = task.status.clone();
     task.status = target.into();
@@ -2213,7 +2350,11 @@ pub fn transition_task(repo_root: &Path, task_id: &str, target: &str) -> Result<
 /// adapter-specific record while the task is still planned; direct MCP execution receives this
 /// deliberately narrower `mcp` compatibility record when it enters executing. This keeps the
 /// execution → verification audit boundary usable without pretending MCP has launcher hooks.
-fn ensure_execution_preparation(root: &Path, task: &TaskRecord) -> Result<RunPreparation> {
+fn ensure_execution_preparation(
+    root: &Path,
+    task: &TaskRecord,
+    workspace: &Path,
+) -> Result<RunPreparation> {
     let snapshot_name = format!("state/run-{}.json", task.task_id);
     if let Some(value) = read_snapshot(root, &snapshot_name)? {
         let prepared: RunPreparation = serde_json::from_value(value)?;
@@ -2226,7 +2367,7 @@ fn ensure_execution_preparation(root: &Path, task: &TaskRecord) -> Result<RunPre
     }
 
     load_repository_policy(root)?;
-    let base_status = git_output(root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let base_status = git_output(workspace, &["status", "--porcelain=v1"]).unwrap_or_default();
     let direct_context = serde_json::to_vec(&json!({
         "schema_version": 1,
         "kind": "mcp_execution_context_reference",
@@ -2245,9 +2386,13 @@ fn ensure_execution_preparation(root: &Path, task: &TaskRecord) -> Result<RunPre
         execution_id: task.execution_id.clone(),
         agent: "mcp".into(),
         workspace_mode: "current".into(),
-        worktree_id: "mcp-current".into(),
-        workspace_path: external_path(root),
-        base_git_sha: git_output(root, &["rev-parse", "HEAD"]),
+        worktree_id: task
+            .workspace
+            .as_ref()
+            .map(|binding| binding.worktree_id.clone())
+            .unwrap_or_else(|| "mcp-current".into()),
+        workspace_path: external_path(workspace),
+        base_git_sha: git_output(workspace, &["rev-parse", "HEAD"]),
         base_dirty_state_fingerprint: sha256(base_status.as_bytes()),
         context_pack_path: external_path(&direct_context_path),
         context_pack_hash: sha256(&direct_context),
@@ -2266,8 +2411,8 @@ fn ensure_execution_preparation(root: &Path, task: &TaskRecord) -> Result<RunPre
         launch_arguments: Vec::new(),
         compatibility_mode: true,
         wall_time_deadline: wall_time_deadline(&task.contract)?,
-        current_workspace_baseline: if git_repository(root) {
-            workspace_change_digests(root)?
+        current_workspace_baseline: if git_repository(workspace) {
+            workspace_change_digests(workspace)?
         } else {
             BTreeMap::new()
         },
@@ -2304,15 +2449,17 @@ pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
         )));
     }
     if let Some(checkpoint) = read_checkpoints(&root, task_id)?.last() {
-        let current_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+        let workspace = task_workspace(&root, &task, false)?;
+        let current_status =
+            git_output(&workspace, &["status", "--porcelain=v1"]).unwrap_or_default();
         let current_fingerprint = sha256(current_status.as_bytes());
-        let current_sha = git_output(&root, &["rev-parse", "HEAD"]);
+        let current_sha = git_output(&workspace, &["rev-parse", "HEAD"]);
         if checkpoint.dirty_state_fingerprint != current_fingerprint
             || checkpoint.git_sha != current_sha
         {
             return Err(HarnessError::invalid(format!(
-                "worktree divergence detected since checkpoint {}; inspect the repository and create a new checkpoint before resuming",
-                checkpoint.sequence
+                "bound worktree divergence detected since checkpoint {}; run `icarus task doctor --task {}` then checkpoint before resuming",
+                checkpoint.sequence, task.task_id
             )));
         }
     }
@@ -2326,7 +2473,11 @@ pub fn resume_task(repo_root: &Path, task_id: &str) -> Result<TaskRecord> {
             execution_id: task.execution_id.clone(),
             task_id: task.task_id.clone(),
             event_type: "task_resumed".into(),
-            worktree_id: "main".into(),
+            worktree_id: task
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.worktree_id.clone())
+                .unwrap_or_else(|| "main".into()),
             timestamp: None,
             payload: json!({"previous_execution_id": previous_execution_id, "status": task.status}),
         },
@@ -3044,20 +3195,26 @@ pub fn checkpoint_task(
         ));
     }
     let existing = read_checkpoints(&root, task_id)?;
-    let status = git_output(&root, &["status", "--porcelain=v1"]);
-    let files_touched = if git_repository(&root) {
-        workspace_changed_paths(&root)?.into_iter().collect()
+    let workspace = task_workspace(&root, &task, false)?;
+    let status = git_output(&workspace, &["status", "--porcelain=v1"]);
+    let files_touched = if git_repository(&workspace) {
+        workspace_changed_paths(&workspace)?.into_iter().collect()
     } else {
         Vec::new()
     };
     let dirty_state_fingerprint = sha256(status.unwrap_or_default().as_bytes());
+    let worktree_id = task
+        .workspace
+        .as_ref()
+        .map(|binding| binding.worktree_id.clone())
+        .unwrap_or_else(|| "main".into());
     let checkpoint = Checkpoint {
         schema_version: 1,
         task_id: task.task_id.clone(),
         execution_id: task.execution_id.clone(),
         sequence: existing.len() as u64 + 1,
         phase,
-        git_sha: git_output(&root, &["rev-parse", "HEAD"]),
+        git_sha: git_output(&workspace, &["rev-parse", "HEAD"]),
         dirty_state_fingerprint,
         files_touched,
         graph_version: graph_digest(&root),
@@ -3090,7 +3247,7 @@ pub fn checkpoint_task(
             execution_id: task.execution_id,
             task_id: task.task_id,
             event_type: "checkpoint".into(),
-            worktree_id: "main".into(),
+            worktree_id,
             timestamp: None,
             payload: json!({"checkpoint_sequence": checkpoint.sequence, "phase": checkpoint.phase, "dirty_state_fingerprint": checkpoint.dirty_state_fingerprint, "git_sha": checkpoint.git_sha}),
         },
@@ -3214,6 +3371,12 @@ pub fn verify_task_criterion(
         )));
     }
     let started_at = now_rfc3339();
+    let workspace = task_workspace(&root, &task, false)?;
+    let worktree_id = task
+        .workspace
+        .as_ref()
+        .map(|binding| binding.worktree_id.clone())
+        .unwrap_or_else(|| "main".into());
     let mut command = criterion
         .get("command")
         .and_then(Value::as_str)
@@ -3231,8 +3394,8 @@ pub fn verify_task_criterion(
             // arbitrary path outside the checkout appear to have been produced by this task.
             // The shared validator follows existing ancestors and rejects that escape before
             // the existence probe can follow the link.
-            validate_managed_workspace_path(&root, artifact)?;
-            let exists = root.join(artifact).exists();
+            validate_managed_workspace_path(&workspace, artifact)?;
+            let exists = workspace.join(artifact).exists();
             (
                 if exists { "pass" } else { "fail" }.into(),
                 None,
@@ -3269,13 +3432,13 @@ pub fn verify_task_criterion(
             #[cfg(unix)]
             let output = Command::new("/bin/sh")
                 .args(["-lc", &command_text])
-                .current_dir(&root)
+                .current_dir(&workspace)
                 .output()
                 .map_err(HarnessError::from)?;
             #[cfg(windows)]
             let output = Command::new("cmd")
                 .args(["/C", &command_text])
-                .current_dir(&root)
+                .current_dir(&workspace)
                 .output()
                 .map_err(HarnessError::from)?;
             let mut combined = output.stdout;
@@ -3298,7 +3461,7 @@ pub fn verify_task_criterion(
         .join("test-results")
         .join(format!("{}-{}.log", criterion_id, &output_digest[..12]));
     atomic_write(&output_path, &output)?;
-    let git_status = git_output(&root, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let git_status = git_output(&workspace, &["status", "--porcelain=v1"]).unwrap_or_default();
     let receipt = VerificationReceipt {
         schema_version: 1,
         task_id: task.task_id.clone(),
@@ -3307,11 +3470,11 @@ pub fn verify_task_criterion(
         criterion_type,
         status,
         command,
-        working_directory: root.display().to_string(),
+        working_directory: workspace.display().to_string(),
         started_at,
         finished_at: now_rfc3339(),
         exit_code,
-        git_sha: git_output(&root, &["rev-parse", "HEAD"]),
+        git_sha: git_output(&workspace, &["rev-parse", "HEAD"]),
         dirty_state_fingerprint: sha256(git_status.as_bytes()),
         contract_digest: task.contract_digest.clone(),
         toolchain: toolchain_versions(&root),
@@ -3340,7 +3503,7 @@ pub fn verify_task_criterion(
             execution_id: task.execution_id,
             task_id: task.task_id,
             event_type: "criterion_verified".into(),
-            worktree_id: "main".into(),
+            worktree_id,
             timestamp: None,
             payload: json!({"criterion_id": criterion_id, "status": receipt.status, "output_digest": receipt.output_digest, "git_sha": receipt.git_sha, "dirty_state_fingerprint": receipt.dirty_state_fingerprint}),
         },
@@ -3574,9 +3737,10 @@ pub fn seal_task(repo_root: &Path, task_id: &str) -> Result<SealResult> {
     if task.status != "verifying" {
         return Err(HarnessError::invalid("sealing requires a verifying task"));
     }
-    let current_sha = git_output(&root, &["rev-parse", "HEAD"]);
+    let workspace = task_workspace(&root, &task, false)?;
+    let current_sha = git_output(&workspace, &["rev-parse", "HEAD"]);
     let current_dirty = sha256(
-        git_output(&root, &["status", "--porcelain=v1"])
+        git_output(&workspace, &["status", "--porcelain=v1"])
             .unwrap_or_default()
             .as_bytes(),
     );
@@ -7496,7 +7660,8 @@ pub fn handoff_managed_task(repo_root: &Path, task_id: &str) -> Result<ManagedTa
     }
     // Older MCP tasks may already be executing from before transition_task created this record.
     // Recover them at the handoff boundary through the same explicit compatibility preparation.
-    let run = ensure_execution_preparation(&root, &task)?;
+    let workspace = task_workspace(&root, &task, false)?;
+    let run = ensure_execution_preparation(&root, &task, &workspace)?;
     if run.task_id != task.task_id || run.execution_id != task.execution_id {
         return Err(HarnessError::invalid(
             "managed task handoff does not match the prepared execution",
@@ -8000,6 +8165,40 @@ pub fn doctor(repo_root: &Path) -> Result<DoctorReport> {
         status: "pass".into(),
         detail: "harness v1".into(),
     });
+    let worktree_listing = git_checked_bytes(&root, &["worktree", "list", "--porcelain"]);
+    match worktree_listing {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let mut live = 0usize;
+            let mut stale = Vec::new();
+            for line in text.lines() {
+                if let Some(path) = line.strip_prefix("worktree ") {
+                    if PathBuf::from(path).canonicalize().is_ok() {
+                        live += 1;
+                    } else {
+                        stale.push(path.to_string());
+                    }
+                }
+            }
+            checks.push(DoctorCheck {
+                id: "worktrees".into(),
+                status: if stale.is_empty() { "pass" } else { "warn" }.into(),
+                detail: if stale.is_empty() {
+                    format!("{live} live Git worktree(s)")
+                } else {
+                    format!(
+                        "stale Git worktree registration(s): {}; safe repair: git worktree prune (does not delete .codex)",
+                        stale.join(", ")
+                    )
+                },
+            });
+        }
+        Err(_) => checks.push(DoctorCheck {
+            id: "worktrees".into(),
+            status: "warn".into(),
+            detail: "not a Git repository; task worktree binding is unavailable".into(),
+        }),
+    }
     let issues: Vec<String> = checks
         .iter()
         .filter(|check| check.status == "fail")
@@ -8010,6 +8209,150 @@ pub fn doctor(repo_root: &Path) -> Result<DoctorReport> {
         repo_id: Some(manifest.repo_id),
         checks,
         issues,
+    })
+}
+
+/// Diagnose one task's bound worktree. Optional rebind updates the task record in place
+/// (same task_id, same event chain). Never deletes agent worktree directories.
+pub fn doctor_task(
+    repo_root: &Path,
+    task_id: &str,
+    rebind: Option<PathBuf>,
+    expected_branch: Option<String>,
+) -> Result<TaskDoctorReport> {
+    let root = canonical_root(repo_root)?;
+    let mut task = task_status(&root, task_id)?;
+    let mut checks = Vec::new();
+    let mut repairs = Vec::new();
+    if let Some(path) = rebind {
+        task.workspace = Some(bind_task_workspace(&root, &path, expected_branch.clone())?);
+        save_task(&root, &task)?;
+        append_event(
+            &root,
+            EventInput {
+                execution_id: task.execution_id.clone(),
+                task_id: task.task_id.clone(),
+                event_type: "task_workspace_rebound".into(),
+                worktree_id: task.workspace.as_ref().unwrap().worktree_id.clone(),
+                timestamp: None,
+                payload: serde_json::to_value(task.workspace.as_ref().unwrap())?,
+            },
+        )?;
+        checks.push(DoctorCheck {
+            id: "rebind".into(),
+            status: "pass".into(),
+            detail: format!("rebound to {}", task.workspace.as_ref().unwrap().path),
+        });
+    }
+    match &task.workspace {
+        None => {
+            checks.push(DoctorCheck {
+                id: "binding".into(),
+                status: "warn".into(),
+                detail: "task is not bound to a Git worktree; lifecycle uses the repository root".into(),
+            });
+            repairs.push(format!(
+                "icarus task doctor --task {} --worktree <path> [--branch <name>]",
+                task.task_id
+            ));
+        }
+        Some(binding) => {
+            let path = PathBuf::from(&binding.path);
+            let canonical = path.canonicalize();
+            match canonical {
+                Err(_) => {
+                    checks.push(DoctorCheck {
+                        id: "path".into(),
+                        status: "fail".into(),
+                        detail: format!(
+                            "bound path is missing: {}; restore the Git worktree, then rebind — do not delete .codex",
+                            binding.path
+                        ),
+                    });
+                    repairs.push("git worktree list --porcelain".into());
+                    repairs.push(format!(
+                        "icarus task doctor --task {} --worktree <restored-path>",
+                        task.task_id
+                    ));
+                }
+                Ok(canonical) => {
+                    checks.push(DoctorCheck {
+                        id: "path".into(),
+                        status: "pass".into(),
+                        detail: canonical.display().to_string(),
+                    });
+                    let live = registered_worktrees(&root)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|registered| registered == &canonical);
+                    if live {
+                        checks.push(DoctorCheck {
+                            id: "git_worktree".into(),
+                            status: "pass".into(),
+                            detail: "Git lists this path as a live worktree".into(),
+                        });
+                    } else {
+                        checks.push(DoctorCheck {
+                            id: "git_worktree".into(),
+                            status: "fail".into(),
+                            detail: "Git does not list this path; run git worktree prune only if Git reports it stale, then rebind".into(),
+                        });
+                        repairs.push("git worktree prune".into());
+                    }
+                    if git_branch(&canonical) == binding.branch {
+                        checks.push(DoctorCheck {
+                            id: "branch".into(),
+                            status: "pass".into(),
+                            detail: binding
+                                .branch
+                                .clone()
+                                .unwrap_or_else(|| "detached HEAD".into()),
+                        });
+                    } else {
+                        checks.push(DoctorCheck {
+                            id: "branch".into(),
+                            status: "fail".into(),
+                            detail: format!(
+                                "bound branch {:?} vs live {:?}",
+                                binding.branch,
+                                git_branch(&canonical)
+                            ),
+                        });
+                    }
+                    let head = git_output(&canonical, &["rev-parse", "HEAD"]);
+                    if head == binding.base_git_sha {
+                        checks.push(DoctorCheck {
+                            id: "head".into(),
+                            status: "pass".into(),
+                            detail: head.unwrap_or_default(),
+                        });
+                    } else {
+                        checks.push(DoctorCheck {
+                            id: "head".into(),
+                            status: "warn".into(),
+                            detail: "HEAD moved after bind; executing still requires the recorded base until resume/rebind".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let issues: Vec<String> = checks
+        .iter()
+        .filter(|check| check.status == "fail")
+        .map(|check| format!("{}: {}", check.id, check.detail))
+        .collect();
+    if !issues.is_empty() {
+        repairs.push(format!("icarus task resume {}", task.task_id));
+    }
+    Ok(TaskDoctorReport {
+        healthy: issues.is_empty(),
+        task_id: task.task_id,
+        status: task.status,
+        workspace: task.workspace,
+        checks,
+        issues,
+        repairs,
     })
 }
 

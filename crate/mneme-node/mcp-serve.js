@@ -528,7 +528,7 @@ async function run() {
     'icarus_harness_init',
     {
       title: 'Initialize the ICARUS harness for this repository',
-      description: 'Call at the start of every new coding-agent session before code search, planning, or edits when <repo>/.icarus/manifest.yaml is absent. It creates the tracked repository identity and policy exactly once; repeated calls are idempotent and report the existing harness. Do not manually invent or write .icarus state if this fails.',
+      description: 'Call once per repository if <repo>/.icarus/manifest.yaml is absent. Idempotent. Failure does not block icarus_recall or icarus_save_memory. Do not invent harness state. Use the full task lifecycle only for high-risk work.',
       inputSchema: { repo: z.string().default(process.cwd()), agents: z.array(z.string()).default([]).describe('Optional adapter instruction targets, for example ["claude"] or ["codex"].') },
     },
     async ({ repo, agents }) => {
@@ -540,11 +540,28 @@ async function run() {
     'icarus_task_start',
     {
       title: 'Start a governed ICARUS coding task',
-      description: 'Call before the first managed code write. The calling agent writes the objective and explicit contract; ICARUS persists an immutable v1 contract and returns task_id plus execution_id. This tool makes no LLM or network call.',
-      inputSchema: { repo: z.string().default(process.cwd()), objective: z.string(), contract: taskContractSchema },
+      description: 'High-risk governed tasks only. Pass worktree (a live Git worktree) and optional branch. Sibling worktrees and a dirty repository root do not affect this task. Ordinary edits should use icarus_recall / icarus_save_memory instead.',
+      inputSchema: { repo: z.string().default(process.cwd()), objective: z.string(), contract: taskContractSchema, worktree: z.string().optional().describe('Explicit registered Git worktree for this task. A dirty repository root does not affect this worktree.'), branch: z.string().optional().describe('Expected branch in the registered worktree.') },
     },
-    async ({ repo, objective, contract }) => {
-      try { return textResult(harnessFor().startTask(repo, { objective, contract })); } catch (e) { return errorResult(e); }
+    async ({ repo, objective, contract, worktree, branch }) => {
+      try { return textResult(harnessFor().startTask(repo, { objective, contract, worktree, branch })); } catch (e) { return errorResult(e); }
+    },
+  );
+
+  server.registerTool(
+    'icarus_task_doctor',
+    {
+      title: 'Diagnose a governed task worktree',
+      description: 'Read-only diagnosis of the task-bound Git worktree. Reports stale sibling registrations and safe repairs (git worktree prune, rebind). Never deletes .codex folders. Optional worktree rebinds the same task_id.',
+      inputSchema: {
+        repo: z.string().default(process.cwd()),
+        task_id: z.string(),
+        worktree: z.string().optional().describe('If set, rebind this task to that live Git worktree.'),
+        branch: z.string().optional(),
+      },
+    },
+    async ({ repo, task_id, worktree, branch }) => {
+      try { return textResult(harnessFor().doctorTask(repo, task_id, worktree, branch)); } catch (e) { return errorResult(e); }
     },
   );
 

@@ -402,7 +402,7 @@ Remote embeddings and reranking improve recall quality when available, but local
 
 - **Fast/read-only lane:** for investigation, log analysis, architecture questions, curls, status, or ordinary answers, do not create a governed task. Use \`icarus_recall\` only when prior project knowledge could change the answer. Use \`icarus_why_code\` or \`icarus_recall_bugs\` before changing unfamiliar or historically fragile code. Use HIVEMIND tools only for scoped shared memory or live-system facts they own.
 - **Normal code-change lane:** before a non-trivial bug fix or feature, recall only targeted prior decisions, bugs, refactors, and test coverage. A graph is an optional accelerator, never a prerequisite: use \`icarus_graph_query\` only if an index is already available. If it is absent or stale, inspect the relevant files directly and continue. Build with \`icarus_graph_build\` only when the user explicitly asks for a graph or after a major restructuring, and accept its bounded result without waiting/retrying. Never say a graph is “required” before tracing, planning, or editing ordinary work; graph failure must not block low-risk work.
-- **Full governed lifecycle:** use \`icarus_task_start → icarus_task_transition → icarus_context_get → icarus_action_check → icarus_checkpoint → icarus_task_handoff\` only for high-risk changes: production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work that must resume safely across sessions. Advance \`created → orienting → contracted → planned → executing\` one legal state at a time. Use \`icarus_task_verify\` only for executable criteria; verification still requires real production receipts, and ICARUS never replaces authenticated curls, database checks, logs, or lifecycle canaries.
+- **Full governed lifecycle:** use \`icarus_task_start\` (with \`worktree\` + \`branch\`) → \`icarus_task_transition\` → \`icarus_context_get\` → \`icarus_action_check\` → \`icarus_checkpoint\` → \`icarus_task_handoff\` only for high-risk changes: production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work that must resume safely across sessions. Advance \`created → orienting → contracted → planned → executing\` one legal state at a time. Checkpoint, verify, and seal observe only the bound worktree. If a worktree is stale, call \`icarus_task_doctor\` — never delete \`.codex\`. Use \`icarus_task_verify\` only for executable criteria; verification still requires real production receipts, and ICARUS never replaces authenticated curls, database checks, logs, or lifecycle canaries.
 
 ### Durable project memory
 
@@ -472,8 +472,9 @@ function printToolSummary() {
   console.log('  coding: icarus_ingest_code, icarus_recall_bugs, icarus_log_decision, icarus_track_refactor,');
   console.log('          icarus_test_coverage, icarus_why_code');
   console.log('  graph:  icarus_graph_build, icarus_graph_status, icarus_graph_query (native symbol/call graph)');
-  console.log('  harness: icarus_harness_init (mandatory first-session bootstrap), icarus_task_start, icarus_task_transition,');
-  console.log('           icarus_context_get, icarus_task_handoff, icarus_task_verify, icarus_task_seal');
+  console.log('  harness: icarus_harness_init (once if missing; does not block recall/save), icarus_task_start,');
+  console.log('           icarus_task_doctor, icarus_task_transition, icarus_context_get, icarus_task_handoff,');
+  console.log('           icarus_task_verify, icarus_task_seal');
 }
 
 async function run(flags) {
