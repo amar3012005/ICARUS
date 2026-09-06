@@ -8,6 +8,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.88
+
+### Fixed
+- **Cross-agent durable handoffs:** the local daemon now declares a versioned RPC protocol. A newer CLI/MCP client replaces an older incompatible daemon before it handles repository-scoped memory, preventing saves from falling back to a separately opened shard or silently using the wrong data root. Daemon operation errors now remain actionable instead of becoming misleading shard-lock failures.
+
 ## v0.3.87
 
 ### Added

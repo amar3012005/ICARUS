@@ -16,13 +16,18 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const {
-  HOME, loadCfg, ingestDir, recallQuery, statusReport, openStore, saveLocalMemory,
+  HOME, ICARUS_VERSION, loadCfg, ingestDir, recallQuery, statusReport, openStore, saveLocalMemory,
   saveStructuredMemory, getStructuredMemory, listStructuredMemories, updateStructuredMemory,
   deleteStructuredMemory, traverseStructuredGraph, recallByTags, saveIntelligentMemory,
   hivemindIngestDir,
   richOrgStats,
   deleteOrgShard,
 } = require('./cli-lib.js');
+
+// Bump only when the daemon RPC contract changes incompatibly.  A CLI must never reuse an
+// older daemon simply because its /health endpoint answers: old daemons may ignore the
+// repository-scoped cfg sent over RPC and silently route a save to a different shard.
+const DAEMON_PROTOCOL = 2;
 
 const DEFAULT_PORT = Number(process.env.ICARUS_DAEMON_PORT || 8137);
 
@@ -124,7 +129,9 @@ function createServer(cfg) {
         return send(res, 401, { error: 'unauthorized local ICARUS daemon client' });
       }
       if (req.method === 'GET' && url.pathname === '/health') {
-        return send(res, 200, { service: 'icarus-daemon', pid: process.pid });
+        return send(res, 200, {
+          service: 'icarus-daemon', pid: process.pid, protocol: DAEMON_PROTOCOL, version: ICARUS_VERSION,
+        });
       }
       if (req.method === 'POST' && url.pathname === '/shutdown') {
         send(res, 200, { stopping: true });
@@ -279,4 +286,4 @@ if (require.main === module) {
   if (runIdx >= 0) run(Number(args[runIdx + 1]) || DEFAULT_PORT);
 }
 
-module.exports = { start, stop, status, run, executeMemoryOperation };
+module.exports = { start, stop, status, run, executeMemoryOperation, DAEMON_PROTOCOL };

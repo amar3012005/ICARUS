@@ -9,8 +9,14 @@ import { spawn } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const testDir = join(here, '..', 'tests', 'engine');
+// The shared-memory daemon intentionally coordinates separate local agents over loopback.
+// The macOS sandbox conformance job denies *all* networking, including localhost, so it runs
+// only the engine corpus that is meaningful under that restriction. The regular engine job
+// always runs this file too and remains the daemon/cross-agent integration gate.
+const networkIsolated = process.env.ICARUS_TEST_NETWORK_ISOLATED === '1';
 const tests = readdirSync(testDir)
   .filter((name) => name.endsWith('.test.mjs'))
+  .filter((name) => !networkIsolated || name !== 'mcp-native.test.mjs')
   .sort()
   .map((name) => join(testDir, name));
 

@@ -3,8 +3,8 @@ use icarus_harness::{
     attest_task_criterion, authority_snapshot_digest, authorize_action, authorize_adapter_write,
     bind_codex_app_server_thread, build_authority_sync_request, build_context, checkpoint_task,
     codex_app_server_resume_session, create_learning_capture, decide_codex_app_server_approval,
-    doctor, doctor_task, evaluate_skill, export_task, graph_source_fingerprint, handoff_managed_task, init,
-    inspect_authority_sync, install_authority_snapshot,
+    doctor, doctor_task, evaluate_skill, export_task, graph_source_fingerprint,
+    handoff_managed_task, init, inspect_authority_sync, install_authority_snapshot,
     install_authority_snapshot_with_replacement, load_repository_policy, migrate, prepare_run,
     read_snapshot, reconcile_run, record_active_skill_outcome, record_adapter_lifecycle,
     record_adapter_post_action, record_codex_app_server_event, record_graph_receipt,
@@ -20,6 +20,7 @@ use rusqlite::Connection;
 use std::fs;
 #[cfg(feature = "test-failpoints")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -2262,14 +2263,12 @@ fn task_bound_worktree_enters_execution_despite_a_dirty_parent_checkout() {
     let run = read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
         .unwrap()
         .unwrap();
-    assert_eq!(
-        run["workspace_path"],
-        workspace
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    );
+    // Run records use the external path spelling so Git and agent CLIs work on Windows
+    // (without its `\\\\?\\` canonical prefix). Compare canonical filesystem identity instead.
+    let recorded_workspace = PathBuf::from(run["workspace_path"].as_str().unwrap())
+        .canonicalize()
+        .unwrap();
+    assert_eq!(recorded_workspace, workspace.canonicalize().unwrap());
     assert_eq!(run["worktree_id"], "branch:chat-orchestration-fast");
 
     fs::write(repo.path().join("root-noise.txt"), "unrelated root dirt\n").unwrap();
@@ -2287,8 +2286,10 @@ fn task_bound_worktree_enters_execution_despite_a_dirty_parent_checkout() {
 
     let report = doctor_task(repo.path(), &task.task_id, None, None).unwrap();
     assert!(report.healthy);
-    assert!(report.checks.iter().any(|check| check.id == "git_worktree"
-        && check.status == "pass"));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.id == "git_worktree" && check.status == "pass"));
     let repo_doctor = doctor(repo.path()).unwrap();
     assert!(repo_doctor
         .checks

@@ -176,7 +176,7 @@ jobs:
       - name: Network-isolated native harness conformance
         if: runner.os == 'macOS'
         working-directory: crate/mneme-node
-        run: sandbox-exec -p '(version 1) (allow default) (deny network*)' npm run test:engine
+        run: ICARUS_TEST_NETWORK_ISOLATED=1 sandbox-exec -p '(version 1) (allow default) (deny network*)' npm run test:engine
 
   # A release workflow can mask packaging breakage because it is both the producer and verifier
   # of the artifact.  Build the single-file executable independently on the normal public CI
