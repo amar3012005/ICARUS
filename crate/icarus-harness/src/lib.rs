@@ -2790,6 +2790,15 @@ fn workspace_entry_digest(root: &Path, path: &str) -> Result<String> {
             sha256(target.to_string_lossy().as_bytes())
         ));
     }
+    // A Git submodule (or another nested checkout) is a directory, but it is still a single
+    // parent-repository change boundary. Record its committed identity and local dirty state
+    // without traversing its files. Authorization remains responsible for refusing writes
+    // across that repository boundary.
+    if metadata.file_type().is_dir() && git_repository(&candidate) {
+        let head = git_output(&candidate, &["rev-parse", "HEAD"]).unwrap_or_default();
+        let status = git_output(&candidate, &["status", "--porcelain=v1"]).unwrap_or_default();
+        return Ok(format!("gitlink:{head}:{}", sha256(status.as_bytes())));
+    }
     Err(HarnessError::invalid(format!(
         "managed workspace path `{path}` is not a regular file or symlink"
     )))
