@@ -8249,7 +8249,8 @@ pub fn doctor_task(
             checks.push(DoctorCheck {
                 id: "binding".into(),
                 status: "warn".into(),
-                detail: "task is not bound to a Git worktree; lifecycle uses the repository root".into(),
+                detail: "task is not bound to a Git worktree; lifecycle uses the repository root"
+                    .into(),
             });
             repairs.push(format!(
                 "icarus task doctor --task {} --worktree <path> [--branch <name>]",
