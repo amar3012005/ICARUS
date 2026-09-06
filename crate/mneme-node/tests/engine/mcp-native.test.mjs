@@ -47,6 +47,35 @@ async function stopDaemonAt(home) {
   });
 }
 
+async function legacyDaemon(home) {
+  mkdirSync(home, { recursive: true });
+  const token = 'legacy-daemon-test-token';
+  writeFileSync(join(home, 'daemon.token'), token, { mode: 0o600 });
+  const server = http.createServer((req, res) => {
+    if (req.headers['x-icarus-daemon-token'] !== token) {
+      res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/health') {
+      // This is exactly the shape returned by an older ICARUS daemon: it claims to be
+      // healthy, but has no protocol declaration and cannot safely receive a newer client's
+      // repository-scoped configuration.
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ service: 'icarus-daemon', pid: 1 }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/shutdown') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ stopping: true }));
+      setImmediate(() => server.close());
+      return;
+    }
+    res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'legacy daemon cannot process this request' }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  writeFileSync(join(home, 'daemon.port'), String(port));
+  return { server, port };
+}
+
 afterEach(stopChildren);
 
 function startMcp(env) {
@@ -191,6 +220,39 @@ test('two MCP sessions share one daemon-owned shard without a lock error', async
     await stopChildren();
     await stopDaemonAt(home);
     if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('MCP replaces an incompatible older daemon before sharing a repository-scoped shard', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-daemon-upgrade-'));
+  const home = join(root, 'home');
+  const legacy = await legacyDaemon(home);
+  try {
+    const first = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const second = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    for (const [id, mcp] of [[1, first], [2, second]]) {
+      const initialized = await mcp.request(id, 'initialize', {
+        protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-daemon-upgrade', version: '1.0.0' },
+      });
+      assert.equal(initialized.result.serverInfo.name, 'icarus');
+      mcp.notify('notifications/initialized', {});
+    }
+
+    const saved = await tool(first, 3, 'icarus_save_memory', {
+      org: 'daemon-upgrade', title: 'Daemon protocol handoff',
+      content: 'A current ICARUS session replaces an incompatible daemon before saving this shared handoff.',
+      tags: ['daemon', 'upgrade', 'handoff'], source_type: 'decision',
+    });
+    const recalled = await tool(second, 4, 'icarus_recall', {
+      org: 'daemon-upgrade', query: 'incompatible daemon shared handoff', topK: 5,
+    });
+    assert.match(saved.id, /^[0-9a-f-]{36}$/i);
+    assert.ok(recalled.some((hit) => /replaces an incompatible daemon/i.test(hit.text)), JSON.stringify(recalled));
+  } finally {
+    await stopChildren();
+    await stopDaemonAt(home);
+    await new Promise((resolve) => legacy.server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
