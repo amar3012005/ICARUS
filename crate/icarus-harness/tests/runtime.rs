@@ -2301,6 +2301,111 @@ fn task_bound_worktree_enters_execution_despite_a_dirty_parent_checkout() {
 }
 
 #[test]
+fn dirty_submodule_is_recorded_as_a_baseline_boundary_not_a_transition_error() {
+    let repo = repo();
+    fs::remove_file(repo.path().join(".git")).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    for (key, value) in [
+        ("user.email", "test@example.invalid"),
+        ("user.name", "test"),
+    ] {
+        assert!(Command::new("git")
+            .args(["config", key, value])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::write(repo.path().join("README.md"), "root\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "root"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+
+    let submodule = tempdir().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(submodule.path())
+        .status()
+        .unwrap()
+        .success());
+    for (key, value) in [
+        ("user.email", "test@example.invalid"),
+        ("user.name", "test"),
+    ] {
+        assert!(Command::new("git")
+            .args(["config", key, value])
+            .current_dir(submodule.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::write(submodule.path().join("ui.js"), "export const ui = 1;\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(submodule.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "initial ui"])
+        .current_dir(submodule.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            submodule.path().to_str().unwrap(),
+            "frontend",
+        ])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["commit", "-qm", "add frontend"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    fs::write(repo.path().join("frontend/ui.js"), "export const ui = 2;\n").unwrap();
+
+    init(repo.path(), InitOptions::default()).unwrap();
+    let task = start_task(repo.path(), "change backend only", contract()).unwrap();
+    for state in ["orienting", "contracted", "planned", "executing"] {
+        transition_task(repo.path(), &task.task_id, state).unwrap();
+    }
+    let run = read_snapshot(repo.path(), &format!("state/run-{}.json", task.task_id))
+        .unwrap()
+        .unwrap();
+    assert!(run["current_workspace_baseline"].get("frontend").is_some());
+}
+
+#[test]
 fn wall_time_budget_is_validated_before_task_creation() {
     let repo = repo();
     init(repo.path(), InitOptions::default()).unwrap();

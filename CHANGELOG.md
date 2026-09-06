@@ -8,6 +8,11 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.89
+
+### Fixed
+- **Dirty submodule task transitions:** task baseline fingerprinting now records a nested Git repository as one `gitlink` boundary (its HEAD plus dirty-state digest) rather than rejecting its directory. A task can enter execution while an unrelated frontend submodule has an existing patch; adapter writes remain forbidden across that repository boundary, and later drift is still observable.
+
 ## v0.3.88
 
 ### Fixed
