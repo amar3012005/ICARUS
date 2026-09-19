@@ -15,10 +15,9 @@ From the repository root:
 
 ```bash
 icarus mcp install codex
-icarus harness init --agent codex
 ```
 
-Use `claude` or `cursor` instead of `codex` when appropriate. Installation registers the MCP server and writes a marked project instruction block. That block makes the repository org explicit and tells new agent sessions to initialize a missing `.icarus/manifest.yaml` safely.
+Use `claude` or `cursor` instead of `codex` when appropriate. Installation registers the MCP server, creates a repository-local shard, and writes a marked project instruction block. That block makes the repository org explicit and teaches new sessions the memory loop. It does not enable the harness.
 
 Restart the coding agent after installation or an ICARUS upgrade so it starts the current MCP binary.
 
@@ -103,7 +102,7 @@ Run `icarus compact --org <repo-org>` after meaningful deletion or cleanup; it r
 
 ## Harness and governance: use only when warranted
 
-Initialize the harness for every repository, but use its full task lifecycle only for:
+Enable the harness deliberately when a repository needs it, then use its full task lifecycle only for:
 
 - production releases and deployments;
 - migrations, destructive operations, or broad refactors;
@@ -115,6 +114,12 @@ For those tasks, use the governed lifecycle:
 ```text
 task start → legal state transitions → context_get → action_check
 → checkpoint → real verification evidence → handoff/seal
+```
+
+Opt in from the repository root without changing the memory shard:
+
+```bash
+icarus mcp install codex --harness
 ```
 
 ICARUS does not replace production checks. Authenticated requests, database assertions, logs, deployment checks, and lifecycle canaries remain the proof of product behavior. A harness defect is distinct from a product defect: record it, then continue safe work through the lightweight memory lane where possible.

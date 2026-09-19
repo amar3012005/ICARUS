@@ -44,3 +44,28 @@ test('installer persists exactly one ICARUS PATH block for each shell startup mo
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test('installer defaults to lexical memory and records an explicit selected profile', {
+  skip: process.platform === 'win32' ? 'POSIX installer is not used on Windows' : false,
+}, () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'icarus-installer-profile-'));
+  try {
+    const installerLibrary = join(fixture, 'install-lib.sh');
+    writeFileSync(installerLibrary, readFileSync(INSTALLER, 'utf8').replace(/\nmain "\$@"\s*$/, '\n'), { mode: 0o700 });
+    const home = join(fixture, 'home');
+    const script = `
+      set -euo pipefail
+      export HOME=${JSON.stringify(home)}
+      export ICARUS_HOME=${JSON.stringify(join(home, '.icarus'))}
+      export ICARUS_INSTALL_PROFILE=knowledge
+      source ${JSON.stringify(installerLibrary)}
+      mkdir -p "$HOME/.icarus"
+      write_config
+      grep -Fqx '  "installation": { "profile": "knowledge" }' "$HOME/.icarus/config.json"
+      grep -Fqx '    "disabled": true,' "$HOME/.icarus/config.json"
+    `;
+    execFileSync('bash', ['-c', script], { cwd: ROOT, stdio: 'pipe' });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});

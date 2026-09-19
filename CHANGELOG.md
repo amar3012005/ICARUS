@@ -8,6 +8,21 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+## v0.3.89
+
+### Changed
+- **Memory-first installation:** the installer now asks for an explicit Agent Memory, Knowledge
+  Space preview, or Harness profile. Agent Memory is the default and starts with local lexical
+  recall; it does not require a model, remote provider, or harness.
+- **Explicit harness opt-in:** `icarus mcp install <agent>` now creates a repository-local memory
+  shard and memory instructions without creating a harness. Add `--harness` to bind governed
+  instructions and initialize a harness for that repository.
+
+### Added
+- **Agent Bus integration contract:** `docs/AGENT_BUS_INTEGRATION.md` defines the future optional
+  bridge to the existing local `bus.v1` Agent Bus: bounded envelopes carry ICARUS memory ids,
+  never transcripts or authority, and a missing bus cannot block local memory.
+
 ## v0.3.88
 
 ### Fixed

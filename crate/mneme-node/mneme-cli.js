@@ -34,7 +34,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -1696,14 +1696,16 @@ async function main() {
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too
-  icarus mcp install <claude|codex|cursor>
+  icarus mcp install <claude|codex|cursor> [--harness]
                                         run from a project's own folder: registers just that
                                         agent, writes its project instruction file (CLAUDE.md/
                                         AGENTS.md/.cursor rule) with THIS repo's own derived org
                                         name, and physically creates a real .icarus/data/<org>
                                         shard right there in the repo (added to .gitignore) --
                                         every agent working in this repo shares that one org, so
-                                        Claude Code/Codex/Cursor all read/write the same memory
+                                        Claude Code/Codex/Cursor all read/write the same memory.
+                                        Add --harness only to opt this repository into governed
+                                        high-risk task instructions and a harness manifest.
   icarus mcp serve                     run the MCP server directly (stdio) — what the agents
                                         installed above actually launch
   icarus daemon start [--port 8137]    run ICARUS as a persistent local HTTP service (a shared
@@ -1769,4 +1771,4 @@ if (require.main === module) main();
 
 // Exported solely for deterministic local launcher tests. It retains no authority: the deadline
 // and every lifecycle decision remain Rust-derived through the injected harness bridge.
-module.exports = { observeManagedAdapter };
+module.exports = { observeManagedAdapter, parseFlags };

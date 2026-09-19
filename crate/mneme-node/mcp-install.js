@@ -304,7 +304,7 @@ description: Bootstrap ICARUS and use its durable memory plus risk-based harness
 
 # ICARUS Agent Memory
 
-At the start of a repository session, without asking the user, first run \`icarus update --check\`. If it reports an update, launch \`icarus update\` in the background and continue the user's task; do not wait for, retry, or let an update block safe work. Then ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. Run \`icarus harness init --agent ${agent} --repo .\`; it is idempotent. If registration changed or a background update finishes, restart ${agent} before relying on MCP tools. Never hand-write \`.icarus\` state.
+At the start of a repository session, without asking the user, first run \`icarus update --check\`. If it reports an update, launch \`icarus update\` in the background and continue the user's task; do not wait for, retry, or let an update block safe work. Then ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. MCP registration creates/uses the repository memory shard; it does **not** require a harness. If registration changed or a background update finishes, restart ${agent} before relying on MCP tools. Never hand-write \`.icarus\` state. Initialize the harness only when the repository opted into the harness profile or the actual task is high-risk.
 
 ICARUS is primarily the repository's persistent memory filesystem, not a task gate. It needs no LLM key, embedding key, or remote service to save and retrieve local durable knowledge: local lexical recall remains the baseline, while vectors and reranking are optional quality improvements. Treat facts, decisions, instructions, and meaningful events as distinct memory types through precise tags such as \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, and \`memory:event\`. Keep temporary task state short-lived unless it matters to a later session.
 
@@ -381,14 +381,14 @@ function removeStandingInstructions() { return removeMarkedBlock(globalClaudeMdP
 // .cursor/rules/*.mdc — YAML-frontmattered rule files, `alwaysApply: true` making one load on
 // every request the same way CLAUDE.md/AGENTS.md do.
 
-function projectBlockBody(orgName, agentName) {
+function projectBlockBody(orgName, agentName, { harnessEnabled = false } = {}) {
   return `## ICARUS memory (this project)
 
 This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.
 
 ### Mandatory first-session bootstrap
 
-At the beginning of **every new agent session**, first run \`icarus update --check\`. If it reports an update, start \`icarus update\` in the background and immediately continue the user's task—never wait for it or make safe work depend on it. Check for \`.icarus/manifest.yaml\` and bootstrap ICARUS without asking the user: ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable, then run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`). Both are idempotent. If MCP registration changes or the background update finishes, restart ${agentName} before relying on the new MCP binary. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
+At the beginning of **every new agent session**, first run \`icarus update --check\`. If it reports an update, start \`icarus update\` in the background and immediately continue the user's task—never wait for it or make safe work depend on it. Ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable. The repository-local memory shard is ready without a harness manifest. ${harnessEnabled ? `This repository opted into the harness profile: if \`.icarus/manifest.yaml\` is absent, run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`) before harness-dependent work.` : `Do **not** initialize a harness merely because a session started. Use \`icarus_harness_init\` only when the user opts this repository into the harness or an actual high-risk task needs governed execution.`} If MCP registration changes or the background update finishes, restart ${agentName} before relying on the new MCP binary. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
 
 ### Risk-based operating policy
 
@@ -433,21 +433,21 @@ function projectClaudeMdPath(repo) { return path.join(repo || process.cwd(), 'CL
 function projectAgentsMdPath(repo) { return path.join(repo || process.cwd(), 'AGENTS.md'); }
 function projectCursorRulePath(repo) { return path.join(repo || process.cwd(), '.cursor', 'rules', 'icarus.mdc'); }
 
-function installProjectClaude(repo) {
+function installProjectClaude(repo, options) {
   const orgName = repoOrgName(repo);
-  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'claude')}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'claude', options)}\n${PROJECT_MARK_END}`;
   return { agent: 'claude-code (project)', orgName, ...writeMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
-function installProjectAgents(repo) {
+function installProjectAgents(repo, options) {
   const orgName = repoOrgName(repo);
-  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'codex')}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n${projectBlockBody(orgName, 'codex', options)}\n${PROJECT_MARK_END}`;
   return { agent: 'codex (AGENTS.md)', orgName, ...writeMarkedBlock(projectAgentsMdPath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
-function installProjectCursor(repo) {
+function installProjectCursor(repo, options) {
   const orgName = repoOrgName(repo);
   // .mdc frontmatter: alwaysApply makes Cursor load this rule on every request, the same "always
   // present, no opt-in needed" behavior CLAUDE.md/AGENTS.md get for free.
-  const block = `${PROJECT_MARK_START}\n---\ndescription: ICARUS memory — this project's org\nalwaysApply: true\n---\n\n${projectBlockBody(orgName, 'cursor')}\n${PROJECT_MARK_END}`;
+  const block = `${PROJECT_MARK_START}\n---\ndescription: ICARUS memory — this project's org\nalwaysApply: true\n---\n\n${projectBlockBody(orgName, 'cursor', options)}\n${PROJECT_MARK_END}`;
   return { agent: 'cursor (.mdc rule)', orgName, ...writeMarkedBlock(projectCursorRulePath(repo), PROJECT_MARK_START, PROJECT_MARK_END, block) };
 }
 function detectProjectClaude(repo) { return detectMarkedBlock(projectClaudeMdPath(repo), PROJECT_MARK_START); }
@@ -498,6 +498,7 @@ async function run(flags) {
   }
   if (agentArg) {
     const { mcp, global, project } = AGENT_INSTALLERS[agentArg];
+    const harnessEnabled = flags?.harness === true;
     console.log(`icarus mcp install ${agentArg} — registering as command: ${command}\n`);
     const mcpResult = mcp(command);
     if (mcpResult.installed) console.log(`  ✓ ${mcpResult.agent}: registered in ${mcpResult.path}`);
@@ -509,7 +510,7 @@ async function run(flags) {
     }
     const skill = installGlobalSkill(agentArg);
     if (skill.path) console.log(`  ${skill.installed ? '✓' : '·'} global ICARUS skill: ${skill.installed ? skill.reason : skill.reason} in ${skill.path}`);
-    const p = project(process.cwd());
+    const p = project(process.cwd(), { harnessEnabled });
     if (p.installed) console.log(`  ✓ project instructions: ${p.reason === 'updated' ? 'updated' : 'added to'} ${p.path} (org: "${p.orgName}")`);
     else if (p.reason === 'already installed') console.log(`  · project instructions: already in ${p.path} (org: "${p.orgName}")`);
     // Physically create the repo-local shard NOW, not lazily on first save — a real, existing
@@ -524,11 +525,15 @@ async function run(flags) {
     } catch (e) {
       console.log(`  · shard creation skipped: ${e.message}`);
     }
-    try {
-      const harness = require('./harness.js').initHarness(process.cwd(), { agents: [agentArg] });
-      console.log(`  ✓ harness ${harness.created ? 'initialized' : 'already initialized'} (${harness.repository_id || 'repository ready'})`);
-    } catch (e) {
-      console.log(`  · harness initialization skipped: ${e.message}`);
+    if (harnessEnabled) {
+      try {
+        const harness = require('./harness.js').initHarness(process.cwd(), { agents: [agentArg] });
+        console.log(`  ✓ harness ${harness.created ? 'initialized' : 'already initialized'} (${harness.repository_id || 'repository ready'})`);
+      } catch (e) {
+        console.log(`  · harness initialization skipped: ${e.message}`);
+      }
+    } else {
+      console.log('  · harness: not enabled (memory filesystem profile). Re-run with --harness for governed high-risk work.');
     }
     console.log(`\nRestart ${agentArg} to pick up the MCP server. This project's icarus org is "${p.orgName}" — pass org: "${p.orgName}" on tool calls here.`);
     installLaunchAgent();
