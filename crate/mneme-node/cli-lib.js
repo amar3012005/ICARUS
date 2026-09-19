@@ -580,8 +580,12 @@ function setOpenRouterApiKey(key, cfg) {
     model: cfg.llm?.modelSelected ? cfg.llm.model : DEFAULT_OPENROUTER_SYNTHESIS_MODEL, modelSelected: !!cfg.llm?.modelSelected };
   saveCfg(cfg);
 }
-function openRouterApiKey(cfg) {
-  return process.env.OPENROUTER_API_KEY || keychainOpenRouterKey() || cfg.llm?.apiKey || null;
+function openRouterApiKey(cfg, { keychain = keychainOpenRouterKey, env = process.env } = {}) {
+  // An explicit `/llm-api` choice must win over an inherited shell variable. Otherwise a stale
+  // OPENROUTER_API_KEY in an editor/terminal environment keeps producing 401s even after the
+  // user has securely replaced it in Keychain. Environment values remain a useful fallback for
+  // headless installs and non-macOS users.
+  return keychain() || cfg.llm?.apiKey || env.OPENROUTER_API_KEY || null;
 }
 function resolveSynthesisModel(cfg) {
   return cfg.llm?.modelSelected && cfg.llm?.model ? cfg.llm.model : DEFAULT_OPENROUTER_SYNTHESIS_MODEL;
@@ -694,6 +698,12 @@ function consumeOpenRouterSse(buffer, onToken, onError = () => {}) {
 }
 function classifyChatFailure(error) {
   const detail = error?.message || String(error);
+  if (/\bOpenRouter chat\s+(401|403)\b|\b(User not found|invalid api key|unauthorized)\b/i.test(detail)) {
+    return { kind: 'openrouter-authentication', message: 'OpenRouter rejected the configured API key — replace it with /llm-api <openrouter-api-key>. Local /recall remains available without an LLM.' };
+  }
+  if (/no LLM API key set|chat requires an OpenRouter key/i.test(detail)) {
+    return { kind: 'llm-not-connected', message: 'No OpenRouter synthesis key is connected — run /llm-api <openrouter-api-key>, then retry. Local /recall works without one.' };
+  }
   if (/\bPROHIBITED_CONTENT\b|blocked the request/i.test(detail)) {
     return { kind: 'provider-policy', message: 'provider safety policy blocked synthesis — local recall completed; inspect the recalled evidence above' };
   }
@@ -2399,7 +2409,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.90';
+const ICARUS_VERSION = '0.3.91';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

@@ -478,7 +478,8 @@ guided_setup() {
 
   step "Step 2/4 — memory generation (distills ingested text into key facts before storing)"
   if [ -n "${OPENROUTER_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
-    ok "API key already in the environment — memory generation is enabled, nothing to do."
+    ok "API key detected in the environment — memory generation is enabled."
+    dim "    If chat reports an authentication error later, replace the key with /llm-api <openrouter-api-key>."
   else
     dim "  Skip this entirely and ICARUS still works — raw text is stored and searchable as-is."
     dim "    1) OpenRouter (one key, routes to Claude/GPT/etc by model name)"
@@ -496,7 +497,8 @@ guided_setup() {
 
   step "Step 3/4 — vector recall (semantic search on top of lexical/BM25)"
   if [ -n "${OPENROUTER_API_KEY:-}${LITELLM_API_KEY:-}" ]; then
-    ok "API key already in the environment — vector recall is enabled, nothing to do."
+    ok "API key detected in the environment — vector recall is enabled."
+    dim "    ICARUS automatically falls back to local lexical/BM25 retrieval if this provider is unavailable."
   else
     dim "  Skip this entirely and ICARUS still works — BM25 lexical search needs no vector."
     read -r -p "  Connect an embedding provider (OpenRouter baai/bge-m3)? [y/N] " emb_ans < /dev/tty

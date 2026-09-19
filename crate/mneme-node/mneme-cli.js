@@ -35,7 +35,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness', 'memory']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -863,7 +863,20 @@ async function cmdStatus(_flags, cfg) {
   }
 }
 
-async function cmdUpdate(flags, _cfg) {
+function requestedInstallProfile(flags) {
+  if (flags.harness) return 'harness';
+  if (flags.memory) return 'memory';
+  return null;
+}
+
+function applyInstallProfile(cfg, profile) {
+  if (!profile) return;
+  cfg.installation = { ...(cfg.installation || {}), profile, selectedAt: new Date().toISOString() };
+  saveCfg(cfg);
+}
+
+async function cmdUpdate(flags, cfg) {
+  const profile = requestedInstallProfile(flags);
   console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
   const { current, latest, upToDate } = await checkForUpdate();
   if (flags.check) {
@@ -884,7 +897,9 @@ async function cmdUpdate(flags, _cfg) {
     // before committing) is the real safety net, not this version comparison.
     console.log(c.dim('  couldn\'t check the latest version — trying the update anyway.'));
   } else if (upToDate) {
-    return console.log(ok(`already up to date (${current}).`));
+    applyInstallProfile(cfg, profile);
+    const profileNote = profile ? ` Agent setup profile: ${profile}.` : '';
+    return console.log(ok(`already up to date (${current}).${profileNote}`));
   } else {
     console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
   }
@@ -897,10 +912,12 @@ async function cmdUpdate(flags, _cfg) {
     process.stdout.write(`\r${renderUpdateProgress(progress, progressTick++)}`);
   });
   if (renderedProgress) process.stdout.write('\n');
+  applyInstallProfile(cfg, profile);
   const suffix = update.restartRequired
     ? ' Exit this command now; the verified Windows replacement will complete immediately after it exits, then restart icarus.'
     : ` Run ${c.command('icarus status')} to confirm.`;
-  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${suffix}`));
+  const profileNote = profile ? ` Agent setup profile: ${profile}.` : '';
+  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${profileNote}${suffix}`));
 }
 
 function formatUpdateBytes(bytes) {
@@ -1747,9 +1764,11 @@ async function main() {
   icarus daemon stop
   icarus daemon status
   icarus backup                        copy repo + ~/.icarus/data shards into ~/.icarus/backups/<iso>
-  icarus update                        self-update: download + verify the latest release binary,
+  icarus update [--memory|--harness]   self-update: download + verify the latest release binary,
                                         atomically replace the currently running one. Compiled-
                                         binary installs only (source builds: git pull instead).
+                                        The optional profile persists for future named coding-agent
+                                        setup; Agent Memory remains the default.
   icarus prune [--yes]                 remove EVERYTHING icarus installed: ~/.icarus (bin,
                                         config, data, src), the PATH line install.sh added, and
                                         its MCP registration from Claude Code/Cursor/Codex. Shows

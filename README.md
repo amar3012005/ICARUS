@@ -70,6 +70,16 @@ For non-interactive installs, set `ICARUS_INSTALL_PROFILE=memory`, `knowledge`, 
 before the command. Selecting `harness` still requires an explicit repository command later;
 that prevents a curl installer from attaching governance to the wrong directory.
 
+To change the default profile used by future coding-agent setup after installation, run one of:
+
+```bash
+icarus update --memory    # Agent Memory is the normal default
+icarus update --harness   # future named agent setup includes Harness governance
+```
+
+This changes the local ICARUS profile and safely updates the binary when an update exists. It
+does not retrofit Harness into existing repositories; opt those repositories in explicitly.
+
 ### Verify a downloaded release
 
 `/update` validates the release checksum before replacing its executable. For a manual download,

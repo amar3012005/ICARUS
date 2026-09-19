@@ -23,6 +23,7 @@ const require = createRequire(import.meta.url);
 const {
   repoOrgName, findRepoIcarusDataRoot, scanIngestable, noIngestableFilesReason, chunk,
   INGESTABLE_EXTS, REL_TYPE, REL_WORD_TO_TYPE, harnessSafeGitignore, cfgForMemoryScope, userOrgName,
+  classifyChatFailure, openRouterApiKey,
 } = require('../../cli-lib.js');
 const { daemonCommand, isCompiledIcarusBinary } = require('../../daemon-client.js');
 
@@ -33,6 +34,33 @@ function tmp() {
 // ── repoOrgName ────────────────────────────────────────────────────────────────────────
 test('repoOrgName lowercases the folder name', () => {
   assert.equal(repoOrgName('/tmp/MyProject'), 'myproject');
+});
+
+test('an explicitly configured OpenRouter key overrides a stale environment fallback', () => {
+  assert.equal(
+    openRouterApiKey(
+      { llm: { apiKey: 'explicit-user-key' } },
+      { keychain: () => null, env: { OPENROUTER_API_KEY: 'stale-environment-key' } },
+    ),
+    'explicit-user-key',
+  );
+});
+
+test('a securely stored /llm-api key overrides config and inherited environment values', () => {
+  assert.equal(
+    openRouterApiKey(
+      { llm: { apiKey: 'older-config-key' } },
+      { keychain: () => 'current-keychain-key', env: { OPENROUTER_API_KEY: 'stale-environment-key' } },
+    ),
+    'current-keychain-key',
+  );
+});
+
+test('chat authentication failures direct the user to replace their OpenRouter key', () => {
+  const failure = classifyChatFailure(new Error('OpenRouter chat 401: {"error":{"message":"User not found."}}'));
+  assert.equal(failure.kind, 'openrouter-authentication');
+  assert.match(failure.message, /\/llm-api/);
+  assert.match(failure.message, /Local \/recall/);
 });
 
 test('repoOrgName replaces runs of invalid characters with a single dash', () => {

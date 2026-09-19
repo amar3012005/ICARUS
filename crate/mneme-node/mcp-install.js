@@ -482,6 +482,13 @@ function printToolSummary() {
   console.log('           icarus_task_verify, icarus_task_seal');
 }
 
+function harnessEnabledFor(flags, cfg) {
+  // Memory is always the default. A user must opt in once through `icarus update --harness`
+  // (or per-repository with `icarus mcp install <agent> --harness`) before agent setup can
+  // create governed state.
+  return flags?.harness === true || cfg?.installation?.profile === 'harness';
+}
+
 async function run(flags, cfg) {
   const command = resolveIcarusCommand();
   // A named agent (icarus mcp install claude|codex|cursor) is a deliberate, scoped ask — "set
@@ -498,7 +505,7 @@ async function run(flags, cfg) {
   }
   if (agentArg) {
     const { mcp, global, project } = AGENT_INSTALLERS[agentArg];
-    const harnessEnabled = flags?.harness === true;
+    const harnessEnabled = harnessEnabledFor(flags, cfg);
     console.log(`icarus mcp install ${agentArg} — registering as command: ${command}\n`);
     const mcpResult = mcp(command);
     if (mcpResult.installed) console.log(`  ✓ ${mcpResult.agent}: registered in ${mcpResult.path}`);
@@ -638,6 +645,7 @@ module.exports = {
   detectRemovable, removeAll, detectHook, installHook, removeHook,
   detectStandingInstructions, installStandingInstructions, removeStandingInstructions,
   globalSkillPath, globalSkillBody, installGlobalSkill,
+  harnessEnabledFor,
   AGENT_INSTALLERS, repoOrgName,
   installProjectClaude, installProjectAgents, installProjectCursor,
   detectProjectClaude, detectProjectAgents, detectProjectCursor,

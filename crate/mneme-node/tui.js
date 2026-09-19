@@ -995,6 +995,7 @@ async function dispatch(line, state, cfg) {
       if (sub === 'create') {
         const brief = rest.join(' ').trim();
         if (!brief) { out(state, err('usage: /skill create <describe the persona in natural language>')); break; }
+        if (!openRouterApiKey(cfg)) { out(state, err('no LLM API key set — use /llm-api <openrouter-api-key> and then retry /skill create')); break; }
         out(state, c.running('  writing persona skill with the selected model...'));
         const saved = await createPersonaSkill(brief, org, cfg);
         out(state, saved ? ok(`persona skill "${saved.slug}" created and active for org "${org}".`) : err('could not create persona skill — set an LLM API key first'));
