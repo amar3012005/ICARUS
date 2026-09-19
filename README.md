@@ -19,7 +19,8 @@
   <a href="https://github.com/amar3012005/ICARUS#use-it-from-your-agent">Agent CLI</a> ·
   <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a> ·
   <a href="docs/HARNESS_QUICKSTART.md">Harness quickstart</a> ·
-  <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a>
+  <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a> ·
+  <a href="docs/TELEMETRY.md">Privacy-preserving telemetry</a>
 </p>
 
 <img src="assets/icarus-readme-storyboard.jpg" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, local developer capability, and AMR format overview" width="100%" />
@@ -54,6 +55,21 @@ On macOS Apple Silicon and Linux x64, this downloads one self-contained binary.
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
+The installer asks which product lane to start with:
+
+1. **ICARUS V2 — Agent Memory** (default): local `.amr` storage, lexical/BM25 recall, and
+   optional MCP integration. It needs no account, LLM, embedding key, or always-running service.
+2. **ICARUS V2 + Knowledge Space** (preview): reserved for a locally supervised document
+   extraction and embedding sidecar. The public installer currently keeps this in honest lexical
+   mode until it can provision and health-check both sidecars; it does not pretend a local model
+   was installed.
+3. **ICARUS V2 + Harness**: adds explicit, repository-bound governance setup for high-risk work.
+   It is never implied by installing MCP memory tools.
+
+For non-interactive installs, set `ICARUS_INSTALL_PROFILE=memory`, `knowledge`, or `harness`
+before the command. Selecting `harness` still requires an explicit repository command later;
+that prevents a curl installer from attaching governance to the wrong directory.
+
 ### Verify a downloaded release
 
 `/update` validates the release checksum before replacing its executable. For a manual download,
@@ -68,8 +84,15 @@ gh attestation verify ./icarus-darwin-arm64 -R amar3012005/ICARUS \
 ```
 
 ```bash
-# Optional: register ICARUS as an MCP server for available coding agents.
-icarus mcp install
+# Optional: register ICARUS as a memory MCP server for a coding agent and this repository.
+# This creates the repo-local memory shard; it does not turn on harness governance.
+icarus mcp install codex
+```
+
+For high-risk repository work only, opt the current repository into harness governance:
+
+```bash
+icarus mcp install codex --harness
 ```
 
 ### 02 — Run the complete demo
@@ -165,9 +188,10 @@ icarus run --task TASK-… --agent claude
 
 Read the [Harness quickstart](docs/HARNESS_QUICKSTART.md) before using a managed task, and the
 [adapter certification matrix](docs/ADAPTER_CERTIFICATION.md) for the exact current guarantees.
-Run `icarus mcp install <claude|codex|cursor>` from a repository root to install the mandatory
-first-session bootstrap rule for that agent: it initializes a missing `.icarus` harness
-idempotently before code search, planning, or edits, then uses graph and context tools.
+Run `icarus mcp install <claude|codex|cursor>` from a repository root to register durable local
+memory for that agent and create a stable repository org. It never requires a harness for normal
+coding work. Opt in to governance only when it is warranted with
+`icarus mcp install <claude|codex|cursor> --harness`.
 
 ## Use it from Node
 
@@ -213,8 +237,8 @@ store.insert("user prefers dark mode", embed("user prefers dark mode"), valid_fr
 hits = store.recall(embed("ui settings"), top_k=5)
 ```
 
-Python is not published on PyPI yet. The source build above is the supported path; see the
-[Python guide](./crate/mneme-python/README.md#install) and [`LIMITATIONS.md`](./LIMITATIONS.md).
+For the supported Python source build, see the
+[Python guide](./crate/mneme-python/README.md#install).
 
 ## Technical reference
 
@@ -244,7 +268,7 @@ hits = store.bm25_search("warranty terms", top_k=10)
 ```
 
 Tokenization is language-neutral: lowercase plus a Unicode-alphanumeric split, with no stemming
-or stopword list. BM25 results are not layer-filterable yet; see [`LIMITATIONS.md`](./LIMITATIONS.md).
+or stopword list.
 
 </details>
 
@@ -262,15 +286,6 @@ bash ../bench/run_p1.sh
 instructions in [`crate/mneme-python/README.md`](./crate/mneme-python/README.md).
 
 </details>
-
-## Honest boundaries
-
-ICARUS is the local storage and retrieval engine. It is **not** a full cognition layer: typed
-relationship authoring, entity co-mention resolution, memory versioning, synthesis, and conflict
-resolution live above it. That separation is intentional.
-
-For the complete picture, including performance conditions and unfinished work, read
-[`LIMITATIONS.md`](./LIMITATIONS.md) before adopting it in production.
 
 ---
 

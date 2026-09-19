@@ -22,6 +22,10 @@ ROOT="$SRC_DIR" # dir containing crate/ — set by fetch_src (monorepo: $SRC_DIR
 DATA_DIR="$HOME_DIR/data"
 BIN_DIR="$HOME_DIR/bin"
 USED_BINARY=0 # 1 once the prebuilt-binary path succeeds — later steps skip the source build
+# The memory filesystem is the public default.  A profile is a product choice, not an implicit
+# consequence of registering an MCP server: harness governance and local knowledge-space
+# services have different operational costs and must be selected explicitly.
+INSTALL_PROFILE="${ICARUS_INSTALL_PROFILE:-memory}"
 
 # Truecolor ANSI matching the Node CLI's theme.js — ported from the same grok-build GrokNight
 # palette (crates/codegen/xai-grok-pager-render/src/theme/groknight.rs), so install.sh and every
@@ -320,19 +324,20 @@ write_config() {
   "dataRoot": "$DATA_DIR",
   "dim": 1024,
   "embeddings": {
-    "disabled": false,
+    "disabled": true,
     "endpoint": "$embed_endpoint",
     "model": "$embed_model",
     "apiKey": null
   },
   "llm": {
-    "disabled": false,
+    "disabled": true,
     "provider": "openrouter",
     "endpoint": "https://openrouter.ai/api/v1",
     "model": "anthropic/claude-3.5-haiku",
     "apiKey": null
   },
-  "hivemind": { "connected": false }
+  "hivemind": { "connected": false },
+  "installation": { "profile": "$INSTALL_PROFILE" }
 }
 EOF
   ok "Config → $cfg"
@@ -414,6 +419,31 @@ install_path_block() {
 # with `2>/dev/null` right there — exactly the scary-looking noise this function exists to avoid).
 has_tty() { { : < /dev/tty; } 2>/dev/null; }
 
+choose_install_profile() {
+  case "$INSTALL_PROFILE" in memory|knowledge|harness) ;; *)
+    warn "Unknown ICARUS_INSTALL_PROFILE=$INSTALL_PROFILE; using memory"
+    INSTALL_PROFILE="memory" ;;
+  esac
+  if ! has_tty; then
+    info "Install profile: $INSTALL_PROFILE (set ICARUS_INSTALL_PROFILE=knowledge|harness to choose non-interactively)"
+    return 0
+  fi
+  step "Choose how ICARUS starts on this machine"
+  dim "  1) ICARUS V2 — Agent Memory (recommended)"
+  dim "     Local .amr memory filesystem, lexical/BM25 recall, and optional MCP. No model, daemon, or harness required."
+  dim "  2) ICARUS V2 + Knowledge Space (preview)"
+  dim "     Agent Memory plus the optional local document-extraction and embedding sidecars."
+  dim "  3) ICARUS V2 + Harness"
+  dim "     Agent Memory plus opt-in governed-task instructions for high-risk repository work."
+  read -r -p "  Choice [1/2/3, default 1]: " profile_choice < /dev/tty
+  case "$profile_choice" in
+    2) INSTALL_PROFILE="knowledge" ;;
+    3) INSTALL_PROFILE="harness" ;;
+    *) INSTALL_PROFILE="memory" ;;
+  esac
+  ok "Selected: ICARUS V2 ${INSTALL_PROFILE}"
+}
+
 # All four guided steps read via bash's own `read ... < /dev/tty` (the single-read pattern every
 # curl-pipe installer relies on, well-proven) and then call the matching icarus subcommand with
 # the answer already in hand via flags -- NEVER handing off tty control to a long-lived node
@@ -438,6 +468,13 @@ guided_setup() {
 
   step "Step 1/4 — registering with any coding agents found on this machine"
   "$BIN_DIR/icarus" mcp install || true
+  if [ "$INSTALL_PROFILE" = "knowledge" ]; then
+    warn "Knowledge Space is not enabled by this installer yet. ICARUS is ready in lexical memory mode."
+    dim "    Local extraction and embedding sidecars are intentionally not advertised as installed until they can be provisioned and supervised on this machine."
+  elif [ "$INSTALL_PROFILE" = "harness" ]; then
+    dim "    Harness selected. From a repository root run: icarus mcp install <claude|codex|cursor> --harness"
+    dim "    This keeps governance opt-in and bound to the intended repository."
+  fi
 
   step "Step 2/4 — memory generation (distills ingested text into key facts before storing)"
   if [ -n "${OPENROUTER_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
@@ -500,6 +537,23 @@ guided_setup() {
   esac
 }
 
+telemetry_consent() {
+  if ! has_tty; then
+    dim "Anonymous telemetry is off by default. Enable later: icarus telemetry enable"
+    return 0
+  fi
+  step "Optional — anonymous ICARUS usage metrics"
+  dim "  Help measure active installs, MCP setup, memory activity, and harness adoption."
+  dim "  Never sent: prompts, memories, source code, repository paths, credentials, or account identity."
+  read -r -p "  Share anonymous lifecycle metadata? [y/N] " telemetry_answer < /dev/tty
+  case "$telemetry_answer" in
+    y|Y)
+      "$BIN_DIR/icarus" telemetry enable || warn "telemetry could not be enabled; ICARUS remains fully functional"
+      ;;
+    *) dim "    Kept off. You can enable it later with: icarus telemetry enable" ;;
+  esac
+}
+
 install_launchd() {
   if [ "$(uname -s)" != "Darwin" ]; then return 0; fi
   local plist="$HOME/Library/LaunchAgents/ai.icarus.daemon.plist"
@@ -549,6 +603,7 @@ verify() {
 
 main() {
   banner
+  choose_install_profile
   if try_binary_install; then
     write_config
     ensure_path
@@ -564,6 +619,7 @@ main() {
   fi
 
   guided_setup
+  telemetry_consent
   install_launchd
 
   printf '\n'

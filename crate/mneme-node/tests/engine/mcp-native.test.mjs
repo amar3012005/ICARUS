@@ -191,6 +191,74 @@ test('native MCP round-trip persists local evidence and structured memory withou
   }
 });
 
+test('MCP memory and coding tools preserve durable local knowledge without embeddings', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-memory-toolbox-'));
+  const home = join(root, 'home');
+  try {
+    const mcp = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const initialized = await mcp.request(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-memory-toolbox', version: '1.0.0' },
+    });
+    assert.equal(initialized.result.serverInfo.name, 'icarus');
+    mcp.notify('notifications/initialized', {});
+    const org = 'toolbox';
+
+    const raw = await tool(mcp, 2, 'icarus_save', { org, text: 'Raw local fallback memory remains available without vectors.' });
+    assert.equal(raw.mode, 'local');
+    const first = await tool(mcp, 3, 'icarus_save_memory', {
+      org, title: 'Authentication incident', content: 'Bug: token refresh once used a stale audience.',
+      tags: ['bug', 'memory:event', 'file:src/auth.js'], source_type: 'decision',
+    });
+    const second = await tool(mcp, 4, 'icarus_save_memory', {
+      org, title: 'Authentication incident fixed', content: 'Fix: derive the audience from the active tenant before refresh.',
+      tags: ['fix', 'memory:fact', 'file:src/auth.js'], source_type: 'decision', relationship: 'update', related_to: first.id,
+    });
+    const listed = await tool(mcp, 5, 'icarus_list_memories', { org, tags: ['fix'], limit: 10 });
+    assert.ok(listed.some((record) => record.id === second.id));
+    const graph = await tool(mcp, 6, 'icarus_traverse_graph', { org, memory_id: second.id, relationship: 'all', depth: 2 });
+    assert.ok(Array.isArray(graph));
+    const updated = await tool(mcp, 7, 'icarus_update_memory', {
+      org, memory_id: second.id, content: 'Fix verified: derive the audience from the active tenant before refresh.',
+    });
+    assert.equal(updated.id, second.id);
+    const bugs = await tool(mcp, 8, 'icarus_recall_bugs', { org, context: 'token refresh audience', file_path: 'src/auth.js' });
+    assert.ok(bugs.length >= 1, JSON.stringify(bugs));
+
+    const v1 = await tool(mcp, 9, 'icarus_ingest_code', {
+      org, file_path: 'src/auth.js', content: 'export function audience() { return tenant(); }', summary: 'Derives the active tenant audience.', tags: ['memory:fact'],
+    });
+    const v2 = await tool(mcp, 10, 'icarus_ingest_code', {
+      org, file_path: 'src/auth.js', content: 'export function audience() { return activeTenant(); }', summary: 'Uses the active tenant helper.', tags: ['memory:fact'],
+    });
+    assert.equal(v2.previousVersion, v1.id);
+    const decision = await tool(mcp, 11, 'icarus_log_decision', {
+      org, title: 'Audience derivation', decision: 'Use activeTenant()', rationale: 'It prevents a stale tenant audience.', alternatives: ['Cache the audience'], affected_files: ['src/auth.js'], tags: ['memory:decision'],
+    });
+    await tool(mcp, 12, 'icarus_track_refactor', {
+      org, refactor_type: 'rename', old_name: 'tenant()', new_name: 'activeTenant()', reason: 'Make tenant selection explicit.', affected_files: ['src/auth.js'], related_to: decision.id,
+    });
+    await tool(mcp, 13, 'icarus_test_coverage', {
+      org, action: 'save', function_name: 'audience', file_path: 'src/auth.js', test_file: 'test/auth.test.js', test_cases: ['uses active tenant'], coverage_pct: 100,
+    });
+    const coverage = await tool(mcp, 14, 'icarus_test_coverage', { org, action: 'recall', function_name: 'audience', file_path: 'src/auth.js' });
+    assert.ok(coverage.length >= 1, JSON.stringify(coverage));
+    const why = await tool(mcp, 15, 'icarus_why_code', { org, query: 'why active tenant audience', file_path: 'src/auth.js' });
+    assert.ok(why.decisions.length + why.refactors.length + why.bugs.length + why.other.length >= 1, JSON.stringify(why));
+    const conversation = await tool(mcp, 16, 'icarus_save_conversation', {
+      org, title: 'Auth handoff', messages: [{ role: 'assistant', content: 'The active tenant fix is verified.' }], tags: ['memory:task'], platform: 'other',
+    });
+    assert.match(conversation.id, /^[0-9a-f-]{36}$/i);
+    const deleted = await tool(mcp, 17, 'icarus_delete_memory', { org, memory_id: conversation.id, reason: 'test cleanup' });
+    assert.equal(deleted.id, conversation.id);
+    const status = await tool(mcp, 18, 'icarus_status', {});
+    assert.ok(Array.isArray(status.shards), JSON.stringify(status));
+  } finally {
+    await stopChildren();
+    await stopDaemonAt(home);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('two MCP sessions share one daemon-owned shard without a lock error', async () => {
   const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-shared-daemon-'));
   const home = join(root, 'home');
@@ -259,24 +327,45 @@ test('MCP replaces an incompatible older daemon before sharing a repository-scop
 test('icarus_harness_init creates a repository harness once and is idempotent', async () => {
   const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-harness-init-'));
   const repo = join(root, 'repo');
+  const home = join(root, 'home');
+  const events = [];
+  const collector = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      events.push(JSON.parse(body));
+      response.writeHead(202, { 'content-type': 'application/json' }).end('{}');
+    });
+  });
   try {
     mkdirSync(repo, { recursive: true });
     execFileSync('git', ['init', '--quiet'], { cwd: repo });
-    const mcp = startMcp({ ICARUS_HOME: join(root, 'home'), OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    await new Promise((resolve) => collector.listen(0, '127.0.0.1', resolve));
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ telemetry: {
+      enabled: true, installationId: 'mcp-harness-telemetry-test',
+      endpoint: `http://127.0.0.1:${collector.address().port}/v1/events`,
+    } }));
+    const mcp = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
     const initialized = await mcp.request(1, 'initialize', {
       protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-harness-init', version: '1.0.0' },
     });
     assert.equal(initialized.result.serverInfo.name, 'icarus');
     mcp.notify('notifications/initialized', {});
 
-    const first = await tool(mcp, 2, 'icarus_harness_init', { repo });
+    const first = await tool(mcp, 2, 'icarus_harness_init', { repo, agents: ['codex'] });
     assert.equal(first.created, true);
     assert.ok(existsSync(join(repo, '.icarus', 'manifest.yaml')), 'native initialization must create the tracked manifest');
 
-    const second = await tool(mcp, 3, 'icarus_harness_init', { repo });
+    const second = await tool(mcp, 3, 'icarus_harness_init', { repo, agents: ['codex'] });
     assert.equal(second.created, false, 'a later session must observe, not recreate, the harness');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(events.some((batch) => batch.events?.some((event) => event.event === 'harness_initialized' && event.agent === 'codex')),
+      `expected opt-in anonymous Harness telemetry, got ${JSON.stringify(events)}`);
   } finally {
     await stopChildren();
+    await new Promise((resolve) => collector.close(resolve));
     rmSync(root, { recursive: true, force: true });
   }
 });

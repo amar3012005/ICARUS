@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "icarus-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-19",
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "icarus-telemetry",
+      "database_id": "5b2e0b84-bfed-4250-8065-a0c9f8ebcc1c",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

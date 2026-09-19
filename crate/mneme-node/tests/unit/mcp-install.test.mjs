@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const mi = require('../../mcp-install.js');
+const cli = require('../../mneme-cli.js');
 
 const MARK_START = '<!-- icarus:project-instructions -->';
 const MARK_END = '<!-- /icarus:project-instructions -->';
@@ -50,14 +51,14 @@ test('the written block names the derived org for this repo', () => {
   });
 });
 
-test('the project block makes bootstrap and durable memory use explicit without universal task gating', () => {
+test('the memory-first project block makes durable memory explicit without silently enabling the harness', () => {
   withRepo((repo) => {
     mi.installProjectAgents(repo);
     const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
     assert.ok(text.includes('every new agent session'));
     assert.ok(text.includes('icarus mcp install codex'));
-    assert.ok(text.includes('icarus harness init --agent codex --repo .'));
-    assert.ok(text.includes('.icarus/manifest.yaml'));
+    assert.ok(text.includes('Do **not** initialize a harness merely because a session started.'));
+    assert.ok(!text.includes('This repository opted into the harness profile'));
     assert.ok(text.includes('icarus_harness_init'));
     assert.ok(text.includes('Treat an initialization failure as a blocker'));
     assert.ok(text.includes('Risk-based operating policy'));
@@ -84,11 +85,25 @@ test('the project block makes bootstrap and durable memory use explicit without 
   });
 });
 
+test('the explicit harness profile adds bootstrap instructions only when selected', () => {
+  withRepo((repo) => {
+    mi.installProjectAgents(repo, { harnessEnabled: true });
+    const text = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
+    assert.ok(text.includes('This repository opted into the harness profile'));
+    assert.ok(text.includes('icarus harness init --agent codex --repo .'));
+  });
+});
+
+test('mcp install --harness parses as a boolean instead of swallowing the agent argument', () => {
+  assert.equal(cli.parseFlags(['codex', '--harness'])._.join(','), 'codex');
+  assert.equal(cli.parseFlags(['codex', '--harness']).harness, true);
+});
+
 test('global agent skills contain self-bootstrap and risk-based memory guidance', () => {
   for (const agent of ['codex', 'claude']) {
     const text = mi.globalSkillBody(agent);
     assert.ok(text.includes(`icarus mcp install ${agent}`));
-    assert.ok(text.includes(`icarus harness init --agent ${agent} --repo .`));
+    assert.ok(text.includes('does **not** require a harness'));
     assert.ok(text.includes('icarus_recall_bugs'));
     assert.ok(text.includes('Use full task governance only for'));
     assert.ok(text.includes('no LLM key, embedding key, or remote service'));
