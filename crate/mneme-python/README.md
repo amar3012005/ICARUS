@@ -7,10 +7,7 @@ bindings, identical behavior and identical `.amr` files. Not a reimplementation.
 
 ## Install
 
-**Not yet published to PyPI** — `pip install mneme-python` doesn't work today (checked live: no
-release exists under that name). The automated release pipeline is blocked on an unrelated GitHub
-Actions billing issue — see the main [`LIMITATIONS.md`](../../LIMITATIONS.md). Build from source
-with [maturin](https://www.maturin.rs/) — this is the real, verified-working path:
+Build the Python binding from source with [maturin](https://www.maturin.rs/):
 
 ```bash
 git clone https://github.com/amar3012005/ICARUS
@@ -110,23 +107,10 @@ vstore.add([TextNode(text="...", embedding=my_embedding_model.embed("..."))])
 result = vstore.query(VectorStoreQuery(query_embedding=query_vec, similarity_top_k=5))
 ```
 
-**Known limitation, stated rather than hidden**: `MnemeVectorStore.delete(ref_doc_id)` resolves
-the LlamaIndex node id to a mneme slot id via an in-memory map built during `add()`. That map is
-not persisted, so `delete` by `ref_doc_id` only works for nodes added in the current process —
-deleting directly by slot id (`store.delete(slot_id)`) always works, since that is the engine's
-own durable identifier.
+## API coverage
 
-## What this v0.1 covers, and what it does not
-
-Open, insert (plain and layered), vector recall (plain and layer-filtered), native BM25 lexical
-search, typed graph edges/traversal, and lifecycle (delete, flush, live_count). This is not full
-parity with every method the Node binding exposes — temporal snapshot/rewrite operations
-(`as_of`, `insert_at`, `update`) are not yet bound here.
-
-`bm25_search` does not currently filter by layer: the underlying `Hit` type doesn't surface a
-record's layer back out, so it scans every live slot regardless of the 0/1/2 layer
-`insert_layered`/`recall_layer` use. Filter the returned `slot_id`s yourself if you need
-layer-scoped lexical search.
+Open, insert (plain and layered), vector recall, native BM25 lexical search, typed graph
+edges/traversal, and lifecycle operations including delete, flush, and live-count inspection.
 
 ## Testing
 
