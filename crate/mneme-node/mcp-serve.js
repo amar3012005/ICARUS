@@ -101,6 +101,7 @@ async function run() {
       try {
         const cfg = loadCfg();
         const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq, scope: scope || 'all' });
+        require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_recalled', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -123,9 +124,11 @@ async function run() {
         if (hivemindConfigured(cfg) && cloud) {
           const r = await hivemindSaveMemory(text, org || 'default', cfg);
           await memoryCall('save_raw', { text, org: org || 'default', options: { viaCloud: true } }); // mirror — icarus_recall is local-only
+          require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_saved', { version: require('./cli-lib.js').ICARUS_VERSION });
           return textResult(r);
         }
         await memoryCall('save_raw', { text, org: org || 'default' });
+        require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_saved', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult({ ok: true, org: org || 'default', mode: 'local' });
       } catch (e) { return errorResult(e); }
     },
@@ -156,6 +159,7 @@ async function run() {
         const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title, tags, sourceType: source_type, project, relationship, relatedTo: related_to, scope: scope || 'repo',
         } });
+        require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_saved', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -311,6 +315,7 @@ async function run() {
           title: file_path, tags: [...tags, 'code', fileTag], sourceType: 'code', project,
           ...(prior ? { relationship: 'update', relatedTo: prior.id } : {}),
         } });
+        require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'code_memory_saved', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult({ ...r, previousVersion: prior ? prior.id : null });
       } catch (e) { return errorResult(e); }
     },
@@ -534,7 +539,13 @@ async function run() {
       inputSchema: { repo: z.string().default(process.cwd()), agents: z.array(z.string()).default([]).describe('Optional adapter instruction targets, for example ["claude"] or ["codex"].') },
     },
     async ({ repo, agents }) => {
-      try { return textResult(harnessFor().initHarness(repo, { agents: agents || [] })); } catch (e) { return errorResult(e); }
+      try {
+        const result = harnessFor().initHarness(repo, { agents: agents || [] });
+        require('./telemetry.js').record(require('./cli-lib.js').HOME, loadCfg(), 'harness_initialized', {
+          agent: agents?.[0] || 'other', version: require('./cli-lib.js').ICARUS_VERSION,
+        });
+        return textResult(result);
+      } catch (e) { return errorResult(e); }
     },
   );
 

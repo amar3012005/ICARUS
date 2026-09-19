@@ -482,7 +482,7 @@ function printToolSummary() {
   console.log('           icarus_task_verify, icarus_task_seal');
 }
 
-async function run(flags) {
+async function run(flags, cfg) {
   const command = resolveIcarusCommand();
   // A named agent (icarus mcp install claude|codex|cursor) is a deliberate, scoped ask — "set
   // icarus up for THIS project, for THIS agent" — matching how the feature was actually
@@ -503,6 +503,9 @@ async function run(flags) {
     const mcpResult = mcp(command);
     if (mcpResult.installed) console.log(`  ✓ ${mcpResult.agent}: registered in ${mcpResult.path}`);
     else console.log(`  · ${mcpResult.agent}: skipped (${mcpResult.reason})`);
+    // The registration command itself is an agent-use signal even when the adapter reports
+    // "already registered". Server-side counts are deduplicated by opaque installation id.
+    require('./telemetry.js').record(process.env.ICARUS_HOME || path.join(HOME, '.icarus'), cfg || require('./cli-lib.js').loadCfg(), 'mcp_registered', { agent: agentArg, version: require('./cli-lib.js').ICARUS_VERSION });
     if (global) {
       const g = global();
       if (g.installed) console.log(`  ✓ standing instructions: added to ${g.path}`);
@@ -529,6 +532,7 @@ async function run(flags) {
       try {
         const harness = require('./harness.js').initHarness(process.cwd(), { agents: [agentArg] });
         console.log(`  ✓ harness ${harness.created ? 'initialized' : 'already initialized'} (${harness.repository_id || 'repository ready'})`);
+        require('./telemetry.js').record(process.env.ICARUS_HOME || path.join(HOME, '.icarus'), cfg || require('./cli-lib.js').loadCfg(), 'harness_initialized', { agent: agentArg, version: require('./cli-lib.js').ICARUS_VERSION });
       } catch (e) {
         console.log(`  · harness initialization skipped: ${e.message}`);
       }

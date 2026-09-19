@@ -26,6 +26,7 @@ const {
   hivemindSaveMemory, saveLocalMemory, saveIntelligentMemory, saveStructuredMemory,
 } = require('./cli-lib.js');
 const { callMemory } = require('./daemon-client.js');
+const telemetry = require('./telemetry.js');
 const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } = require('./theme.js');
 
 // Flags that are pure on/off switches (no value token follows) — everything else keeps the
@@ -138,7 +139,7 @@ function normalizeClaudeHookPath(repo, rawPath) {
   return relative.split(path.sep).join('/');
 }
 
-async function cmdHarness(flags) {
+async function cmdHarness(flags, cfg) {
   const subcommand = flags._[0];
   if (subcommand === 'hook') {
     const taskId = flags.task;
@@ -208,6 +209,9 @@ async function cmdHarness(flags) {
   } else {
     console.log(ok(`ICARUS Harness already initialized (${result.manifest.repo_id})`));
   }
+  // Count successful opt-in Harness use even when init is idempotent. The collector deduplicates
+  // installations for adoption metrics while retaining the aggregate number of init attempts.
+  telemetry.record(HOME, cfg, 'harness_initialized', { agent: flags.agent || 'other', version: ICARUS_VERSION });
 }
 
 function cmdMigrate(flags) {
@@ -1435,11 +1439,33 @@ async function cmdMcpServe(_flags, _cfg) {
   await require('./mcp-serve.js').run();
 }
 
-async function cmdMcpInstall(flags, _cfg) {
+async function cmdMcpInstall(flags, cfg) {
   // flags._[0] is still "install" here (mneme-cli's own `mcp` case reads it as `sub` but never
   // consumes it from the array) -- run()'s own agent-name arg needs it shifted off, or
   // `icarus mcp install claude` would read "install" itself as the agent name, not "claude".
-  await require('./mcp-install.js').run({ ...flags, _: flags._.slice(1) });
+  await require('./mcp-install.js').run({ ...flags, _: flags._.slice(1) }, cfg);
+}
+
+async function cmdTelemetry(flags, cfg) {
+  const sub = flags._[0] || 'status';
+  if (sub === 'status') return console.log(JSON.stringify(telemetry.status(HOME, cfg), null, 2));
+  if (sub === 'enable') {
+    const state = telemetry.enable(cfg, saveCfg, flags.endpoint);
+    console.log(ok('anonymous telemetry enabled — only aggregate lifecycle metadata is queued.'));
+    console.log(c.dim(`  endpoint: ${state.endpoint}`));
+    console.log(c.dim('  never sent: memories, prompts, repository paths, source code, credentials, or IP-derived identity.'));
+    telemetry.record(HOME, cfg, 'installed', { version: ICARUS_VERSION, profile: cfg.installation?.profile || 'memory' });
+    return;
+  }
+  if (sub === 'disable') {
+    telemetry.disable(cfg, saveCfg);
+    return console.log(ok('anonymous telemetry disabled. Queued events remain local and will not be sent.'));
+  }
+  if (sub === 'flush') {
+    const result = await telemetry.flush(HOME, cfg);
+    return console.log(ok(`telemetry flush complete (${result.sent} event(s) sent).`));
+  }
+  throw new Error('usage: icarus telemetry <enable|disable|status|flush> [--endpoint https://…]');
 }
 
 async function cmdDaemon(flags, _cfg) {
@@ -1494,6 +1520,7 @@ async function main() {
       case 'connect-embeddings': await cmdConnectEmbeddings(flags, cfg); break;
       case 'connect-llm': await cmdConnectLlm(flags, cfg); break;
       case 'setup': await cmdSetup(flags, cfg); break;
+      case 'telemetry': await cmdTelemetry(flags, cfg); break;
       case 'mcp-serve': await cmdMcpServe(flags, cfg); break;
       case 'mcp': {
         const sub = flags._[0];
@@ -1515,7 +1542,7 @@ async function main() {
         else throw new Error('usage: icarus hook session-end   (reads Claude Code\'s SessionEnd JSON payload from stdin)');
         break;
       }
-      case 'harness': await cmdHarness(flags); break;
+      case 'harness': await cmdHarness(flags, cfg); break;
       case 'migrate': cmdMigrate(flags); break;
       case 'doctor': cmdDoctor(flags); break;
       case 'policy': cmdPolicy(flags); break;
@@ -1618,6 +1645,9 @@ async function main() {
                                         paste — falls back to a manual token if that doesn't
                                         complete. --oauth-only tries only the browser flow and
                                         exits nonzero on failure, no prompt (used by install.sh).
+  icarus telemetry <enable|disable|status|flush>
+                                        opt-in anonymous lifecycle metrics. Never sends source,
+                                        prompts, memory content, repository paths, or credentials.
   icarus connect-embeddings [--disable]
                                         configure an embedding provider for vector recall — OPT
                                         IN, not required: with none configured, ingest/recall

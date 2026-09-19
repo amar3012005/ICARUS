@@ -19,7 +19,8 @@
   <a href="https://github.com/amar3012005/ICARUS#use-it-from-your-agent">Agent CLI</a> ·
   <a href="https://github.com/amar3012005/ICARUS#technical-reference">Reference</a> ·
   <a href="docs/HARNESS_QUICKSTART.md">Harness quickstart</a> ·
-  <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a>
+  <a href="docs/ADAPTER_CERTIFICATION.md">Harness adapters</a> ·
+  <a href="docs/TELEMETRY.md">Privacy-preserving telemetry</a>
 </p>
 
 <img src="assets/icarus-readme-storyboard.jpg" alt="ICARUS campaign storyboard: introduction, local recall, inspectable AMR memory files, local developer capability, and AMR format overview" width="100%" />

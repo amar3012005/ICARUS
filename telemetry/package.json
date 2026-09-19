@@ -1,0 +1,13 @@
+{
+  "name": "icarus-telemetry-collector",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "deploy": "npx wrangler deploy",
+    "d1:migrate": "npx wrangler d1 migrations apply icarus-telemetry"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}

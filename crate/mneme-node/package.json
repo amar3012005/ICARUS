@@ -17,6 +17,7 @@
     "mcp-install.js",
     "daemon.js",
     "daemon-client.js",
+    "telemetry.js",
     "graph.js",
     "graph-native.js",
     "*.node",

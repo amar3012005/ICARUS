@@ -327,24 +327,45 @@ test('MCP replaces an incompatible older daemon before sharing a repository-scop
 test('icarus_harness_init creates a repository harness once and is idempotent', async () => {
   const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-harness-init-'));
   const repo = join(root, 'repo');
+  const home = join(root, 'home');
+  const events = [];
+  const collector = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      events.push(JSON.parse(body));
+      response.writeHead(202, { 'content-type': 'application/json' }).end('{}');
+    });
+  });
   try {
     mkdirSync(repo, { recursive: true });
     execFileSync('git', ['init', '--quiet'], { cwd: repo });
-    const mcp = startMcp({ ICARUS_HOME: join(root, 'home'), OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
+    await new Promise((resolve) => collector.listen(0, '127.0.0.1', resolve));
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ telemetry: {
+      enabled: true, installationId: 'mcp-harness-telemetry-test',
+      endpoint: `http://127.0.0.1:${collector.address().port}/v1/events`,
+    } }));
+    const mcp = startMcp({ ICARUS_HOME: home, OPENROUTER_API_KEY: '', HIVEMIND_API_KEY: '' });
     const initialized = await mcp.request(1, 'initialize', {
       protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-harness-init', version: '1.0.0' },
     });
     assert.equal(initialized.result.serverInfo.name, 'icarus');
     mcp.notify('notifications/initialized', {});
 
-    const first = await tool(mcp, 2, 'icarus_harness_init', { repo });
+    const first = await tool(mcp, 2, 'icarus_harness_init', { repo, agents: ['codex'] });
     assert.equal(first.created, true);
     assert.ok(existsSync(join(repo, '.icarus', 'manifest.yaml')), 'native initialization must create the tracked manifest');
 
-    const second = await tool(mcp, 3, 'icarus_harness_init', { repo });
+    const second = await tool(mcp, 3, 'icarus_harness_init', { repo, agents: ['codex'] });
     assert.equal(second.created, false, 'a later session must observe, not recreate, the harness');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(events.some((batch) => batch.events?.some((event) => event.event === 'harness_initialized' && event.agent === 'codex')),
+      `expected opt-in anonymous Harness telemetry, got ${JSON.stringify(events)}`);
   } finally {
     await stopChildren();
+    await new Promise((resolve) => collector.close(resolve));
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -537,6 +537,23 @@ guided_setup() {
   esac
 }
 
+telemetry_consent() {
+  if ! has_tty; then
+    dim "Anonymous telemetry is off by default. Enable later: icarus telemetry enable"
+    return 0
+  fi
+  step "Optional — anonymous ICARUS usage metrics"
+  dim "  Help measure active installs, MCP setup, memory activity, and harness adoption."
+  dim "  Never sent: prompts, memories, source code, repository paths, credentials, or account identity."
+  read -r -p "  Share anonymous lifecycle metadata? [y/N] " telemetry_answer < /dev/tty
+  case "$telemetry_answer" in
+    y|Y)
+      "$BIN_DIR/icarus" telemetry enable || warn "telemetry could not be enabled; ICARUS remains fully functional"
+      ;;
+    *) dim "    Kept off. You can enable it later with: icarus telemetry enable" ;;
+  esac
+}
+
 install_launchd() {
   if [ "$(uname -s)" != "Darwin" ]; then return 0; fi
   local plist="$HOME/Library/LaunchAgents/ai.icarus.daemon.plist"
@@ -602,6 +619,7 @@ main() {
   fi
 
   guided_setup
+  telemetry_consent
   install_launchd
 
   printf '\n'

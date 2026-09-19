@@ -8,6 +8,15 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+### Added
+- **Opt-in anonymous usage metrics:** `icarus telemetry enable|disable|status|flush` records only
+  bounded lifecycle metadata. This includes MCP registrations and Harness initializations by
+  selected coding agent, never source, prompts, memories, repositories, credentials, or accounts.
+  The event queue is local, short-deadline, and non-blocking.
+- **Aggregate metrics collector:** the deployable `telemetry/` Cloudflare Worker stores salted
+  installation hashes in D1 and exposes authenticated install, active-use, funnel, version, and
+  Harness-by-agent aggregates.
+
 ## v0.3.89
 
 ### Changed
