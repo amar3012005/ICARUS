@@ -51,9 +51,11 @@ anti-fraud record.
 
 ## Deploying the collector
 
-Create a dedicated D1 database, replace the placeholder `database_id` in
-[`telemetry/wrangler.jsonc`](../telemetry/wrangler.jsonc), apply migrations, and configure secrets
-outside source control:
+The production collector is deployed at
+`https://telemetry.icarus.singulancelabs.com/v1/events` with its dedicated D1 database. To deploy
+an isolated staging collector, create a separate D1 database, change the `database_id` in
+[`telemetry/wrangler.jsonc`](../telemetry/wrangler.jsonc), apply migrations, and configure fresh
+secrets outside source control:
 
 ```bash
 cd telemetry
