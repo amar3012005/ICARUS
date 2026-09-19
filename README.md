@@ -237,8 +237,8 @@ store.insert("user prefers dark mode", embed("user prefers dark mode"), valid_fr
 hits = store.recall(embed("ui settings"), top_k=5)
 ```
 
-Python is not published on PyPI yet. The source build above is the supported path; see the
-[Python guide](./crate/mneme-python/README.md#install) and [`LIMITATIONS.md`](./LIMITATIONS.md).
+For the supported Python source build, see the
+[Python guide](./crate/mneme-python/README.md#install).
 
 ## Technical reference
 
@@ -268,7 +268,7 @@ hits = store.bm25_search("warranty terms", top_k=10)
 ```
 
 Tokenization is language-neutral: lowercase plus a Unicode-alphanumeric split, with no stemming
-or stopword list. BM25 results are not layer-filterable yet; see [`LIMITATIONS.md`](./LIMITATIONS.md).
+or stopword list.
 
 </details>
 
@@ -286,15 +286,6 @@ bash ../bench/run_p1.sh
 instructions in [`crate/mneme-python/README.md`](./crate/mneme-python/README.md).
 
 </details>
-
-## Honest boundaries
-
-ICARUS is the local storage and retrieval engine. It is **not** a full cognition layer: typed
-relationship authoring, entity co-mention resolution, memory versioning, synthesis, and conflict
-resolution live above it. That separation is intentional.
-
-For the complete picture, including performance conditions and unfinished work, read
-[`LIMITATIONS.md`](./LIMITATIONS.md) before adopting it in production.
 
 ---
 
