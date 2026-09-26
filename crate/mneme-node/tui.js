@@ -1191,7 +1191,7 @@ async function dispatch(line, state, cfg) {
       out(state, c.running('  Opening your browser...'));
       const oauth = await attemptHivemindOAuth(authUrl);
       if (oauth) {
-        cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+        cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, userId: oauth.userId || null, orgId: oauth.orgId || null, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
         saveCfg(cfg);
         out(state, ok(`HIVEMIND connected${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
       } else {

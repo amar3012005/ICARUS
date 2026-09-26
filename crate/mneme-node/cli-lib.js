@@ -1502,7 +1502,7 @@ async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000 } = {}) {
     try {
       const redirectUri = `http://127.0.0.1:${port}/callback`;
       const state = base64url(crypto.randomBytes(16));
-      const startUrl = `${baseUrl}/auth/cli/start?${new URLSearchParams({ callback: redirectUri, state })}`;
+      const startUrl = `${baseUrl}/auth/cli/start?${new URLSearchParams({ callback: redirectUri, state, client: 'icarus', mode: 'developer' })}`;
 
       console.log('\n  Opening your browser to sign in...');
       console.log(`  If it doesn't open automatically: ${startUrl}\n`);
@@ -2409,7 +2409,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.91';
+const ICARUS_VERSION = '0.3.92';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

@@ -1018,7 +1018,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // one read at a time.
   if (flags.token !== undefined) {
     if (!flags.token) return console.log(c.dim('  skipped.'));
-    cfg.hivemind = { connected: true, url: authUrl, token: flags.token, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: flags.token, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
     return;
@@ -1032,7 +1032,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   console.log(c.running('  Opening your browser...'));
   const oauth = await attemptHivemindOAuth(authUrl);
   if (oauth) {
-    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, userId: oauth.userId || null, orgId: oauth.orgId || null, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)} (API base: ${c.path(restUrl)})`);
   }
@@ -1058,7 +1058,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
   if (!token) return console.log(c.dim('  skipped.'));
-  cfg.hivemind = { connected: true, url: authUrl, token, apiUrl: manualUrl, connectedAt: new Date().toISOString() };
+  cfg.hivemind = { connected: true, url: authUrl, token, mode: 'developer', apiUrl: manualUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
   console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
 }
@@ -1214,7 +1214,7 @@ async function cmdSetup(_flags, cfg) {
     console.log('');
   }
 
-  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND account (optional)')}\n`);
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND developer identity (required)')}\n`);
   if (cfg.hivemind && cfg.hivemind.connected) {
     console.log(c.dim('  already connected — skipping.\n'));
   } else {
@@ -1224,6 +1224,11 @@ async function cmdSetup(_flags, cfg) {
   ask.close();
 
   const fresh = loadCfg();
+  if (!fresh.hivemind?.connected) {
+    console.error(c.error('  HIVEMIND developer authentication is required to finish ICARUS setup.'));
+    process.exitCode = 1;
+    return;
+  }
   console.log(rule());
   console.log(heading('Setup summary'));
   console.log(`  ${c.dim('agents registered :')} ${found.filter((a) => a.found).length ? c.success('see above') : c.dim('none found')}`);
