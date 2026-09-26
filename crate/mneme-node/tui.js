@@ -995,6 +995,7 @@ async function dispatch(line, state, cfg) {
       if (sub === 'create') {
         const brief = rest.join(' ').trim();
         if (!brief) { out(state, err('usage: /skill create <describe the persona in natural language>')); break; }
+        if (!openRouterApiKey(cfg)) { out(state, err('no LLM API key set — use /llm-api <openrouter-api-key> and then retry /skill create')); break; }
         out(state, c.running('  writing persona skill with the selected model...'));
         const saved = await createPersonaSkill(brief, org, cfg);
         out(state, saved ? ok(`persona skill "${saved.slug}" created and active for org "${org}".`) : err('could not create persona skill — set an LLM API key first'));
@@ -1190,7 +1191,7 @@ async function dispatch(line, state, cfg) {
       out(state, c.running('  Opening your browser...'));
       const oauth = await attemptHivemindOAuth(authUrl);
       if (oauth) {
-        cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+        cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, userId: oauth.userId || null, orgId: oauth.orgId || null, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
         saveCfg(cfg);
         out(state, ok(`HIVEMIND connected${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
       } else {

@@ -35,7 +35,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness', 'memory']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -863,7 +863,20 @@ async function cmdStatus(_flags, cfg) {
   }
 }
 
-async function cmdUpdate(flags, _cfg) {
+function requestedInstallProfile(flags) {
+  if (flags.harness) return 'harness';
+  if (flags.memory) return 'memory';
+  return null;
+}
+
+function applyInstallProfile(cfg, profile) {
+  if (!profile) return;
+  cfg.installation = { ...(cfg.installation || {}), profile, selectedAt: new Date().toISOString() };
+  saveCfg(cfg);
+}
+
+async function cmdUpdate(flags, cfg) {
+  const profile = requestedInstallProfile(flags);
   console.log(c.dim(`  checking latest version (current: v${ICARUS_VERSION})...`));
   const { current, latest, upToDate } = await checkForUpdate();
   if (flags.check) {
@@ -884,7 +897,9 @@ async function cmdUpdate(flags, _cfg) {
     // before committing) is the real safety net, not this version comparison.
     console.log(c.dim('  couldn\'t check the latest version — trying the update anyway.'));
   } else if (upToDate) {
-    return console.log(ok(`already up to date (${current}).`));
+    applyInstallProfile(cfg, profile);
+    const profileNote = profile ? ` Agent setup profile: ${profile}.` : '';
+    return console.log(ok(`already up to date (${current}).${profileNote}`));
   } else {
     console.log(c.system(`  updating ${c.dim(current)} → ${c.bold(latest)}...`));
   }
@@ -897,10 +912,12 @@ async function cmdUpdate(flags, _cfg) {
     process.stdout.write(`\r${renderUpdateProgress(progress, progressTick++)}`);
   });
   if (renderedProgress) process.stdout.write('\n');
+  applyInstallProfile(cfg, profile);
   const suffix = update.restartRequired
     ? ' Exit this command now; the verified Windows replacement will complete immediately after it exits, then restart icarus.'
     : ` Run ${c.command('icarus status')} to confirm.`;
-  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${suffix}`));
+  const profileNote = profile ? ` Agent setup profile: ${profile}.` : '';
+  console.log(ok(`updated to ${c.bold(latest || 'the latest release')} (${(update.bytes / 1e6).toFixed(1)} MB).${profileNote}${suffix}`));
 }
 
 function formatUpdateBytes(bytes) {
@@ -1001,7 +1018,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   // one read at a time.
   if (flags.token !== undefined) {
     if (!flags.token) return console.log(c.dim('  skipped.'));
-    cfg.hivemind = { connected: true, url: authUrl, token: flags.token, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: flags.token, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
     return;
@@ -1015,7 +1032,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   console.log(c.running('  Opening your browser...'));
   const oauth = await attemptHivemindOAuth(authUrl);
   if (oauth) {
-    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, userId: oauth.userId || null, orgId: oauth.orgId || null, mode: 'developer', apiUrl: restUrl, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
     return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)} (API base: ${c.path(restUrl)})`);
   }
@@ -1041,7 +1058,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
   const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
   if (!sharedAsk) ask.close();
   if (!token) return console.log(c.dim('  skipped.'));
-  cfg.hivemind = { connected: true, url: authUrl, token, apiUrl: manualUrl, connectedAt: new Date().toISOString() };
+  cfg.hivemind = { connected: true, url: authUrl, token, mode: 'developer', apiUrl: manualUrl, connectedAt: new Date().toISOString() };
   saveCfg(cfg);
   console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
 }
@@ -1197,7 +1214,7 @@ async function cmdSetup(_flags, cfg) {
     console.log('');
   }
 
-  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND account (optional)')}\n`);
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND developer identity (required)')}\n`);
   if (cfg.hivemind && cfg.hivemind.connected) {
     console.log(c.dim('  already connected — skipping.\n'));
   } else {
@@ -1207,6 +1224,11 @@ async function cmdSetup(_flags, cfg) {
   ask.close();
 
   const fresh = loadCfg();
+  if (!fresh.hivemind?.connected) {
+    console.error(c.error('  HIVEMIND developer authentication is required to finish ICARUS setup.'));
+    process.exitCode = 1;
+    return;
+  }
   console.log(rule());
   console.log(heading('Setup summary'));
   console.log(`  ${c.dim('agents registered :')} ${found.filter((a) => a.found).length ? c.success('see above') : c.dim('none found')}`);
@@ -1747,9 +1769,11 @@ async function main() {
   icarus daemon stop
   icarus daemon status
   icarus backup                        copy repo + ~/.icarus/data shards into ~/.icarus/backups/<iso>
-  icarus update                        self-update: download + verify the latest release binary,
+  icarus update [--memory|--harness]   self-update: download + verify the latest release binary,
                                         atomically replace the currently running one. Compiled-
                                         binary installs only (source builds: git pull instead).
+                                        The optional profile persists for future named coding-agent
+                                        setup; Agent Memory remains the default.
   icarus prune [--yes]                 remove EVERYTHING icarus installed: ~/.icarus (bin,
                                         config, data, src), the PATH line install.sh added, and
                                         its MCP registration from Claude Code/Cursor/Codex. Shows

@@ -8,6 +8,16 @@ RFC, and a spec-lock test enforces it. Entries below are engine, binding and too
 
 ## Unreleased
 
+### Fixed
+- **Actionable synthesis authentication:** `/chat` now distinguishes a missing or rejected
+  OpenRouter key from recall failure and directs the user to `/llm-api <openrouter-api-key>`.
+  A securely saved `/llm-api` key also takes precedence over stale inherited environment values.
+
+### Changed
+- **Persistent agent setup profile:** `icarus update --memory` and `icarus update --harness`
+  select the local profile used by future named coding-agent setup. Agent Memory remains the
+  default; Harness is an explicit opt-in and is never silently attached to existing repositories.
+
 ### Added
 - **Opt-in anonymous usage metrics:** `icarus telemetry enable|disable|status|flush` records only
   bounded lifecycle metadata. This includes MCP registrations and Harness initializations by

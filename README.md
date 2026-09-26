@@ -58,7 +58,8 @@ curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh 
 The installer asks which product lane to start with:
 
 1. **ICARUS V2 — Agent Memory** (default): local `.amr` storage, lexical/BM25 recall, and
-   optional MCP integration. It needs no account, LLM, embedding key, or always-running service.
+   optional MCP integration. Runtime memory stays local and needs no LLM, embedding key, or
+   always-running service.
 2. **ICARUS V2 + Knowledge Space** (preview): reserved for a locally supervised document
    extraction and embedding sidecar. The public installer currently keeps this in honest lexical
    mode until it can provision and health-check both sidecars; it does not pretend a local model
@@ -69,6 +70,20 @@ The installer asks which product lane to start with:
 For non-interactive installs, set `ICARUS_INSTALL_PROFILE=memory`, `knowledge`, or `harness`
 before the command. Selecting `harness` still requires an explicit repository command later;
 that prevents a curl installer from attaching governance to the wrong directory.
+
+Installation finishes with mandatory HIVEMIND developer authentication using email or Google.
+This creates a developer identity only: no HIVEMIND workspace, personal plan, or enterprise
+account. Repository memory remains local unless you explicitly upload it.
+
+To change the default profile used by future coding-agent setup after installation, run one of:
+
+```bash
+icarus update --memory    # Agent Memory is the normal default
+icarus update --harness   # future named agent setup includes Harness governance
+```
+
+This changes the local ICARUS profile and safely updates the binary when an update exists. It
+does not retrofit Harness into existing repositories; opt those repositories in explicitly.
 
 ### Verify a downloaded release
 

@@ -101,3 +101,6 @@ if ($PathEntries -notcontains $BinDir) {
 }
 Write-Ok "Installed ICARUS -> $Target"
 & $Target --version
+Write-Info 'Connect to HIVEMIND to continue ICARUS (developer mode; no workspace or plan is created).'
+& $Target connect --oauth-only
+if ($LASTEXITCODE -ne 0) { Fail 'HIVEMIND developer authentication is required to finish installation; run icarus connect and retry' }

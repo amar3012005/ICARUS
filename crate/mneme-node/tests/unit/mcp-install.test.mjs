@@ -99,6 +99,12 @@ test('mcp install --harness parses as a boolean instead of swallowing the agent 
   assert.equal(cli.parseFlags(['codex', '--harness']).harness, true);
 });
 
+test('agent setup stays memory-first unless an explicit harness profile is selected', () => {
+  assert.equal(mi.harnessEnabledFor({}, { installation: { profile: 'memory' } }), false);
+  assert.equal(mi.harnessEnabledFor({}, { installation: { profile: 'harness' } }), true);
+  assert.equal(mi.harnessEnabledFor({ harness: true }, { installation: { profile: 'memory' } }), true);
+});
+
 test('global agent skills contain self-bootstrap and risk-based memory guidance', () => {
   for (const agent of ['codex', 'claude']) {
     const text = mi.globalSkillBody(agent);
