@@ -1422,6 +1422,9 @@ async function recallQuery(query, org, cfg, topK = 5, usePq = false, scope = 'al
 // whenever server-side filtering becomes verifiable, but nothing here claims it's enforced today.
 function hivemindConfigured(cfg) {
   const hasApiBase = !!(process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl);
+  // Mandatory install auth proves developer identity only. It must never turn local memory
+  // into cloud memory or route repository data to a tenant the developer did not create.
+  if (cfg.hivemind?.mode === 'developer') return false;
   return !!(cfg.hivemind && cfg.hivemind.connected && cfg.hivemind.token && hasApiBase);
 }
 
