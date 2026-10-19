@@ -6,7 +6,7 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
-## v0.3.96
+## v0.3.97
 
 ### Fixed
 - Corrected memories resolve to their latest retained slot before and after daemon restart.

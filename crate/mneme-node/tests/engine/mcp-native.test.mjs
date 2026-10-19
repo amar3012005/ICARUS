@@ -204,7 +204,9 @@ test('compact second-brain toolkit preserves local revisions and evidence withou
     assert.match((await call('get_memory', { memory_id: saved.id })).content, /green/);
     await call('delete_memory', { memory_id: saved.id, reason: 'fixture cleanup' });
     await restart();
-    assert.equal(await call('get_memory', { memory_id: saved.id }), null);
+    const missing = await mcp.request(id++, 'tools/call', { name: 'icarus', arguments: { action: 'get_memory', args: { org: 'second-brain', memory_id: saved.id } } });
+    assert.equal(missing.result.isError, true);
+    assert.match(missing.result.content[0].text, /no live memory with id/);
     const deletedHistory = await call('timeline', { memory_id: saved.id });
     assert.deepEqual(deletedHistory.versions, []);
   } finally {
