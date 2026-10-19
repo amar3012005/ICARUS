@@ -14,11 +14,15 @@ const hits = await store.search('org_acme', queryEmb, 5); // [{ id, score, paylo
 CLI:
 
 ```bash
-npx amr ingest <dir> --org acme
-npx amr recall "your question" --org acme
+npx --package singulance-amr icarus ingest <dir> --org acme
+npx --package singulance-amr icarus recall "your question" --org acme
 ```
 
 Full docs, design thesis, benchmarks, and the `.amr` format spec:
 **https://github.com/amar3012005/ICARUS**
 
 Apache-2.0.
+
+Local Memory is the default. Harness requires explicit `--harness` opt-in. Optional
+`icarus connect` authenticates a SINGULANCE developer identity; it does not grant customer
+workspace access. See the flagship repository docs for module and account boundaries.

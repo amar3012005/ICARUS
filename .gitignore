@@ -48,3 +48,8 @@ DEV_NOTES/
 # ICARUS Harness runtime state (local, never commit)
 .icarus/runtime/
 .icarus/data/
+
+# Independent optional source checkouts, including private Agent Bus.
+# Never vendor or publish these repositories through the flagship package.
+/modules/agent-bus/
+/modules/computer-use/

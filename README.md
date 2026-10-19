@@ -27,6 +27,28 @@
 
 ---
 
+## One flagship, optional modules
+
+ICARUS is the community and documentation entrypoint. Choose the capabilities you need;
+installing memory never opts a repository into governance or starts another service.
+
+| Module | Status | Source / entrypoint | Account |
+| --- | --- | --- | --- |
+| Memory | Default | `crate/`, `crate/mneme-node/`; `icarus mcp install codex` | None for local use |
+| Harness | Explicit opt-in | `crate/icarus-harness/`; `icarus mcp install codex --harness` | None for local use |
+| Agent Bus | Experimental, proposed bridge not shipped | Separate private source; [integration contract](docs/AGENT_BUS_INTEGRATION.md) | No public installer |
+| Computer Use | Experimental, separate evaluation | [HIVEMIND-Computer-use](https://github.com/amar3012005/HIVEMIND-Computer-use) | External provider requirements apply |
+
+Optional source checkouts live under `modules/`; inspect them with `python3 scripts/modules.py status`.
+See [local source setup](modules/README.md) and [module ownership and boundaries](docs/MODULES.md). Modules keep independent dependencies,
+artifacts and install paths. Runtime-Runner remains a separate product repository.
+
+Optional `icarus connect` signs in to a **SINGULANCE developer account** using the existing
+HIVEMIND email/Google identity service and returns to your terminal. Developer identity needs no
+purchase or company workspace and does not grant customer tenant access. Local memory stays
+usable offline. The new developer flow in this branch requires a matching backend release;
+see [authentication and verification](docs/DEVELOPER_AUTH.md).
+
 ## The case for a memory file
 
 Most vector databases are designed for document search. Agent memory has a different shape: a

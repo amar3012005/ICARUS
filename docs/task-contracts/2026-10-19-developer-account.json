@@ -1,0 +1,64 @@
+{
+  "title": "ICARUS flagship local modules and optional developer sign-in",
+  "status": "implemented-local",
+  "baseline_sha": "b9499b0392bbc1f67808b0f884775474f9749ae0",
+  "native_owner": "ICARUS CLI; HIVEMIND control-plane identity; Da-vinci login UI",
+  "outcome": "Concrete independent local module checkouts and developer-scoped email/Google browser-to-terminal authorization",
+  "scope": [
+    "ICARUS source, module workspace and documentation",
+    "Isolated HIVEMIND identity branch",
+    "Isolated Da-vinci login branch"
+  ],
+  "preserve": [
+    "Local offline memory",
+    "Explicit Harness opt-in",
+    "Existing customer login and customer API configuration",
+    "Private Bus visibility",
+    "Runtime-Runner and Brain release ownership",
+    "Shared dirty HIVEMIND checkout"
+  ],
+  "criteria": [
+    {
+      "id": "behavior",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "54 focused tests passed across backend, CLI and frontend; see DEVELOPER_AUTH.md"
+      ]
+    },
+    {
+      "id": "native_contract",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "Reused existing email/Google provider, user identity tables, session store; no Runtime or Harness replacement"
+      ]
+    },
+    {
+      "id": "recovery",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "Wrong state/verifier/callback, expiry, replay, cancellation/timeout cleanup, session revocation and protected config storage tested"
+      ]
+    },
+    {
+      "id": "live_flow",
+      "required": false,
+      "passed": false,
+      "evidence": [
+        "Deployment excluded by user. Real provider email/Google browser acceptance remains outstanding."
+      ]
+    }
+  ],
+  "release": {
+    "requested": false,
+    "source_sha": "",
+    "artifact": "not built or published",
+    "rollback": "no deployed state changed"
+  },
+  "blockers": [
+    "Production provider acceptance requires authorized matching backend/frontend/CLI release; not requested",
+    "Two unrelated source-contract test failures reproduced on unmodified backend HEAD"
+  ]
+}

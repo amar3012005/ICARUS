@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "purpose": "descriptive inventory; not runtime configuration",
+  "modules": {
+    "memory": {
+      "default": true,
+      "source": "crate",
+      "accountRequiredForLocalUse": false
+    },
+    "harness": {
+      "default": false,
+      "source": "crate/icarus-harness",
+      "optIn": "icarus mcp install codex --harness",
+      "certifiedAdapters": []
+    },
+    "agent-bus": {
+      "default": false,
+      "status": "experimental",
+      "integration": "proposed-not-shipped",
+      "sourceVisibility": "private",
+      "contract": "docs/AGENT_BUS_INTEGRATION.md",
+      "localSource": "modules/agent-bus"
+    },
+    "computer-use": {
+      "default": false,
+      "status": "experimental-separate-evaluation",
+      "source": "https://github.com/amar3012005/HIVEMIND-Computer-use",
+      "callerSuppliedPlan": true,
+      "localSource": "modules/computer-use"
+    }
+  }
+}

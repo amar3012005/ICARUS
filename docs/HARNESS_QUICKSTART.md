@@ -23,10 +23,13 @@ ICARUS preview. Migration copies legacy graph metadata only; it never rewrites `
 Install the ICARUS MCP server and the repository instruction block for each agent you use:
 
 ```bash
-icarus mcp install claude   # or codex / cursor, from the repository root
+icarus mcp install claude --harness   # or codex / cursor, from the repository root
 ```
 
-That installed block is a hard first-session rule: before code search, planning, edits, or an
+Only the explicitly selected `--harness` profile installs governed-session instructions.
+Memory-only `icarus mcp install claude` does not bootstrap a harness or graph.
+
+For governed sessions, that installed block is a hard first-session rule: before code search, planning, edits, or an
 implementation answer, an agent checks for `.icarus/manifest.yaml` and calls
 `icarus_harness_init` when it is absent. Initialization is idempotent; a failure blocks governed
 work rather than allowing the agent to fabricate `.icarus` state. Agents then build a missing or

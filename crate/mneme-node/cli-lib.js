@@ -555,6 +555,7 @@ function loadCfg() {
 function saveCfg(cfg) {
   fs.mkdirSync(HOME, { recursive: true });
   fs.writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  fs.chmodSync(CFG_PATH, 0o600);
 }
 
 // OpenRouter is a user-supplied paid API credential, never a coding-agent subscription token.
@@ -1439,77 +1440,64 @@ function hivemindApiBase(cfg) {
   return base;
 }
 
-// Browser-login handshake, matching the server's REAL, already-shipped CLI-auth endpoint —
-// GET /auth/cli/start?callback=<loopback-url>&state=<rand> (control-plane-server.js's own doc
-// comment: "same UX as `gh auth login --web` / `vercel login`"). This replaced an earlier
-// generic OAuth2 PKCE + Dynamic Client Registration attempt that guessed at RFC 8414/7591/7636
-// support and hit real 404s on /oauth/register and /oauth/token — /auth/cli/start needs none of
-// that: no client registration, no PKCE, no discovery document. Server-side it:
-//   1. Requires the caller already be logged in (browser session cookie) — if not, redirects
-//      through the branded /hivemind/login page first, then loops back here automatically.
-//   2. Mints (or reuses) a revocable API key for that user/org.
-//   3. Parks the key behind a single-use, 60s-TTL exchange code and shows a branded
-//      "Verified as <email>" confirmation page — the token is NEVER placed in a URL the user's
-//      browser displays. Only after the user clicks Continue does the page redirect to our
-//      localhost callback below with the real token.
-//   4. Refuses to redirect anywhere except 127.0.0.1/localhost/::1 (or a chromiumapp.org
-//      extension callback) — the token cannot leak to a remote host even if `callback` were
-//      tampered with, so this is safe to point at by default.
-//
-// Deliberately NEVER throws — timeout, a non-loopback rejection, or any network hiccup all
-// return `null` so the caller falls back to the manual paste-your-own-key flow.
+// Optional developer identity. The browser carries only a one-shot code; the
+// terminal redeems it with its private PKCE verifier. Customer keys stay separate.
 function openBrowser(url) {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  try { require('child_process').spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref(); } catch (_) { /* user copies the URL manually below */ }
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  const child = require('child_process').spawn(cmd, args, { stdio: 'ignore', detached: true });
+  child.on('error', () => {}); child.unref();
 }
 
-async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000 } = {}) {
+async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000, launchBrowser = openBrowser, report = console.log } = {}) {
   const http = require('http');
+  let server, timer, onSignal;
   try {
-    const { server, port, waitForCallback } = await new Promise((resolve, reject) => {
-      let resolveCb, rejectCb;
-      const srv = http.createServer((req, res) => {
+    const base = new URL(baseUrl);
+    if (base.protocol !== 'https:' && !(base.protocol === 'http:' && base.hostname === '127.0.0.1')) return null;
+    const state = crypto.randomBytes(32).toString('base64url');
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    let callback;
+    const result = new Promise((resolve, reject) => {
+      server = http.createServer(async (req, res) => {
         const u = new URL(req.url, 'http://127.0.0.1');
-        if (u.pathname !== '/callback') { res.writeHead(404); res.end(); return; }
-        const token = u.searchParams.get('token');
-        const state = u.searchParams.get('state');
-        const email = u.searchParams.get('user_email') || '';
-        const err = u.searchParams.get('error');
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(err
-          ? `<h2>ICARUS: sign-in failed (${err}) — return to your terminal.</h2>`
-          : `<h2>ICARUS connected${email ? ` as ${email}` : ''} — you can close this tab and return to your terminal.</h2>`);
-        if (err) rejectCb(new Error(err));
-        else resolveCb({ token, state, email, userId: u.searchParams.get('user_id') || null, orgId: u.searchParams.get('org_id') || null });
+        const respond = (status, text) => { res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }); res.end(text); };
+        if (req.method !== 'GET' || u.pathname !== '/callback') return respond(404, 'Not found');
+        if (u.searchParams.get('state') !== state) return respond(400, 'Invalid state');
+        const code = u.searchParams.get('code');
+        if (!code) return respond(400, 'Missing authorization code');
+        try {
+          const response = await fetch(new URL('/auth/developer/cli/exchange', base), {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(Math.min(timeoutMs, 15000)),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, code_verifier: verifier, callback }),
+          });
+          if (!response.ok) throw new Error('Developer authorization failed');
+          const data = await response.json();
+          if (!data.token || data.accountType !== 'developer' || data.scope !== 'developer:identity' || data.orgId !== null) throw new Error('Invalid developer grant');
+          respond(200, 'ICARUS developer account signed in. You can close this tab and return to your terminal.');
+          resolve(data);
+        } catch (error) { respond(400, 'Sign-in failed. Return to your terminal and try again.'); reject(error); }
       });
-      srv.on('error', reject);
-      srv.listen(0, '127.0.0.1', () => {
-        const p = srv.address().port;
-        resolve({ server: srv, port: p, waitForCallback: () => new Promise((res, rej) => { resolveCb = res; rejectCb = rej; }) });
-      });
+      server.on('error', reject);
+      timer = setTimeout(() => reject(new Error('Sign-in timed out')), timeoutMs);
+      onSignal = () => reject(new Error('Sign-in cancelled'));
+      process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal);
     });
-
-    try {
-      const redirectUri = `http://127.0.0.1:${port}/callback`;
-      const state = base64url(crypto.randomBytes(16));
-      const startUrl = `${baseUrl}/auth/cli/start?${new URLSearchParams({ callback: redirectUri, state })}`;
-
-      console.log('\n  Opening your browser to sign in...');
-      console.log(`  If it doesn't open automatically: ${startUrl}\n`);
-      openBrowser(startUrl);
-
-      const result = await Promise.race([
-        waitForCallback(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out waiting for browser login')), timeoutMs)),
-      ]);
-      if (result.state !== state) throw new Error('state mismatch on callback — possible CSRF, aborting');
-      if (!result.token) return null;
-      return { token: result.token, userEmail: result.email || null, userId: result.userId, orgId: result.orgId };
-    } finally {
-      server.close();
-    }
-  } catch (_) {
-    return null; // any network/timeout/state-mismatch failure -> caller falls back to manual key entry
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    callback = `http://127.0.0.1:${server.address().port}/callback`;
+    const start = new URL('/auth/developer/cli/start', base);
+    start.search = new URLSearchParams({ callback, state, code_challenge: challenge, code_challenge_method: 'S256' }).toString();
+    report('Opening SINGULANCE developer sign-in. Local memory needs no account.');
+    report(`If the browser does not open: ${start}`);
+    launchBrowser(start.toString());
+    return await result;
+  } catch { return null; }
+  finally {
+    clearTimeout(timer);
+    if (onSignal) { process.removeListener('SIGINT', onSignal); process.removeListener('SIGTERM', onSignal); }
+    if (server) { server.close(); server.closeAllConnections?.(); }
   }
 }
 

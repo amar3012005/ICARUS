@@ -234,7 +234,7 @@ const SLASH_COMMANDS = [
   { cmd: '/copy', hint: '[n] — copy the last command\'s output (or last n lines) to the clipboard' },
   { cmd: '/setup', hint: '<claude|codex|cursor|--all> — register MCP + project instructions + repo shard' },
   { cmd: '/graph', hint: 'build|status|query — native symbol/call graph for this repo' },
-  { cmd: '/connect', hint: 'browser sign-in to HIVEMIND' },
+  { cmd: '/connect', hint: 'optional ICARUS developer sign-in' },
   { cmd: '/update', hint: 'download + verify the latest release' },
   { cmd: '/help', hint: 'full command list' },
   { cmd: '/quit', hint: 'ctrl+d also works' },
@@ -251,7 +251,7 @@ function printHelp(state) {
   out(state, `  ${c.command('/thinking')} <off|minimal|low|medium|high|xhigh|max> set only an effort supported by the selected model.`);
   out(state, `  ${c.command('/chat')} <query> [--org name]                        local recall first, then source-cited OpenRouter synthesis. /recall remains raw.`);
   out(state, `  ${c.command('/status')}                                          org shards + real memory/evidence/relationship counts + signing/audit`);
-  out(state, `  ${c.command('/connect')}                                         browser sign-in to HIVEMIND`);
+  out(state, `  ${c.command('/connect')}                                         optional ICARUS developer sign-in`);
   out(state, `  ${c.command('/org')} <name>                                      switch the default org for this session`);
   out(state, `  ${c.command('/create')} <org> <path>                             create a NEW org shard rooted at <path> (its own repo-local .icarus/data/<org> — this becomes that repo's org automatically, same auto-detection /setup uses).`);
   out(state, `  ${c.command('/delete')}                                           lists every org, pick one, then a real double confirmation before permanently deleting its whole shard — refuses if another live icarus process still has it open.`);
@@ -1185,16 +1185,15 @@ async function dispatch(line, state, cfg) {
       break;
     }
     case 'connect': {
-      const authUrl = process.env.HIVEMIND_URL || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
-      const restUrl = process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
+      const authUrl = process.env.HIVEMIND_URL || cfg.developer?.url || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
       out(state, c.running('  Opening your browser...'));
       const oauth = await attemptHivemindOAuth(authUrl);
       if (oauth) {
-        cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+        cfg.developer = { signedIn: true, url: authUrl, token: oauth.token, userId: oauth.userId, userEmail: oauth.userEmail, scope: oauth.scope, connectedAt: new Date().toISOString() };
         saveCfg(cfg);
-        out(state, ok(`HIVEMIND connected${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
+        out(state, ok(`Developer account signed in${oauth.userEmail ? ` as ${oauth.userEmail}` : ''}.`));
       } else {
-        out(state, err('browser sign-in didn\'t complete — run `icarus connect` outside the TUI for the manual-token fallback.'));
+        out(state, err('browser sign-in didn\'t complete — run `icarus connect` to retry. Local memory remains available.'));
       }
       break;
     }

@@ -35,7 +35,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'logout', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -853,6 +853,7 @@ async function cmdStatus(_flags, cfg) {
   const s = await callMemory('status', {}, cfg);
   console.log(`${heading('icarus')} ${c.dim(`v${ICARUS_VERSION}`)}  data: ${c.path(s.dataRoot)}  dim: ${s.dim}`);
   console.log(rule());
+  console.log(`${c.dim(glyphs.accentBar)} Developer  ${cfg.developer?.signedIn ? c.success('credential stored') : c.dim('not signed in (optional)')}`);
   console.log(`${c.dim(glyphs.accentBar)} HIVEMIND   ${s.hivemindConnected ? c.success('connected') : c.dim('not connected')}`);
   console.log(`${c.dim(glyphs.accentBar)} Signing    ${signingEnabled(cfg) ? c.success('ML-DSA-65 (FIPS 204), on') : c.dim('disabled')}`);
   console.log(`${c.dim(glyphs.accentBar)} Audit      ${c.success('SLH-DSA-SHA2-128s (FIPS 205), on')} ${c.dim('— icarus audit checkpoint/verify')}`);
@@ -987,7 +988,8 @@ function makePrompter() {
 // flagging a second hardcoded copy in tui.js; fixed by centralizing instead of allowlisting both).
 
 async function cmdConnect(flags, cfg, sharedAsk) {
-  const authUrl = process.env.HIVEMIND_URL || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
+  if (flags.logout) { delete cfg.developer; saveCfg(cfg); return console.log(ok('Developer credential removed from this computer.')); }
+  const authUrl = process.env.HIVEMIND_URL || cfg.developer?.url || cfg.hivemind?.url || DEFAULT_HIVEMIND_AUTH_URL;
   const restUrl = flags['api-url'] || process.env.HIVEMIND_API_URL || cfg.hivemind?.apiUrl || DEFAULT_HIVEMIND_API_URL;
   // --token makes this fully non-interactive — install.sh's guided section uses this instead of
   // spawning a second interactive read inside a curl|bash pipeline's child process. A real bug
@@ -1006,44 +1008,19 @@ async function cmdConnect(flags, cfg, sharedAsk) {
     console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
     return;
   }
-  console.log(`\n${heading('Connect ICARUS ↔ HIVEMIND')}`);
-  // Real browser-login handshake (GET /auth/cli/start — see attemptHivemindOAuth's own doc
-  // comment) tried FIRST against the default/configured server, no prompt needed for the common
-  // case. Only if that fails (unreachable server, timed out, or user closes the tab) does this
-  // fall to asking for a URL + a manually pasted token.
+  console.log(`\n${heading('Sign in to your ICARUS developer account')}`);
   console.log(c.dim(`  Signing in via ${c.path(authUrl)} ${authUrl === DEFAULT_HIVEMIND_AUTH_URL ? '(default — override with HIVEMIND_URL)' : ''}`));
   console.log(c.running('  Opening your browser...'));
   const oauth = await attemptHivemindOAuth(authUrl);
   if (oauth) {
-    cfg.hivemind = { connected: true, url: authUrl, token: oauth.token, userEmail: oauth.userEmail, apiUrl: restUrl, connectedAt: new Date().toISOString() };
+    cfg.developer = { signedIn: true, url: authUrl, token: oauth.token, userId: oauth.userId, userEmail: oauth.userEmail, scope: oauth.scope, connectedAt: new Date().toISOString() };
     saveCfg(cfg);
-    return console.log(`  ${ok(`HIVEMIND connected${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Token stored in ${c.path(CFG_PATH)} (API base: ${c.path(restUrl)})`);
+    return console.log(`  ${ok(`Developer account signed in${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Local memory remains offline. Credential stored in ${c.path(CFG_PATH)}.`);
   }
-  // --oauth-only: browser-flow-or-fail, no interactive fallback — this is what install.sh's
-  // guided_setup calls, so it (not this Node process) owns every /dev/tty read. A real bug this
-  // session: a Node child doing SEQUENTIAL /dev/tty reads died silently when spawned from inside
-  // a `curl | bash` pipe — the browser-flow-only path here does zero tty reads (its callback
-  // server is a plain loopback HTTP listener, not stdin), so it's safe to call directly; install.sh
-  // does its own single-read fallback if this returns nonzero.
-  if (flags['oauth-only']) {
-    console.log(c.dim('  Browser sign-in didn\'t complete.'));
-    process.exitCode = 1;
-    return;
-  }
-  console.log(c.dim('  Browser sign-in didn\'t complete — falling back to a manual URL + token.'));
-  // A caller (icarus setup) that's already mid-wizard passes its own prompter through, so this
-  // never touches stdin itself — a SECOND fs.readFileSync(0) on piped input reads nothing, since
-  // the first prompter already drained the pipe (a real bug, caught running the actual wizard).
-  const ask = sharedAsk || makePrompter();
-  const manualUrl = (await ask(`  Memory server REST API base URL [${restUrl}]: `)) || restUrl;
-  console.log(`  1. Open: ${c.path(`${authUrl}/settings/connections`)} (authorize "icarus local")`);
-  console.log(`  2. Copy the access token shown after authorizing.\n`);
-  const token = await ask('  Paste HIVEMIND token (or blank to skip): ');
-  if (!sharedAsk) ask.close();
-  if (!token) return console.log(c.dim('  skipped.'));
-  cfg.hivemind = { connected: true, url: authUrl, token, apiUrl: manualUrl, connectedAt: new Date().toISOString() };
-  saveCfg(cfg);
-  console.log(`  ${ok('HIVEMIND connected.')} Token stored in ${c.path(CFG_PATH)}`);
+  console.log(c.dim('  Developer sign-in did not complete. Local memory is still available.'));
+  process.exitCode = 1;
+  return;
+
 }
 
 // Embeddings are OPT-IN, not required — ingest/recall work lexical-only (BM25) with zero
@@ -1197,10 +1174,10 @@ async function cmdSetup(_flags, cfg) {
     console.log('');
   }
 
-  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— HIVEMIND account (optional)')}\n`);
-  if (cfg.hivemind && cfg.hivemind.connected) {
-    console.log(c.dim('  already connected — skipping.\n'));
-  } else {
+  console.log(`${c.system(glyphs.diamond)} ${c.bold('Step 4/4')} ${c.dim('— ICARUS developer account (optional)')}\n`);
+  if (cfg.developer?.signedIn) {
+    console.log(c.dim('  developer credential already stored — skipping.\n'));
+  } else if (/^y(es)?$/i.test(await ask('  Sign in with email or Google? Local memory needs no account. [y/N]: '))) {
     await cmdConnect({ _: [] }, cfg, ask);
     console.log('');
   }
@@ -1637,14 +1614,15 @@ async function main() {
                                         context while preserving its approval-backed audit trail.
                                         harness-skill remains a compatibility alias.
   icarus setup                         guided, one-by-one wizard: detect coding agents, connect
-                                        memory generation, embeddings, HIVEMIND — do this first
-  icarus connect [--api-url <url>] [--token <tok>] [--oauth-only]
-                                        link your HIVEMIND account. Default flow: opens your
-                                        browser to sign in (defaults to api.singulancelabs.com,
-                                        override with --api-url or HIVEMIND_URL), no token to
-                                        paste — falls back to a manual token if that doesn't
-                                        complete. --oauth-only tries only the browser flow and
-                                        exits nonzero on failure, no prompt (used by install.sh).
+                                        memory generation, embeddings, optional developer identity
+  icarus connect [--oauth-only] [--logout]
+                                        optional SINGULANCE developer sign-in via email or Google.
+                                        Returns to this terminal; no purchase or workspace needed.
+                                        HIVEMIND_URL overrides the sign-in issuer.
+                                        --logout removes the local developer credential.
+  icarus connect --token <key> [--api-url <url>]
+                                        explicit existing customer API connection, separate from
+                                        developer identity. Hosted capabilities require permission.
   icarus telemetry <enable|disable|status|flush>
                                         opt-in anonymous lifecycle metrics. Never sends source,
                                         prompts, memory content, repository paths, or credentials.
