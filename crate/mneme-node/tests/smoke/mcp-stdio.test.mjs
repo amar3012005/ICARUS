@@ -13,10 +13,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', '..', 'mneme-cli.js');
 const children = new Set();
 
-afterEach(() => {
-  for (const child of children) child.kill('SIGTERM');
+async function stopChildren() {
+  await Promise.all([...children].map(child => new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+    child.kill('SIGTERM');
+  })));
   children.clear();
-});
+}
+afterEach(stopChildren);
 
 function startMcp({ legacy = true, home } = {}) {
   const child = spawn(process.execPath, [CLI, 'mcp-serve'], {
@@ -93,7 +99,12 @@ test('compact MCP advertises one tool and discloses individual schemas on demand
     assert.equal(invalid.result.isError, true);
     const discovered = await mcp.request(5, 'tools/call', { name: 'icarus', arguments: { action: 'discover', args: { query: 'history' } } });
     assert.ok(JSON.parse(discovered.result.content[0].text).tools.some(t => t.action === 'timeline'));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    // Windows holds a process's cwd open until it exits. afterEach runs AFTER this finally,
+    // so stop this test's MCP child before removing its temporary profile directory.
+    await stopChildren();
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('MCP stdio server completes initialize and exposes the public tool surface', async () => {
