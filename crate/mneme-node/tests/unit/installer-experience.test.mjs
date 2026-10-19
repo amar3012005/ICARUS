@@ -43,7 +43,7 @@ test('real HTTP downloads count actual bytes with known and unknown lengths; fai
 test('end-of-install choices invoke only user-wide setup; old binaries and skip cannot create repo state', {skip:process.platform==='win32'}, async()=>{
   const f=fixture();mkdirSync(join(f.dir,'bin'));
   const cli=join(f.dir,'bin','icarus');
-  writeFileSync(cli,'#!/bin/sh\nif [ "$1" = --help ]; then echo "user-wide setup"; else printf "%s\\n" "$*" >> "$CALLS"; fi\n',{mode:0o700});
+  writeFileSync(cli,'#!/bin/sh\nif [ "$1" = --help ]; then echo "user-wide setup"; awk \'BEGIN {for(i=0;i<4000;i++) print "Additional help text"}\'; else printf "%s\\n" "$*" >> "$CALLS"; fi\n',{mode:0o700});
   try{
     for(const [choice,args] of [['auto','mcp install --global'],['codex','mcp install codex --global'],['claude','mcp install claude --global'],['cursor','mcp install cursor --global']]){
       const calls=join(f.dir,choice);const result=await run('source "$LIB"; connect_coding_agents',{env:{...process.env,HOME:f.dir,ICARUS_HOME:f.dir,ICARUS_INSTALL_AGENTS:choice,LIB:f.lib,CALLS:calls}});

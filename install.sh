@@ -599,10 +599,11 @@ connect_coding_agents() {
   # Older CLIs ignore unknown switches; never let --global become a repo install.
   case "$choice" in 5|skip) dim "Skipped. Connect later: icarus mcp install --global"; return 0 ;; esac
   help=$("$BIN_DIR/icarus" --help)
-  if ! printf '%s' "$help" | grep -Fq 'user-wide setup'; then
-    warn "This CLI needs an update for user-wide agent selection. Run icarus update, then icarus mcp install --global."
-    return 0
-  fi
+  # In-shell matching avoids a grep -q / printf SIGPIPE under pipefail.
+  case "$help" in
+    *'user-wide setup'*) ;;
+    *) warn "This CLI needs an update for user-wide agent selection. Run icarus update, then icarus mcp install --global."; return 0 ;;
+  esac
   case "$choice" in
     ''|1|auto) "$BIN_DIR/icarus" mcp install --global ;;
     2|codex) "$BIN_DIR/icarus" mcp install codex --global ;;

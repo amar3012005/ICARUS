@@ -1,0 +1,59 @@
+{
+  "title": "Real installer download progress and optional user-wide coding-agent setup",
+  "status": "complete",
+  "native_owner": "ICARUS install.sh and existing mcp-install.js client adapters",
+  "source": {
+    "feature_sha": "f901d53d5b96f146819c2876175abfaccea5fd4c",
+    "cli_release_sha": "744ec66c0bfa7d38d11c7de52ede725201ad42f6",
+    "installer_sha256": "e1fe240fc4f90d9acffcad07ccfefd9577872e2c492e3fb2b5939c36be3b0985"
+  },
+  "release": {
+    "version": "0.3.93",
+    "workflow": 39288782692,
+    "url": "https://github.com/amar3012005/ICARUS/releases/tag/v0.3.93",
+    "state": "Published, not a draft, with 15 binary/checksum/SBOM assets. All five builds, publication, and Windows/Linux ARM64 cold checks passed.",
+    "npm_engine_published": false
+  },
+  "criteria": [
+    {
+      "id": "progress",
+      "passed": true,
+      "evidence": [
+        "Actual received bytes and final HTTP response Content-Length drive percentage, bar, speed and ETA; unknown-size transfers show bytes and elapsed time without a fabricated percentage.",
+        "Real HTTP tests cover redirect, known/unknown lengths and transport failure. A real terminal exercised progressive byte counts; a real public 80.6 MiB release download reached 100% and checksum verification passed.",
+        "Interrupted-transfer check exited 130, removed partial output and closed the transfer connection. Existing checksum/rollback tests pass."
+      ]
+    },
+    {
+      "id": "agent_choice",
+      "passed": true,
+      "evidence": [
+        "After Done, the POSIX installer offers Auto, Codex, Claude Code, Cursor, and Skip. Non-interactive configuration uses ICARUS_INSTALL_AGENTS.",
+        "--global reuses existing MCP adapters for supported configurations present in the user account. Named project setup remains available without --global. No project files/shards or Harness are created by user-wide setup.",
+        "Packaged v0.3.93 Linux CLI tested in an isolated read-only, network-disabled container: Auto registered all three supported fixture clients, preserved unrelated MCP entries, left repository files/state untouched, and repeated setup without changing registration files.",
+        "Final repeat-run messages report actual config paths. Shell compatibility check handles old CLIs and long help output without falling into project setup."
+      ]
+    },
+    {
+      "id": "checks",
+      "passed": true,
+      "evidence": [
+        "160 CLI tests passed; installer Bash syntax and Git whitespace checks passed.",
+        "macOS ARM64 and Linux x64 artifact checksums and GitHub provenance verified. macOS packaged version/help report 0.3.93 and the user-wide command.",
+        "New Mac installation and real agent settings were preserved; all registration tests ran in temporary homes or an isolated container. Existing user changes to project instructions, memory and .gitignore were preserved."
+      ]
+    },
+    {
+      "id": "published_cold_checks",
+      "passed": true,
+      "evidence": [
+        "Workflow 39288782692 completed successfully: five platform builds, publish and Windows/Linux ARM64 cold-download jobs.",
+        "Published macOS ARM64 binary checksum passed, bytes match the provenance-verified staged artifact, and version is 0.3.93."
+      ]
+    }
+  ],
+  "preserve": [
+    "Developer email/Google identity remains icarus connect; local memory and MCP require no account.",
+    "No backend, Runtime, Brain, website, or npm engine release. Private optional module sources remain excluded."
+  ]
+}
