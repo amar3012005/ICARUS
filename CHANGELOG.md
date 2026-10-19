@@ -6,6 +6,14 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
+## v0.3.91
+
+### Fixed
+- **Email sign-in wait:** the native terminal now waits up to 15 minutes, covering the ten-minute
+  email code validity plus time to open the browser and find the message. A timeout explains how
+  to reconnect using an already verified browser session. State, PKCE and the short server
+  authorization-code lifetime are unchanged.
+
 ## v0.3.90
 
 ### Changed

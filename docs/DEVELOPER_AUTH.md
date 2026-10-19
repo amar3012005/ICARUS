@@ -108,7 +108,11 @@ fail on the unmodified backend baseline: `login-org-resolution-contract.test.js`
 `joinedAt` shape, and `oauth-login-redirect-contract.test.js` expects the former MCP login query.
 No global agent configuration was changed.
 
-The CLI waits three minutes for browser completion. If a human email step takes longer, the
-browser can finish identity verification after that local listener has closed. Run `icarus connect`
-again to obtain a fresh callback; the verified browser session completes that handoff. Local memory
-continues to work throughout. Bus/Computer Use source presence is independent of this account flow.
+The v0.3.90 CLI waited three minutes for browser completion, shorter than the ten-minute email
+code validity. The v0.3.91 patch waits fifteen minutes and reports the deadline and cancellation
+option. It explains how to run `icarus connect` again after timeout when the browser is already
+verified. A retry always creates fresh state, PKCE and a callback; it never revives an expired
+authorization code. Server email/code expiry is unchanged. Automated fake-clock coverage verifies
+the default deadline, and a real loopback recovery test rejects the prior state before completing
+a fresh PKCE exchange. Local memory continues to work throughout. Bus/Computer Use source
+presence is independent of this account flow.

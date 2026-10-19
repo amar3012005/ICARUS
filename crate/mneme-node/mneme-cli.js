@@ -1017,7 +1017,7 @@ async function cmdConnect(flags, cfg, sharedAsk) {
     saveCfg(cfg);
     return console.log(`  ${ok(`Developer account signed in${oauth.userEmail ? ` as ${c.path(oauth.userEmail)}` : ''}.`)} Local memory remains offline. Credential stored in ${c.path(CFG_PATH)}.`);
   }
-  console.log(c.dim('  Developer sign-in did not complete. Local memory is still available.'));
+  console.log(c.dim('  Developer sign-in did not complete. Run `icarus connect` to retry. Local memory is still available.'));
   process.exitCode = 1;
   return;
 

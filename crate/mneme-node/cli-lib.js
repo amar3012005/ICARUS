@@ -1449,7 +1449,11 @@ function openBrowser(url) {
   child.on('error', () => {}); child.unref();
 }
 
-async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000, launchBrowser = openBrowser, report = console.log } = {}) {
+// Email codes remain valid for ten minutes after delivery; allow time to open the
+// browser and retrieve the email as well. This does not extend the server code TTL.
+const DEVELOPER_SIGN_IN_TIMEOUT_MS = 15 * 60 * 1000;
+
+async function attemptHivemindOAuth(baseUrl, { timeoutMs = DEVELOPER_SIGN_IN_TIMEOUT_MS, launchBrowser = openBrowser, report = console.log } = {}) {
   const http = require('http');
   let server, timer, onSignal;
   try {
@@ -1490,10 +1494,14 @@ async function attemptHivemindOAuth(baseUrl, { timeoutMs = 180000, launchBrowser
     const start = new URL('/auth/developer/cli/start', base);
     start.search = new URLSearchParams({ callback, state, code_challenge: challenge, code_challenge_method: 'S256' }).toString();
     report('Opening SINGULANCE developer sign-in. Local memory needs no account.');
+    report(`Waiting up to ${Math.ceil(timeoutMs / 60000)} minutes for browser sign-in. Press Ctrl+C to cancel.`);
     report(`If the browser does not open: ${start}`);
     launchBrowser(start.toString());
     return await result;
-  } catch { return null; }
+  } catch (error) {
+    if (error.message === 'Sign-in timed out') report('Browser sign-in timed out. If your browser has verified the account, run `icarus connect` again to finish with that session; no new email code is needed while it remains signed in.');
+    return null;
+  }
   finally {
     clearTimeout(timer);
     if (onSignal) { process.removeListener('SIGINT', onSignal); process.removeListener('SIGTERM', onSignal); }
@@ -2387,7 +2395,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.90';
+const ICARUS_VERSION = '0.3.91';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

@@ -1,6 +1,6 @@
 {
   "title": "ICARUS flagship local modules and optional developer sign-in",
-  "status": "complete",
+  "status": "releasing",
   "baseline_sha": "b9499b0392bbc1f67808b0f884775474f9749ae0",
   "native_owner": "ICARUS CLI; HIVEMIND control-plane identity; Da-vinci login UI",
   "outcome": "Concrete independent local module checkouts and developer-scoped email/Google browser-to-terminal authorization",
@@ -63,7 +63,7 @@
   "blockers": [],
   "limitations": [
     "New-identity enrollment is automatically tested; the unused email alias received its email but was not verified live.",
-    "Three-minute CLI wait can expire during human email entry; rerun connect to recover after browser verification.",
+    "v0.3.90 three-minute CLI wait expired during live human email entry; v0.3.91 extends wait to fifteen minutes with explicit recovery. Patch publication in progress.",
     "No npm engine publication or Bus/Computer Use bridge implementation included."
   ]
 }

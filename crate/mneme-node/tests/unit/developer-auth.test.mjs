@@ -63,3 +63,62 @@ test('developer storage preserves customer connection and restricts existing con
     assert.equal(run.stdout, '');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+
+test('default browser wait covers email validity and explains expired-listener recovery', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const reports = [];
+  let opened;
+  const browserOpened = new Promise(resolve => { opened = resolve; });
+  let settled = false;
+  const pending = attemptHivemindOAuth('https://api.example.test', {
+    report: value => reports.push(value), launchBrowser: opened,
+  }).then(value => { settled = true; return value; });
+  await browserOpened;
+  t.mock.timers.tick(180001);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the former three-minute deadline must not close the callback');
+  t.mock.timers.tick(420000);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the ten-minute email window must fit inside the browser wait');
+  t.mock.timers.tick(300000);
+  assert.equal(await pending, null);
+  assert.ok(reports.some(value => /Waiting up to 15 minutes/.test(value)));
+  assert.ok(reports.some(value => /icarus connect.*no new email code/.test(value)));
+});
+
+test('a fresh handoff after timeout rejects the expired state and completes with fresh PKCE', async () => {
+  let expiredStart;
+  await attemptHivemindOAuth('https://api.example.test', {
+    timeoutMs: 20, report: () => {}, launchBrowser: value => { expiredStart = new URL(value); },
+  });
+  let freshStart, browser;
+  const backend = http.createServer(async (req, res) => {
+    let raw = ''; for await (const part of req) raw += part;
+    const posted = JSON.parse(raw);
+    assert.equal(crypto.createHash('sha256').update(posted.code_verifier).digest('base64url'), freshStart.searchParams.get('code_challenge'));
+    assert.equal(posted.callback, freshStart.searchParams.get('callback'));
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ token: 'recovered-fixture', accountType: 'developer', scope: 'developer:identity', orgId: null }));
+  });
+  await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
+  try {
+    const grant = await attemptHivemindOAuth(`http://127.0.0.1:${backend.address().port}`, {
+      timeoutMs: 3000, report: () => {}, launchBrowser: value => {
+        freshStart = new URL(value);
+        assert.notEqual(freshStart.searchParams.get('state'), expiredStart.searchParams.get('state'));
+        assert.notEqual(freshStart.searchParams.get('code_challenge'), expiredStart.searchParams.get('code_challenge'));
+        browser = (async () => {
+          const cb = new URL(freshStart.searchParams.get('callback'));
+          cb.searchParams.set('code', 'fresh-one-shot');
+          cb.searchParams.set('state', expiredStart.searchParams.get('state'));
+          assert.equal((await fetch(cb)).status, 400);
+          cb.searchParams.set('state', freshStart.searchParams.get('state'));
+          assert.equal((await fetch(cb)).status, 200);
+        })();
+      },
+    });
+    await browser;
+    assert.equal(grant.token, 'recovered-fixture');
+  } finally { backend.close(); backend.closeAllConnections(); }
+});
