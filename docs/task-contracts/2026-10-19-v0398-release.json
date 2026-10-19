@@ -1,0 +1,122 @@
+{
+  "type": "release_and_local_acceptance_receipt",
+  "completed_at_utc": "2026-10-19T18:46:59.796190+00:00",
+  "release": {
+    "version": "0.3.98",
+    "url": "https://github.com/amar3012005/ICARUS/releases/tag/v0.3.98",
+    "source_commit": "2316fdf33d1297b861a7676714f4783c41bca1d9",
+    "workflow_url": "https://github.com/amar3012005/ICARUS/actions/runs/39303685856",
+    "workflow_conclusion": "success",
+    "jobs": [
+      {
+        "name": "verify-version",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-icarus-linux-arm64",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-icarus-darwin-arm64",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-icarus-darwin-x64",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-icarus-linux-x64",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-icarus-win32-x64.exe",
+        "conclusion": "success"
+      },
+      {
+        "name": "publish",
+        "conclusion": "success"
+      },
+      {
+        "name": "cold-windows",
+        "conclusion": "success"
+      },
+      {
+        "name": "cold-linux-arm",
+        "conclusion": "success"
+      }
+    ],
+    "asset_count": 15,
+    "mac_arm64_sha256": "e5755f659f233075b53861f0c4f73eaa2720091e6fff11f5e4b931aaaba4afd4",
+    "provenance_verified": true
+  },
+  "local": {
+    "previous_cli": "0.3.93",
+    "previous_daemon": "0.3.91",
+    "cli": "0.3.98",
+    "daemon": "0.3.98",
+    "daemon_protocol": 3,
+    "update_method": "icarus update; checksum verified, version preflighted, atomic binary replacement",
+    "installed_bytes_match_attested_artifact": true,
+    "registered_mcp_command_unchanged": true,
+    "fresh_registered_mcp_tool_names": [
+      "icarus"
+    ],
+    "shards_readable": 5,
+    "backup_verified_files": 52,
+    "private_backup_retained": true,
+    "preservation": {
+      "protected_files_verified": 47,
+      "memory_data_files_verified": 25,
+      "changed_protected_files": [],
+      "missing_protected_files": [],
+      "permission_changes": [],
+      "expected_runtime_changes": [
+        "icarus-home/bin/icarus",
+        "icarus-home/daemon.log",
+        "icarus-home/daemon.pid"
+      ]
+    }
+  },
+  "verification": {
+    "unit_smoke": {
+      "passed": 166,
+      "failed": 0
+    },
+    "native_release_gates": "passed on all five platforms",
+    "packaged_mcp": {
+      "passed": 7,
+      "failed": 0
+    },
+    "installed_single_tool_upgrade_e2e": "passed",
+    "discovered_action_schemas": 61,
+    "tested": [
+      "v0.3.93 fixture memory readable after upgrade",
+      "two agents share memory and coding rationale through the meta tool",
+      "code ingestion, decisions, bug recall, coverage and refactor graph",
+      "local timeline, snapshots and diffs without embeddings",
+      "no-LLM evidence path",
+      "corrected memories survive full MCP and daemon restart with changed PID",
+      "deleted corrections stay deleted after another restart",
+      "unrelated legacy memory remains readable",
+      "fixture settings remain byte-identical",
+      "actual user memory/data and protected configuration bytes remain unchanged"
+    ]
+  },
+  "fixes": [
+    "Native ID lookup resolves the newest live exact-id slot independent of index rebuild or metadata-rewrite order.",
+    "Explicit deletion tombstones retained revisions of the same id, preventing their resurrection after restart.",
+    "Windows fixtures wait for child/daemon exit before directory cleanup."
+  ],
+  "boundaries": [
+    "No user memory content or credentials in this receipt.",
+    "Writes used isolated test profiles; actual user memory was only inspected read-only and hashed.",
+    "No AMR format migration, embedding model installation, customer-cloud web calls, or paid LLM calls.",
+    "Existing coding-agent sessions must restart to discard old MCP processes and cached tool schemas."
+  ],
+  "unpublished_candidates": [
+    "v0.3.94",
+    "v0.3.95",
+    "v0.3.96",
+    "v0.3.97"
+  ]
+}
