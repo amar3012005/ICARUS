@@ -1,0 +1,50 @@
+{
+  "title": "Publish ICARUS quickstart and reset local installation for a personal trial",
+  "status": "complete",
+  "owner": "ICARUS README; Da-vinci public product host; task-owned local test installations",
+  "release": {
+    "readme_source": "63f516470023",
+    "frontend_feature_source": "115d5338",
+    "frontend_deployed_source": "2947893aeaf315ef5ee8d3c3eaeea291ddfb570c",
+    "parent_source": "db6607d2ab",
+    "worker_version": "2e1b968d-d6ef-4045-9948-dacb0cb493cd",
+    "rollback_worker": "3ff3282b-90d5-499b-8b8f-0f6119f2033d",
+    "cli_version": "0.3.91",
+    "website": "https://icarus.singulancelabs.com/",
+    "readme": "https://github.com/amar3012005/ICARUS#start-here"
+  },
+  "criteria": [
+    {
+      "id": "public_docs",
+      "passed": true,
+      "evidence": [
+        "Published README matches source and was checked in Chrome. All five binary platforms, installation, local save/recall, upgrade, optional developer email/Google sign-in and fifteen-minute terminal recovery documented.",
+        "ICARUS product host now renders ICARUS rather than the general marketing homepage. Install anchor, title after hydration, rendered commands and optional login text verified in Chrome.",
+        "Setup prompt removes mandatory Harness initialization; docs use .icarus paths and identify the Python source build. Experimental Bus/Computer Use remain separate."
+      ]
+    },
+    {
+      "id": "release",
+      "passed": true,
+      "evidence": [
+        "Guarded Worker release from promoted current main; newer provider-banner source preserved through reconciliation before cutover. No backend/Runtime/Brain deployment.",
+        "Three host-routing tests and one rendered onboarding test passed. Two older AI discovery tests fail identically on the unchanged baseline.",
+        "Public root HTTP 200, main JavaScript 200 text/javascript, missing JS 404 text/plain, setup prompt 200 text/markdown."
+      ]
+    },
+    {
+      "id": "clean_trial",
+      "passed": true,
+      "evidence": [
+        "Installer verified in a separate HOME against published v0.3.91: checksum/version plus the documented account-free local save/recall example passed. Host launchctl calls were intercepted; fixture daemon stopped.",
+        "No global installation, binary, managed shell PATH entry, launchd service, global MCP registration, hook, standing instruction or ICARUS skill existed at inventory. The residual test daemon was stopped and thirteen task-owned temporary installation/test directories removed.",
+        "Seven test homes and the installer fixture were archived to a private local backup. All backup directories 0700/files 0600. Source repositories and project-local memory/configuration preserved.",
+        "Fresh login shell confirmed no icarus command, and launchd/MCP absence was verified before returning the installer command to the user. No further cleanup or reinstallation runs after that handoff."
+      ]
+    }
+  ],
+  "limitations": [
+    "No social posts published; announcement drafting is a separate requested deliverable.",
+    "Existing browser/server identity sessions were preserved; this reset concerns local installation and test data."
+  ]
+}
