@@ -1957,10 +1957,25 @@ function deleteStructuredMemory(memoryId, reason, org, cfg) {
   const store = openStore(cfg, org);
   const slot = store.findById(memoryId);
   if (slot < 0) throw new Error(`no live memory with id "${memoryId}" in org "${org}"`);
-  store.delete(slot);
-  appendAuditEntry(cfg, org, 'delete', slot, { source: 'delete-memory', sourceFile: reason || null });
+  // A correction retains earlier slots under the SAME id for history. Tombstoning only the
+  // head lets the old content re-enter the id index after a restart. Delete every retained
+  // revision of this exact id; separate related memories with other ids remain untouched.
+  const revisions = [];
+  let from = 0;
+  for (;;) {
+    const page = store.recordsPage(from, 500);
+    for (const row of page.rows) {
+      if (tryParseMemoryRecord(row.text)?.id === memoryId) revisions.push(row.slotId);
+    }
+    if (page.nextSlot === 0xffffffff) break;
+    from = page.nextSlot;
+  }
+  for (const revision of revisions) {
+    store.delete(revision);
+    appendAuditEntry(cfg, org, 'delete', revision, { source: 'delete-memory', sourceFile: reason || null });
+  }
   store.flush();
-  return { id: memoryId, deleted: true };
+  return { id: memoryId, deleted: true, deletedVersions: revisions.length };
 }
 
 /** BFS graph walk from a seed memory along real typed edges — native traverseTyped(), exact
@@ -2399,7 +2414,7 @@ function richOrgStats(org, cfg, opts = {}) {
 // unrelated to the CLI's own release cadence). No build step reads this from git automatically;
 // it's a plain literal that has to be kept in sync by hand when cutting a release, same as any
 // CLI without a build-time version-stamping step.
-const ICARUS_VERSION = '0.3.95';
+const ICARUS_VERSION = '0.3.96';
 
 // Maps to install.sh's own binary_asset_name() — same asset-naming convention
 // (icarus-<os>-<arch>), so /update fetches exactly what install.sh would fetch fresh.

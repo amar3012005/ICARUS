@@ -1183,14 +1183,18 @@ impl MnemeStore {
             Some(v) => v.clone(),
             None => return Ok(-1),
         };
+        // Corrections append a new slot with the same JSON id. Rebuilding the index visits
+        // old slots first; metadata rewrites can also reorder the candidate vector. Resolve
+        // the greatest live matching slot, independent of candidate insertion order.
+        let mut latest = None;
         for slot in candidates {
             if let Ok(hit) = self.shard.segment().get(slot) {
                 if extract_id(&hit.text) == Some(id.as_str()) {
-                    return Ok(slot as i64);
+                    latest = Some(latest.map_or(slot, |previous: u32| previous.max(slot)));
                 }
             }
         }
-        Ok(-1)
+        Ok(latest.map_or(-1, |slot| slot as i64))
     }
 
     /// Read one live slot's record text. `Err` for tombstoned/never-used slots.

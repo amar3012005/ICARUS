@@ -156,7 +156,8 @@ test('compact second-brain toolkit preserves local revisions and evidence withou
   writeFileSync(join(home, 'config.json'), JSON.stringify({ dataRoot: join(home, 'data'), dim: 1024,
     embeddings: { disabled: true }, llm: { disabled: true }, signing: { disabled: true }, telemetry: { enabled: false } }));
   try {
-    const mcp = startMcp({ ICARUS_HOME: home, ICARUS_MCP_LEGACY_TOOLS: '', OPENROUTER_API_KEY: '', LITELLM_API_KEY: '', HIVEMIND_API_KEY: '' });
+    const env = { ICARUS_HOME: home, ICARUS_MCP_LEGACY_TOOLS: '', OPENROUTER_API_KEY: '', LITELLM_API_KEY: '', HIVEMIND_API_KEY: '' };
+    let mcp = startMcp(env);
     await mcp.request(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-meta-native', version: '1' } });
     mcp.notify('notifications/initialized', {});
     let id = 2;
@@ -191,7 +192,19 @@ test('compact second-brain toolkit preserves local revisions and evidence withou
     assert.ok(handoff.id);
     const gated = await mcp.request(id++, 'tools/call', { name: 'icarus', arguments: { action: 'web_usage', args: {} } });
     assert.equal(gated.result.isError, true);
+    assert.match((await call('get_memory', { memory_id: saved.id })).content, /green/);
+    const restart = async () => {
+      await stopChildren(); await stopDaemonAt(home);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      mcp = startMcp(env);
+      await mcp.request(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-meta-restart', version: '1' } });
+      mcp.notify('notifications/initialized', {});
+    };
+    await restart();
+    assert.match((await call('get_memory', { memory_id: saved.id })).content, /green/);
     await call('delete_memory', { memory_id: saved.id, reason: 'fixture cleanup' });
+    await restart();
+    assert.equal(await call('get_memory', { memory_id: saved.id }), null);
     const deletedHistory = await call('timeline', { memory_id: saved.id });
     assert.deepEqual(deletedHistory.versions, []);
   } finally {

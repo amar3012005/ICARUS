@@ -6,7 +6,12 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
-## v0.3.95
+## v0.3.96
+
+### Fixed
+- Corrected memories resolve to their latest retained slot before and after daemon restart.
+- Deleting a corrected memory tombstones every retained revision of that same memory id.
+- Windows smoke fixtures wait for the MCP child to exit before deleting its working directory.
 
 ### Added
 - **One second-brain MCP toolkit:** `icarus({action,args})` discovers and describes actions on
