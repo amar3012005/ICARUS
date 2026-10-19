@@ -2,7 +2,7 @@
 
 ## Source baseline and existing route
 
-Inspected 19 October 2026. These are source-derived canonical URLs, not a production acceptance claim.
+Inspected 19 October 2026. The following baseline describes the pre-change routes; deployment and acceptance evidence appears below.
 
 - ICARUS baseline: `b9499b0392bbc1f67808b0f884775474f9749ae0`.
 - HIVEMIND baseline: `2e06d360e63fcc102ffb3310707b4ef254dda6bd`.
@@ -13,7 +13,7 @@ Inspected 19 October 2026. These are source-derived canonical URLs, not a produc
   browser posts to `/auth/cli/exchange`, then navigates to localhost with the customer API key.
   That legacy customer path remains separate; the new ICARUS developer path never uses it.
 
-## New developer flow (local implementation, unreleased)
+## Developer flow
 
 1. `icarus connect` or TUI `/connect` binds only `127.0.0.1` on an ephemeral port and creates
    random state plus an S256 PKCE verifier/challenge. Local setup asks first; skipping is the default.
@@ -59,22 +59,56 @@ preventing concurrent redemption of a one-shot code.
 - Native Harness credential services are not the owner of browser identity enrollment. No Harness
   or Runtime implementation or release is included.
 
-## Checks and release gates
+## Release and acceptance — 19 October 2026
 
-Passed focused checks: 21 backend/email/session/invitation tests, 17 CLI/argument/installer tests,
-5 frontend Node tests, and 11 rendered-login/mobile Jest tests. Backend provider route tests use
-mocked Google/email IO; the CLI test uses a real local HTTP exchange fixture. Shell/JS syntax and
-Git whitespace checks passed. No global agent configuration was changed.
+- CLI **v0.3.90**: source/tag `53d99eda62e59e91b11f36625439ed46a175ee8c`,
+  [published release](https://github.com/amar3012005/ICARUS/releases/tag/v0.3.90).
+  Release workflow `39265537628` passed all five platform builds, publication, Windows and
+  Linux ARM64 cold checks. The release contains binaries, checksums and SBOMs. The public macOS
+  ARM64 artifact passed checksum, version and GitHub provenance verification. Staged macOS ARM64
+  and Linux x64 artifacts also passed offline save/recall checks. The npm engine was not published.
+- Control plane: source `44dbea8bf435a5c85983df5e938b838d53a2a2ac`, canonical scoped release,
+  image `hivemind/control-plane:sha-44dbea8b`, image ID
+  `sha256:b8d75bbd722823ea9a1ee871c64c462d826ce116335d0622aa60ab0b4b2cb16d`.
+  Release manifest: `/root/releases/manifests/44dbea8b/20261019T135333Z/RELEASE_MANIFEST.json`.
+  Health returned 200. Only the control-plane service was recreated; Brain/Runtime were not released.
+- Frontend: developer UI source `e67d40339225` was promoted and deployed as Worker
+  `f3c9ccbd-e633-4119-9696-316d76cadbdb`. Subsequent independent onboarding releases preserve this
+  change; the observed active Worker at 14:12:34 UTC was
+  `abef1a7a-f419-4750-b1e7-7f1b11ee09c0`. Login returned 200 and missing JS returned 404.
+- Rollback references at this release: control-plane image
+  `hivemind/control-plane:selected-erasure-09558097`, image ID
+  `sha256:e6ac7e0a359f28f385510895fbbf3307249b848bb72764992e909850998840d2`;
+  prior frontend Worker `e607c168-54e1-4f21-a1d9-4b0b6d9fcdc7`. Reconcile newer independent releases
+  before any rollback.
 
-Two older source-contract tests also fail on the unmodified backend baseline:
-`login-org-resolution-contract.test.js` expects the old `joinedAt` shape, and
-`oauth-login-redirect-contract.test.js` expects the former MCP login query. They were not changed.
+Real Google provider selection and consent completed the native CLI callback for the requested
+existing developer identity. Real email delivery used the ICARUS-specific Cloudflare template;
+the user entered the emailed code in Chrome. The browser returned to the original loopback
+callback after the terminal's 180-second wait had expired. A fresh native CLI handoff reused the
+now email-verified browser session and completed successfully, without another email or code.
+The browser visibly confirmed that the developer account was signed in, and the CLI saved its
+credential. Both flows returned 200 from `/auth/developer/me`, with `developer:identity` and null
+organization. The recovered email credential was stored with mode 0600, no customer credential,
+and `hivemind.connected: false`. It returned 401 from both `/auth/session` and hosted Core recall.
+A separate session-revocation check returned 401 for the revoked developer credential; a replayed
+one-shot authorization code returned 400.
 
-No deployment, package publication or real provider enrollment was performed. Before release:
-verify the actual configured frontend/issuer origins, Google callback credentials, email mode and
-sender/Turnstile configuration; build the frontend and packaged CLI; perform email and Google
-browser-to-terminal acceptance for new/existing developers; confirm normal customer login and
-hosted-API denial for a developer credential. Publish matching backend/frontend first and then
-CLI/installer artifacts. The source branch deliberately does not fall back to the older customer
-browser flow when developer endpoints are absent: sign-in fails clearly and local memory remains
-available. Bus/Computer Use source presence is independent of this account flow.
+Ordinary customer Google sign-in still reached the normal customer app. Ordinary email UI,
+provider routing and unchanged customer template were regression checked; a full ordinary customer
+email-code round trip was not performed. A previously unused email alias received the ICARUS
+email, but its verification was not completed: new-identity enrollment has automated coverage,
+not a completed live acceptance claim. No company setup, purchase or private Bus publication
+was performed.
+
+Validation passed: 152 CLI tests, 37 backend/email/provider/session/admission tests, three release
+configuration preservation tests, 11 rendered-login/mobile Jest tests and five frontend Node
+tests. Shell/JS syntax and Git whitespace checks passed. Two older source-contract tests also
+fail on the unmodified backend baseline: `login-org-resolution-contract.test.js` expects the old
+`joinedAt` shape, and `oauth-login-redirect-contract.test.js` expects the former MCP login query.
+No global agent configuration was changed.
+
+The CLI waits three minutes for browser completion. If a human email step takes longer, the
+browser can finish identity verification after that local listener has closed. Run `icarus connect`
+again to obtain a fresh callback; the verified browser session completes that handoff. Local memory
+continues to work throughout. Bus/Computer Use source presence is independent of this account flow.

@@ -1,6 +1,6 @@
 {
   "title": "ICARUS flagship local modules and optional developer sign-in",
-  "status": "implemented-local",
+  "status": "complete",
   "baseline_sha": "b9499b0392bbc1f67808b0f884775474f9749ae0",
   "native_owner": "ICARUS CLI; HIVEMIND control-plane identity; Da-vinci login UI",
   "outcome": "Concrete independent local module checkouts and developer-scoped email/Google browser-to-terminal authorization",
@@ -23,7 +23,8 @@
       "required": true,
       "passed": true,
       "evidence": [
-        "54 focused tests passed across backend, CLI and frontend; see DEVELOPER_AUTH.md"
+        "152 complete CLI tests, 37 backend/email tests, 3 release-config preservation tests, 11 rendered/mobile UI tests, 5 frontend Node tests passed",
+        "All 5 CLI platform artifacts built; macOS ARM64 checksum, provenance, version and offline memory cold checks passed"
       ]
     },
     {
@@ -44,21 +45,25 @@
     },
     {
       "id": "live_flow",
-      "required": false,
-      "passed": false,
+      "required": true,
+      "passed": true,
       "evidence": [
-        "Deployment excluded by user. Real provider email/Google browser acceptance remains outstanding."
+        "Real requested-account Google provider sign-in completed native CLI callback; real Cloudflare ICARUS email delivered, user-entered code accepted, expired terminal handoff recovered using fresh native CLI callback without another code",
+        "Developer identity 200, scope developer:identity, orgId null; protected config 0600, customer disconnected; hosted Core and browser-session endpoints reject developer credential with 401",
+        "Ordinary customer Google reaches normal app; ordinary email routing/template regression tests pass. New-identity alias verification and full customer email-code round trip were not completed live."
       ]
     }
   ],
   "release": {
-    "requested": false,
-    "source_sha": "",
-    "artifact": "not built or published",
-    "rollback": "no deployed state changed"
+    "requested": true,
+    "source_sha": "53d99eda62e59e91b11f36625439ed46a175ee8c",
+    "artifact": "Published v0.3.90: 5 platform binaries/checksums/SBOMs, workflow 39265537628 passed including Windows/Linux ARM64 cold checks; macOS public artifact checksum/version/provenance verified. Control-plane sha-44dbea8b healthy; developer frontend deployed and preserved through later independent releases.",
+    "rollback": "Frontend prior Worker e607c168-54e1-4f21-a1d9-4b0b6d9fcdc7; control-plane sha256:e6ac7e0a359f28f385510895fbbf3307249b848bb72764992e909850998840d2"
   },
-  "blockers": [
-    "Production provider acceptance requires authorized matching backend/frontend/CLI release; not requested",
-    "Two unrelated source-contract test failures reproduced on unmodified backend HEAD"
+  "blockers": [],
+  "limitations": [
+    "New-identity enrollment is automatically tested; the unused email alias received its email but was not verified live.",
+    "Three-minute CLI wait can expire during human email entry; rerun connect to recover after browser verification.",
+    "No npm engine publication or Bus/Computer Use bridge implementation included."
   ]
 }
