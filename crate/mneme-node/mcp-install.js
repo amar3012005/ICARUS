@@ -491,9 +491,38 @@ async function run(flags, cfg) {
   // org name, not just the global MCP registration. The bare, no-argument form keeps its
   // existing, narrower behavior on purpose — registering every detected agent globally should
   // never silently start writing real, git-tracked files into whatever repo happens to be cwd.
-  const agentArg = (flags?._?.[0] || '').toLowerCase();
+  const requested = (flags?._?.[0] || '').toLowerCase();
+  const agentArg = requested === 'auto' ? '' : requested;
   if (agentArg && !AGENT_INSTALLERS[agentArg]) {
     console.log(`unknown agent "${agentArg}" — one of: ${Object.keys(AGENT_INSTALLERS).join(', ')} (or omit to register every agent found, globally only)`);
+    return;
+  }
+  if (flags?.global && flags?.harness) throw new Error('--global cannot enable repository Harness; run from that repository without --global.');
+  if (flags?.global || requested === 'auto') {
+    // A user-wide choice never writes repository instructions, creates a shard,
+    // or initializes Harness. Auto selects existing client configurations only.
+    const found = detectAgents().filter(agent => agent.found).map(agent => agent.agent === 'claude-code' ? 'claude' : agent.agent);
+    const targets = agentArg ? [agentArg] : found;
+    console.log(`icarus mcp install --global — supported agents: Codex, Claude Code, Cursor\n`);
+    let connected = 0;
+    for (const agent of targets) {
+      const result = AGENT_INSTALLERS[agent].mcp(command);
+      if (!result.installed && result.reason !== 'already registered') {
+        console.log(`  · ${agent}: skipped (${result.reason})`);
+        continue;
+      }
+      connected++;
+      console.log(`  ✓ ${agent}: ${result.installed ? 'registered' : 'already registered'} in ${result.path}`);
+      AGENT_INSTALLERS[agent].global?.();
+      installGlobalSkill(agent);
+      require('./telemetry.js').record(process.env.ICARUS_HOME || path.join(HOME, '.icarus'), cfg || require('./cli-lib.js').loadCfg(), 'mcp_registered', { agent, version: require('./cli-lib.js').ICARUS_VERSION });
+    }
+    if (connected) {
+      console.log('\nRestart the connected coding agents to load ICARUS memory tools. Repository files and Harness are unchanged.');
+      installLaunchAgent();
+    } else {
+      console.log('No supported agent configuration found. Open Codex, Claude Code, or Cursor once, then run icarus mcp install --global.');
+    }
     return;
   }
   if (agentArg) {

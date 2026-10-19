@@ -72,7 +72,7 @@ vector service, a relational store, and a graph database.
 
 ### 01 — Install the agent CLI
 
-CLI **v0.3.91** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
+CLI **v0.3.92** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
 x64/ARM64, and native Windows x64. No Node.js or Rust toolchain is needed on those platforms.
 
 **macOS / Linux / WSL:**
@@ -96,6 +96,10 @@ export PATH="$HOME/.icarus/bin:$PATH"
 icarus --version
 ```
 
+The POSIX installer shows byte-based progress with percentage, transfer speed, and ETA when the
+server provides a size. Unknown-length downloads show actual bytes received; the binary and
+checksum transfers are labeled separately.
+
 The POSIX installer asks which product lane to start with:
 
 1. **ICARUS V2 — Agent Memory** (default): local `.amr` storage, lexical/BM25 recall, and
@@ -110,6 +114,22 @@ The POSIX installer asks which product lane to start with:
 For non-interactive installs, set `ICARUS_INSTALL_PROFILE=memory`, `knowledge`, or `harness`
 before the command. Selecting `harness` still requires an explicit repository command later;
 that prevents a curl installer from attaching governance to the wrong directory.
+
+After installation finishes, choose **Auto** to connect every supported agent configuration found
+in your user account, or select **Codex**, **Claude Code**, **Cursor**, or **Skip**. User-wide setup
+preserves your current repository and does not enable Harness. Restart connected agents to load
+MCP tools. Repeat that step later with:
+
+```bash
+icarus mcp install --global              # Auto: all supported clients found
+icarus mcp install codex --global        # Only Codex, in this user account
+icarus mcp install claude --global       # Only Claude Code
+```
+
+For non-interactive installation, set `ICARUS_INSTALL_AGENTS=auto`, `codex`, `claude`, `cursor`, or
+`skip` in the installer's environment. Without that setting, non-interactive installation leaves
+agent registration for later. Auto recognizes existing local client configuration, not running
+processes. Supported clients are Codex, Claude Code, and Cursor.
 
 ### Verify a downloaded release
 
@@ -171,7 +191,7 @@ icarus update
 
 Restart coding-agent sessions after an update so their MCP process uses the new binary. The
 standalone CLI and the `singulance-amr` npm engine have independent releases; the npm package is
-an integration library, not the v0.3.91 CLI installer.
+an integration library, not the v0.3.92 CLI installer.
 
 ## The performance profile
 

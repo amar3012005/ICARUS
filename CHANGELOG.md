@@ -6,6 +6,20 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
+## v0.3.92
+
+### Fixed
+- **Real download progress:** the POSIX installer measures received bytes against the response's
+  actual size and displays a compact percentage/bar, speed and ETA. Unknown-length transfers
+  show bytes received; binary and checksum downloads have separate labels.
+
+### Added
+- **Agent choice after install:** choose Auto, Codex, Claude Code, Cursor, or Skip after setup.
+- **User-wide MCP registration:** `icarus mcp install [auto|codex|claude|cursor] --global` preserves
+  unrelated MCP entries and leaves project files, memory shards and Harness untouched. Auto
+  registers supported client configurations already present in the user account. Named project
+  setup without `--global` retains its existing behavior.
+
 ## v0.3.91
 
 ### Fixed

@@ -105,6 +105,60 @@ banner() {
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
+# curl's built-in meter animates when a response has no Content-Length (including
+# redirects and tiny checksum files). Render bytes actually received instead.
+download_progress_line() {
+  awk -v done="$1" -v total="$2" -v elapsed="$3" -v label="$4" '
+    BEGIN {
+      speed = elapsed > 0 ? done / elapsed : 0;
+      if (total > 0) {
+        percent = int(100 * done / total); if (percent > 100) percent = 100;
+        filled = int(percent / 5); bar = "";
+        for (i = 0; i < 20; i++) bar = bar (i < filled ? "#" : "-");
+        divisor = total < 1048576 ? 1024 : 1048576;
+        unit = total < 1048576 ? "KiB" : "MiB";
+        eta = speed > 0 ? int((total - done) / speed) : 0;
+        if (eta < 0) eta = 0;
+        etaText = done >= total ? "00:00" : speed > 0 ? sprintf("%02d:%02d", int(eta/60), eta%60) : "--:--";
+        printf "  %s %3d%% |%s| %.1f/%.1f %s  %.1f %s/s  ETA %s", label, percent, bar, done/divisor, total/divisor, unit, speed/divisor, unit, etaText;
+      } else {
+        printf "  %s | %.1f MiB received  %.1f MiB/s  elapsed %ds (total unknown)", label, done/1048576, speed/1048576, elapsed;
+      }
+    }'
+}
+
+download_with_progress() {
+  local url="$1" target="$2" label="$3" headers curl_pid started now bytes total result=0
+  headers="${target}.headers"
+  : > "$headers"
+  started=$(date +%s)
+  curl -fSL --silent --show-error --dump-header "$headers" "$url" -o "$target" &
+  curl_pid=$!
+  trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; rm -f "$headers" "$target"; exit 130' INT TERM
+  while kill -0 "$curl_pid" 2>/dev/null; do
+    if [ -t 2 ]; then
+      bytes=0; [ ! -f "$target" ] || bytes=$(wc -c < "$target" | tr -d ' ')
+      # Reset at every HTTP response: redirect lengths are not download lengths.
+      total=$(awk 'BEGIN{IGNORECASE=1} /^HTTP\//{status=$2; n=0} tolower($1)=="content-length:"{n=$2} END{gsub("\r","",n); print (status==200 || status==206) ? n+0 : 0}' "$headers")
+      now=$(date +%s)
+      printf '\r\033[2K%s' "$(download_progress_line "$bytes" "$total" "$((now-started))" "$label")" >&2
+    fi
+    sleep 0.2
+  done
+  wait "$curl_pid" || result=$?
+  trap - INT TERM
+  bytes=0; [ ! -f "$target" ] || bytes=$(wc -c < "$target" | tr -d ' ')
+  total=$(awk '/^HTTP\//{status=$2; n=0} tolower($1)=="content-length:"{n=$2} END{gsub("\r","",n); print (status==200 || status==206) ? n+0 : 0}' "$headers")
+  now=$(date +%s)
+  if [ -t 2 ]; then
+    printf '\r\033[2K%s\n' "$(download_progress_line "$bytes" "$total" "$((now-started))" "$label")" >&2
+  elif [ "$result" = 0 ]; then
+    printf '  %s: downloaded %s bytes\n' "$label" "$bytes" >&2
+  fi
+  rm -f "$headers"
+  return "$result"
+}
+
 # --- 0. prebuilt single-binary path (preferred) -----------------------------
 # Asset naming: icarus-<os>-<arch>  (e.g. icarus-linux-x64, icarus-darwin-arm64)
 binary_asset_name() {
@@ -208,20 +262,15 @@ try_binary_install() {
   else
     url="${REPO}/releases/download/${RELEASE_TAG}/${asset}"
   fi
-  info "Downloading prebuilt binary ($asset, ~65MB)"
+  info "Downloading prebuilt binary ($asset)"
   mkdir -p "$HOME_DIR" "$DATA_DIR" "$BIN_DIR"
   recover_interrupted_binary_install
-  # -s (silent) hides curl's own progress entirely -- on a slow connection this ~65MB download
-  # can run a minute or more with ZERO screen output, indistinguishable from a hang (a real user
-  # report: "stuck here" right after this line, when it was actually still downloading at ~50%).
-  # --progress-bar keeps -f/-S/-L (fail-fast, show real errors, follow redirects) but prints a
-  # single updating progress line instead of pure silence.
-  if ! curl -fSL --progress-bar "$url" -o "$BIN_DIR/icarus.tmp"; then
+  if ! download_with_progress "$url" "$BIN_DIR/icarus.tmp" "CLI binary"; then
     warn "prebuilt binary not available at $url — building from source instead"
     rm -f "$BIN_DIR/icarus.tmp"
     return 1
   fi
-  if ! curl -fSL --progress-bar "${url}.sha256" -o "$BIN_DIR/icarus.tmp.sha256"; then
+  if ! download_with_progress "${url}.sha256" "$BIN_DIR/icarus.tmp.sha256" "Checksum"; then
     warn "release checksum unavailable — keeping any existing install and building from source instead"
     rm -f "$BIN_DIR/icarus.tmp" "$BIN_DIR/icarus.tmp.sha256"
     return 1
@@ -476,8 +525,8 @@ guided_setup() {
   dim "Continuing with guided setup. Press Ctrl+C at any point to stop — whatever"
   dim "step you're on can always be re-run later with the command shown for it."
 
-  step "Step 1/4 — registering with any coding agents found on this machine"
-  "$BIN_DIR/icarus" mcp install || true
+  step "Step 1/4 — local memory is ready"
+  dim "  Choose which coding agents to connect at the end of installation."
   if [ "$INSTALL_PROFILE" = "knowledge" ]; then
     warn "Knowledge Space is not enabled by this installer yet. ICARUS is ready in lexical memory mode."
     dim "    Local extraction and embedding sidecars are intentionally not advertised as installed until they can be provisioned and supervised on this machine."
@@ -527,6 +576,40 @@ guided_setup() {
         warn "Developer sign-in did not complete. Local memory remains available; retry with icarus connect."
       fi ;;
     *) dim "    Skipped. Run later:  icarus connect" ;;
+  esac
+}
+
+connect_coding_agents() {
+  local choice="${ICARUS_INSTALL_AGENTS:-}" help
+  if [ -z "$choice" ]; then
+    if ! has_tty; then
+      dim "Connect coding agents later: icarus mcp install --global"
+      return 0
+    fi
+    step "Which coding tools should ICARUS connect?"
+    dim "  User-wide MCP setup; your current repository stays unchanged."
+    dim "  1) Auto — all detected supported agents (recommended)"
+    dim "  2) Codex"
+    dim "  3) Claude Code"
+    dim "  4) Cursor"
+    dim "  5) Skip"
+    read -r -p "  Choice [1/2/3/4/5, default 1]: " choice < /dev/tty
+  fi
+  # During a release, main/install.sh may be newer than releases/latest.
+  # Older CLIs ignore unknown switches; never let --global become a repo install.
+  case "$choice" in 5|skip) dim "Skipped. Connect later: icarus mcp install --global"; return 0 ;; esac
+  help=$("$BIN_DIR/icarus" --help)
+  if ! printf '%s' "$help" | grep -Fq 'user-wide setup'; then
+    warn "This CLI needs an update for user-wide agent selection. Run icarus update, then icarus mcp install --global."
+    return 0
+  fi
+  case "$choice" in
+    ''|1|auto) "$BIN_DIR/icarus" mcp install --global ;;
+    2|codex) "$BIN_DIR/icarus" mcp install codex --global ;;
+    3|claude) "$BIN_DIR/icarus" mcp install claude --global ;;
+    4|cursor) "$BIN_DIR/icarus" mcp install cursor --global ;;
+    5|skip) dim "Skipped. Connect later: icarus mcp install --global" ;;
+    *) warn "Unknown agent choice — nothing connected. Run: icarus mcp install --global" ;;
   esac
 }
 
@@ -622,6 +705,7 @@ main() {
   else
     dim "Docs: $ROOT/README.md   Thesis: $ROOT/THESIS.md"
   fi
+  connect_coding_agents
 }
 
 main "$@"

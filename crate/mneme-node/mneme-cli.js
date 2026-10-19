@@ -35,7 +35,7 @@ const { c, glyphs, heading, ok, err, bullet, rule, spinnerFrame, colorizeHelp } 
 // ("no value follows -> must be boolean") was tried and rejected: it would silently turn a
 // user mistyping `--k` with no value into `Number(true) === 1` instead of the intended
 // fallback default — a worse failure than the boolean-flag bug it would have fixed.
-const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'logout', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness']);
+const BOOLEAN_FLAGS = new Set(['pq', 'disable', 'yes', 'local', 'force', 'oauth-only', 'logout', 'no-mirror', 'keep-cloud', 'full', 'dry-run', 'check', 'acknowledge-dirty-current', 'codex-app-server', 'redact', 'remote', 'accept-revision', 'harness', 'global']);
 
 function parseFlags(args) {
   const out = { _: [] };
@@ -1704,6 +1704,9 @@ async function main() {
   icarus mcp install                   register icarus as an MCP server in every coding agent
                                         found on this machine (Claude Code, Codex, Cursor) —
                                         exposes icarus_graph_build/status/query natively too
+  icarus mcp install [auto|codex|claude|cursor] --global
+                                        user-wide setup; Auto detects supported client configs.
+                                        Never creates project files or enables Harness.
   icarus mcp install <claude|codex|cursor> [--harness]
                                         run from a project's own folder: registers just that
                                         agent, writes its project instruction file (CLAUDE.md/
