@@ -6,13 +6,14 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/singulance-amr"><img src="https://img.shields.io/npm/v/singulance-amr?label=Node%20package&color=2d7dff" alt="npm package" /></a>
+  <a href="https://github.com/amar3012005/ICARUS/releases/latest"><img src="https://img.shields.io/github/v/release/amar3012005/ICARUS?label=CLI&color=2d7dff" alt="Latest CLI release" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-83b5ff" alt="Apache 2.0 license" /></a>
   <img src="https://img.shields.io/badge/core-Rust-10192b" alt="Rust core" />
   <img src="https://img.shields.io/badge/storage-local%20%2B%20mmap-10192b" alt="Local memory-mapped storage" />
 </p>
 
 <p align="center">
+  <a href="https://icarus.singulancelabs.com">Website</a> ·
   <a href="https://github.com/amar3012005/ICARUS#start-here">Start here</a> ·
   <a href="https://github.com/amar3012005/ICARUS#the-case-for-a-memory-file">Why ICARUS</a> ·
   <a href="https://github.com/amar3012005/ICARUS#what-happens-on-recall">Recall</a> ·
@@ -46,7 +47,7 @@ artifacts and install paths. Runtime-Runner remains a separate product repositor
 Optional `icarus connect` signs in to a **SINGULANCE developer account** using the existing
 HIVEMIND email/Google identity service and returns to your terminal. Developer identity needs no
 purchase or company workspace and does not grant customer tenant access. Local memory stays
-usable offline. The new developer flow in this branch requires a matching backend release;
+usable offline. Email and Google browser-to-terminal sign-in are live in CLI v0.3.91;
 see [authentication and verification](docs/DEVELOPER_AUTH.md).
 
 ## The case for a memory file
@@ -71,13 +72,31 @@ vector service, a relational store, and a graph database.
 
 ### 01 — Install the agent CLI
 
-On macOS Apple Silicon and Linux x64, this downloads one self-contained binary.
+CLI **v0.3.91** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
+x64/ARM64, and native Windows x64. No Node.js or Rust toolchain is needed on those platforms.
+
+**macOS / Linux / WSL:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.sh | bash
 ```
 
-The installer asks which product lane to start with:
+**Native Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/amar3012005/ICARUS/main/install.ps1 | iex
+```
+
+The POSIX installer guides you through optional setup. The Windows installer installs the binary;
+run `icarus setup` afterward for guided setup. Open a new terminal after installation, or on macOS/Linux
+make the command available in your current terminal with:
+
+```bash
+export PATH="$HOME/.icarus/bin:$PATH"
+icarus --version
+```
+
+The POSIX installer asks which product lane to start with:
 
 1. **ICARUS V2 — Agent Memory** (default): local `.amr` storage, lexical/BM25 recall, and
    optional MCP integration. It needs no account, LLM, embedding key, or always-running service.
@@ -117,19 +136,42 @@ For high-risk repository work only, opt the current repository into harness gove
 icarus mcp install codex --harness
 ```
 
-### 02 — Run the complete demo
+### 02 — Try local memory
 
-The demo opens a shard, stores memories, then recalls the closest context. No API key.
+Save a fact and recall it. No account, API key, embedding provider, or daemon setup is required.
 
 ```bash
-npm install singulance-amr
-node examples/demo-60s.mjs
+icarus save "The release checklist lives in docs/release.md" --org first-memory
+icarus recall "release checklist" --org first-memory
+icarus status
 ```
 
-```text
-[0.530] the user prefers dark mode in every app
-Done in 50ms.
+### 03 — Optional developer sign-in
+
+```bash
+icarus connect
 ```
+
+Choose email or Google in the **ICARUS developer account** browser page. For email, enter the
+six-digit code from the ICARUS email; then choose **Verify and continue**. The browser returns to
+the waiting terminal, which confirms sign-in. Keep that terminal open; it waits up to fifteen
+minutes. If it expires after the browser verified you, run `icarus connect` again to finish using
+that browser session.
+
+This signs in to developer identity only. It requires no purchase or company workspace, grants
+no hosted customer API access, and does not upload your memory. You can skip it and keep using
+local memory offline. `icarus connect --logout` removes the local developer credential.
+
+### Upgrade an existing installation
+
+```bash
+icarus update --check
+icarus update
+```
+
+Restart coding-agent sessions after an update so their MCP process uses the new binary. The
+standalone CLI and the `singulance-amr` npm engine have independent releases; the npm package is
+an integration library, not the v0.3.91 CLI installer.
 
 ## The performance profile
 
