@@ -19,7 +19,6 @@ async function stopChildren() {
     if (child.exitCode !== null || child.signalCode !== null) return resolve();
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      resolve();
     }, 2_000);
     child.once('exit', () => {
       clearTimeout(timer);
@@ -36,15 +35,26 @@ async function stopDaemonAt(home) {
   if (!existsSync(portFile) || !existsSync(tokenFile)) return;
   const port = Number(readFileSync(portFile, 'utf8').trim());
   const token = readFileSync(tokenFile, 'utf8').trim();
+  const pidFile = join(home, 'daemon.pid');
+  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8').trim()) : null;
   if (!port || !token) return;
   await new Promise((resolve) => {
-    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/shutdown', headers: { 'x-icarus-daemon-token': token } }, (response) => {
+    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/shutdown', headers: { 'x-icarus-daemon-token': token, connection: 'close' } }, (response) => {
       response.resume();
       response.once('end', resolve);
     });
     request.once('error', resolve);
     request.end();
   });
+  // A shutdown response is sent before process exit. Windows keeps the daemon's cwd and
+  // mmap files locked until exit, so wait for this fixture-owned process before cleanup.
+  if (pid) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try { process.kill(pid, 0); } catch (_) { return; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`test daemon ${pid} did not exit after shutdown`);
+  }
 }
 
 async function legacyDaemon(home) {
@@ -211,7 +221,7 @@ test('compact second-brain toolkit preserves local revisions and evidence withou
     assert.deepEqual(deletedHistory.versions, []);
   } finally {
     await stopChildren(); await stopDaemonAt(home);
-    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
+    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -254,7 +264,7 @@ test('native MCP round-trip persists local evidence and structured memory withou
     // Wait until the child closes the native shard before deleting only this test-owned tree.
     await stopChildren();
     await stopDaemonAt(home);
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -322,7 +332,7 @@ test('MCP memory and coding tools preserve durable local knowledge without embed
   } finally {
     await stopChildren();
     await stopDaemonAt(home);
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -354,7 +364,7 @@ test('two MCP sessions share one daemon-owned shard without a lock error', async
   } finally {
     await stopChildren();
     await stopDaemonAt(home);
-    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
+    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -387,7 +397,7 @@ test('MCP replaces an incompatible older daemon before sharing a repository-scop
     await stopChildren();
     await stopDaemonAt(home);
     await new Promise((resolve) => legacy.server.close(resolve));
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -433,7 +443,7 @@ test('icarus_harness_init creates a repository harness once and is idempotent', 
   } finally {
     await stopChildren();
     await new Promise((resolve) => collector.close(resolve));
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -470,6 +480,6 @@ test('MCP can advance a started task to executing before authorizing a managed w
     assert.equal(authorization.allowed, true);
   } finally {
     await stopChildren();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
