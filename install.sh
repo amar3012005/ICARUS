@@ -73,7 +73,7 @@ banner() {
   if [ "$C_ENABLED" = "1" ]; then
     printf '\033[38;2;108;108;108m╭──────────────────────────────────────────────────╮\033[0m\n'
   else
-    printf '+------------------------------------------------+\n'
+    printf '+--------------------------------------------------+\n'
   fi
   boxline "                                                "
   boxline "\033[38;2;187;154;247m ██╗ ██████╗ █████╗ ██████╗ ██╗   ██╗███████╗\033[0m   "
@@ -86,10 +86,20 @@ banner() {
   boxline "\033[38;2;108;108;108m memory filesystem for AI agents\033[0m                "
   boxline "\033[38;2;108;108;108m one mmap'd file per tenant, no server\033[0m          "
   boxline "                                                "
+  boxline "\033[38;2;108;108;108m ---------------------------------------------- \033[0m"
+  boxline "\033[1;38;2;187;154;247m FOUNDER'S NOTE\033[0m                                 "
+  boxline "                                                "
+  boxline "\033[38;2;108;108;108m I truly wish you achieve great things and\033[0m      "
+  boxline "\033[38;2;108;108;108m build cool stuff that your heart desires,\033[0m      "
+  boxline "\033[38;2;108;108;108m like Icarus...\033[0m                                 "
+  boxline "                                                "
+  boxline "\033[1;38;2;122;162;247m - Amar\033[0m                                         "
+  boxline "\033[38;2;122;162;247m   CEO & Founder, SINGULANCE\033[0m                    "
+  boxline "                                                "
   if [ "$C_ENABLED" = "1" ]; then
     printf '\033[38;2;108;108;108m╰──────────────────────────────────────────────────╯\033[0m\n'
   else
-    printf '+------------------------------------------------+\n'
+    printf '+--------------------------------------------------+\n'
   fi
 }
 
