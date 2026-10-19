@@ -79,9 +79,10 @@ async function legacyDaemon(home) {
 afterEach(stopChildren);
 
 function startMcp(env) {
+  mkdirSync(env.ICARUS_HOME, { recursive: true });
   const child = spawn(process.execPath, [CLI, 'mcp-serve'], {
-    cwd: join(HERE, '..', '..'),
-    env: { ...process.env, NO_COLOR: '1', ...env },
+    cwd: env.ICARUS_HOME,
+    env: { ...process.env, NO_COLOR: '1', ICARUS_MCP_LEGACY_TOOLS: '1', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -147,6 +148,57 @@ function payload(response) {
 async function tool(mcp, id, name, args) {
   return payload(await mcp.request(id, 'tools/call', { name, arguments: args }));
 }
+
+test('compact second-brain toolkit preserves local revisions and evidence without any model', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'icarus-meta-native-'));
+  const home = join(root, 'home');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ dataRoot: join(home, 'data'), dim: 1024,
+    embeddings: { disabled: true }, llm: { disabled: true }, signing: { disabled: true }, telemetry: { enabled: false } }));
+  try {
+    const mcp = startMcp({ ICARUS_HOME: home, ICARUS_MCP_LEGACY_TOOLS: '', OPENROUTER_API_KEY: '', LITELLM_API_KEY: '', HIVEMIND_API_KEY: '' });
+    await mcp.request(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'icarus-meta-native', version: '1' } });
+    mcp.notify('notifications/initialized', {});
+    let id = 2;
+    const call = (action, args) => tool(mcp, id++, 'icarus', { action, args: { org: 'second-brain', ...args } });
+    const saved = await call('hivemind_save_memory', { title: 'Aster project rule', content: 'Aster uses blue paint.', tags: ['memory:fact'] });
+    const original = await call('get_memory', { memory_id: saved.id });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await call('update_memory', { memory_id: saved.id, content: 'Aster uses green paint.' });
+    const timeline = await call('timeline', { memory_id: saved.id });
+    assert.equal(timeline.versions.length, 2);
+    assert.equal(timeline.history_complete, true);
+    const at = await call('at', { transaction_time: original.transaction_time });
+    assert.equal(at.memories[0].content, 'Aster uses blue paint.');
+    const diff = await call('diff', { from: original.transaction_time, to: new Date().toISOString() });
+    assert.equal(diff.changes[0].kind, 'updated');
+    const hits = await call('recall', { query: 'Aster paint' });
+    assert.ok(hits.some(hit => /green/.test(hit.text)));
+    assert.ok(hits.every(hit => !/blue/.test(hit.text)));
+    const grounded = await call('query_with_ai', { query: 'Aster paint' });
+    assert.equal(grounded.answer, null);
+    assert.ok(grounded.memories.some(hit => /green/.test(hit.text)));
+    const code = await call('ingest_code', { file_path: 'src/paint.js', content: 'blue', summary: 'Initial paint' });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const changed = await call('ingest_code', { file_path: 'src/paint.js', content: 'green', summary: 'Changed paint' });
+    assert.equal(changed.previousVersion, code.id);
+    const codeHistory = await call('timeline', { file_path: 'src/paint.js' });
+    assert.equal(codeHistory.versions.length, 2);
+    const filtered = await call('recall', { query: 'paint', source_type: 'code', tags: ['file:src/paint.js'], mode: 'quick' });
+    assert.ok(filtered.length > 0);
+    assert.ok(filtered.every(hit => hit.source_type === 'code' && hit.tags.includes('file:src/paint.js')));
+    const handoff = await call('save_conversation', { title: 'Aster handoff', messages: [{ role: 'assistant', content: 'Verified paint is green; no work pending.' }], platform: 'codex' });
+    assert.ok(handoff.id);
+    const gated = await mcp.request(id++, 'tools/call', { name: 'icarus', arguments: { action: 'web_usage', args: {} } });
+    assert.equal(gated.result.isError, true);
+    await call('delete_memory', { memory_id: saved.id, reason: 'fixture cleanup' });
+    const deletedHistory = await call('timeline', { memory_id: saved.id });
+    assert.deepEqual(deletedHistory.versions, []);
+  } finally {
+    await stopChildren(); await stopDaemonAt(home);
+    if (process.platform !== 'win32') rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('native MCP round-trip persists local evidence and structured memory without network', async () => {
   const root = mkdtempSync(join(tmpdir(), 'icarus-mcp-native-'));

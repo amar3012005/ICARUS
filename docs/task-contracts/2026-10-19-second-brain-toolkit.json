@@ -1,0 +1,54 @@
+{
+  "type": "source_acceptance_receipt",
+  "date": "2026-10-19",
+  "status": "code_verified_not_released",
+  "objective": "Compact ICARUS second-brain MCP toolkit, HIVEMIND-style action compatibility, local temporal/coding memory and progressive installed skills.",
+  "verification": {
+    "unit_smoke": {
+      "passed": 166,
+      "failed": 0
+    },
+    "native_engine": {
+      "passed": 10,
+      "failed": 0
+    },
+    "skill_validation": {
+      "passed": 3
+    },
+    "mcp_surface": {
+      "compact_tools": 1,
+      "compact_schema_bytes": 818,
+      "legacy_tools_including_meta": 62,
+      "legacy_schema_bytes": 56883,
+      "all_action_schemas_described": true
+    }
+  },
+  "installed_guidance": [
+    "Codex main/coding/history skills and references",
+    "Claude main/coding/history skills and references",
+    "Existing marked global Claude instruction block",
+    "Existing marked ICARUS project AGENTS.md block"
+  ],
+  "runtime": {
+    "installed_cli": "0.3.93",
+    "existing_daemon": "0.3.91",
+    "personal_daemon_restarted": false,
+    "new_binary_published": false
+  },
+  "boundaries": [
+    "Core local memory/coding/history needs no embeddings.",
+    "Web adapters require separately configured customer credentials/web scopes and were not exercised against a live paid customer service.",
+    "Developer identity never authorizes hosted Web Intelligence.",
+    "No LLM key returns local evidence for the calling agent rather than claiming synthesis.",
+    "Local history is not the hosted MemoryVersion ledger; legacy corrections lacking transaction stamps cannot yield exact snapshots.",
+    "New MCP surface requires a new CLI build and client restart; individual legacy tools remain available.",
+    "Native tests use the existing installed executable\u2019s extracted Rust addon; no Rust source changed.",
+    "No embedding model installed; no private Agent Bus source published."
+  ],
+  "logs": [
+    "/tmp/icarus-meta-unit-receipt.log",
+    "/tmp/icarus-meta-native-final.log",
+    "/tmp/icarus-meta-compatibility-final.log",
+    "/tmp/icarus-meta-compact-final.log"
+  ]
+}

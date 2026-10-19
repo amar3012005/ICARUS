@@ -27,7 +27,7 @@ const {
 // Bump only when the daemon RPC contract changes incompatibly.  A CLI must never reuse an
 // older daemon simply because its /health endpoint answers: old daemons may ignore the
 // repository-scoped cfg sent over RPC and silently route a save to a different shard.
-const DAEMON_PROTOCOL = 2;
+const DAEMON_PROTOCOL = 3;
 
 const DEFAULT_PORT = Number(process.env.ICARUS_DAEMON_PORT || 8137);
 
@@ -69,12 +69,19 @@ async function executeMemoryOperation(operation, args = {}, cfg) {
     case 'delete_org': return deleteOrgShard(cfg, org);
     case 'ingest': return ingestDir(args.dir, org, cfg);
     case 'ingest_hivemind': return hivemindIngestDir(args.dir, org, cfg, undefined, args.options || {});
-    case 'recall': return recallQuery(args.query, org, cfg, args.topK || 5, !!args.usePq, args.scope || 'all');
+    case 'recall': {
+      const filtered = args.tags?.length || args.project || args.source_type;
+      const hits = await recallQuery(args.query, org, cfg, filtered ? Math.min(200, (args.topK || 5) * 6) : (args.topK || 5), !!args.usePq, args.scope || 'all');
+      return hits.filter(hit => (!args.tags?.length || args.tags.every(tag => (hit.tags || []).includes(tag)))
+        && (!args.project || hit.project === args.project || (hit.tags || []).includes(`project:${args.project}`))
+        && (!args.source_type || hit.source_type === args.source_type)).slice(0, args.topK || 5);
+    }
     case 'save_raw': return saveLocalMemory(args.text, org, cfg, args.options || {});
     case 'save_intelligent': return saveIntelligentMemory(args.text, org, cfg, args.options || {});
     case 'save_structured': return saveStructuredMemory(args.content, org, cfg, args.options || {});
     case 'get_structured': return getStructuredMemory(args.memory_id, org, cfg);
     case 'list_structured': return listStructuredMemories(org, cfg, args.options || {});
+    case 'history': return require('./memory-history.js').queryHistory(openStore(cfg, org), args.action, args);
     case 'update_structured': return updateStructuredMemory(args.memory_id, args.patch || {}, org, cfg);
     case 'delete_structured': return deleteStructuredMemory(args.memory_id, args.reason, org, cfg);
     case 'traverse_structured': return traverseStructuredGraph(args.memory_id, org, cfg, args.options || {});

@@ -11,7 +11,7 @@ const { HOME } = require('./cli-lib.js');
 
 // Keep this in lockstep with daemon.js.  It intentionally lives here too so this client can
 // reject an old daemon before issuing any request that carries repository-local memory state.
-const DAEMON_PROTOCOL = 2;
+const DAEMON_PROTOCOL = 3;
 
 const TOKEN_FILE = 'daemon.token';
 const PORT_FILE = 'daemon.port';

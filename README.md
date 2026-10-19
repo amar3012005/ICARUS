@@ -193,6 +193,8 @@ Restart coding-agent sessions after an update so their MCP process uses the new 
 standalone CLI and the `singulance-amr` npm engine have independent releases; the npm package is
 an integration library, not the v0.3.93 CLI installer.
 
+New CLI builds provide a single MCP second-brain toolkit: `icarus({action:"discover",args:{query:"coding"}})` finds operations, `describe` returns one schema, and the chosen action accepts familiar memory/coding arguments inside `args`. Older binaries retain individual tools until upgraded. Local memory works without an embedding model. See the [toolkit guide](docs/MCP_TOOLKIT.md) and [main agent skill](skills/icarus-agent-memory/SKILL.md); coding and history guidance load only when needed.
+
 ## The performance profile
 
 Real `bge-m3` embeddings compared with Qdrant 1.18.2. Every number has a reproduction path—see

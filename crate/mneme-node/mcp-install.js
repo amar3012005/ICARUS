@@ -263,25 +263,13 @@ function removeCodex() {
 const STANDING_MARK_START = '<!-- icarus:standing-instructions -->';
 const STANDING_MARK_END = '<!-- /icarus:standing-instructions -->';
 const STANDING_BLOCK = `${STANDING_MARK_START}
-## ICARUS memory
+## ICARUS second brain
 
-ICARUS is a local, persistent memory tool registered as an MCP server. Use it reflexively:
+${require('./agent-guidance.js').company}
 
-- Call \`icarus_recall\` before answering anything that might already be known — a past
-  decision, a preference, prior conversation, or code context. It is cheap and local.
-- When the user shares a durable fact, preference, or decision, call \`icarus_save_memory\`
-  (title/content/tags/relationship) rather than letting it live only in this conversation.
-- Before touching unfamiliar code, call \`icarus_why_code\` / \`icarus_recall_bugs\`. After a
-  meaningful edit, call \`icarus_ingest_code\`. When choosing between real options, call
-  \`icarus_log_decision\`.
-- When a stored fact changes, prefer \`relationship: "update"\` (or \`icarus_update_memory\` for
-  an in-place correction) over saving a duplicate — the old version is marked superseded and
-  excluded from future recall automatically.
-- Durable memories live in \`.amr\` files under \`<repo>/.icarus/data/<org>\` (default save)
-  and \`~/.icarus/data/<org>\`. Use \`scope: "user"\` on save for facts that must survive
-  leaving this checkout. \`icarus_recall\` searches both unless you pass \`scope: "repo"\`
-  or \`scope: "user"\`. A daemon failure must not stop save/recall — the files are the
-  source of truth.
+Use ICARUS as durable second-brain memory across sessions. Retrieve only context relevant to substantial work; save verified reusable facts, decisions, fixes and concise handoffs. Never save secrets or raw transcripts. Use the project org and keep unrelated projects separate.
+
+The single tool \`icarus({action,args})\` supports discover/describe before executing one action. Use individual tools until an older client is upgraded/restarted. Local lexical save/recall works without embeddings or an account. Read only the relevant ICARUS skill/reference for coding, history or high-risk governance. Optional web/synthesis have separate requirements; developer sign-in is identity only.
 ${STANDING_MARK_END}`;
 
 function globalClaudeMdPath() { return path.join(HOME, '.claude', 'CLAUDE.md'); }
@@ -296,31 +284,27 @@ function globalSkillPath(agent) {
   if (agent === 'claude') return path.join(HOME, '.claude', 'skills', GLOBAL_SKILL_NAME, 'SKILL.md');
   return null; // Cursor's confirmed durable mechanism is its project .mdc rule.
 }
-function globalSkillBody(agent) {
-  return `---
-name: ${GLOBAL_SKILL_NAME}
-description: Bootstrap ICARUS and use its durable memory plus risk-based harness when building or modifying a repository.
----
-
-# ICARUS Agent Memory
-
-At the start of a repository session, without asking the user, first run \`icarus update --check\`. If it reports an update, launch \`icarus update\` in the background and continue the user's task; do not wait for, retry, or let an update block safe work. Then ensure the ICARUS MCP bridge is available with \`icarus mcp install ${agent}\` if its tools are missing. MCP registration creates/uses the repository memory shard; it does **not** require a harness. If registration changed or a background update finishes, restart ${agent} before relying on MCP tools. Never hand-write \`.icarus\` state. Initialize the harness only when the repository opted into the harness profile or the actual task is high-risk.
-
-ICARUS is primarily the repository's persistent memory filesystem, not a task gate. It needs no LLM key, embedding key, or remote service to save and retrieve local durable knowledge: local lexical recall remains the baseline, while vectors and reranking are optional quality improvements. Treat facts, decisions, instructions, and meaningful events as distinct memory types through precise tags such as \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, and \`memory:event\`. Keep temporary task state short-lived unless it matters to a later session.
-
-Before non-trivial work, retrieve only targeted prior context with \`icarus_recall\`, \`icarus_recall_bugs\`, \`icarus_why_code\`, or \`icarus_graph_query\`. After a confirmed outcome, persist durable decisions, invariants, root causes, verified patches, refactors, code summaries, and meaningful test coverage. Do not save transcripts, routine progress, secrets, or speculation.
-
-Use full task governance only for production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work requiring an auditable cross-session handoff. For ordinary low-risk work, keep moving with targeted memory and normal repository inspection. Vector, reranker, graph, or harness outages must not block safe low-risk work or discard lexical local recall.`;
-}
+function globalSkillBody(agent) { return require('./agent-guidance.js').mainSkill(agent); }
 function installGlobalSkill(agent) {
   const p = globalSkillPath(agent);
   if (!p) return { installed: false, reason: 'no confirmed global skills directory', path: null };
-  const content = globalSkillBody(agent);
-  const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
-  if (existing === content) return { installed: false, reason: 'already installed', path: p };
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, content);
-  return { installed: true, reason: existing == null ? 'added' : 'updated', path: p };
+  const guidance = require('./agent-guidance.js');
+  const mainDir = path.dirname(p), skillsDir = path.dirname(mainDir);
+  const files = {
+    [p]: globalSkillBody(agent),
+    ...Object.fromEntries(Object.entries(guidance.referenceFiles()).map(([name, body]) => [path.join(mainDir, name), body])),
+    [path.join(skillsDir, 'icarus-coding-memory', 'SKILL.md')]: guidance.codingSkill(),
+    [path.join(skillsDir, 'icarus-memory-history', 'SKILL.md')]: guidance.historySkill(),
+  };
+  let changed = false;
+  const existed = fs.existsSync(p);
+  for (const [file, content] of Object.entries(files)) {
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === content) continue;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    changed = true;
+  }
+  return { installed: changed, reason: changed ? (existed ? 'updated' : 'added') : 'already installed', path: p };
 }
 
 // Generic marker-wrapped block writer/remover — the same idempotent-append, surgical-remove
@@ -382,48 +366,7 @@ function removeStandingInstructions() { return removeMarkedBlock(globalClaudeMdP
 // every request the same way CLAUDE.md/AGENTS.md do.
 
 function projectBlockBody(orgName, agentName, { harnessEnabled = false } = {}) {
-  return `## ICARUS memory (this project)
-
-This repo's icarus org is **${orgName}** — pass \`org: "${orgName}"\` on icarus tool calls (icarus_recall, icarus_save_memory, icarus_ingest_code, etc.) instead of the default "default" org, so this project's memories stay separate from every other repo on this machine.
-
-### Mandatory first-session bootstrap
-
-At the beginning of **every new agent session**, first run \`icarus update --check\`. If it reports an update, start \`icarus update\` in the background and immediately continue the user's task—never wait for it or make safe work depend on it. Ensure the MCP bridge is installed with \`icarus mcp install ${agentName}\` if its ICARUS tools are unavailable. The repository-local memory shard is ready without a harness manifest. ${harnessEnabled ? `This repository opted into the harness profile: if \`.icarus/manifest.yaml\` is absent, run \`icarus harness init --agent ${agentName} --repo .\` (or call \`icarus_harness_init\`) before harness-dependent work.` : `Do **not** initialize a harness merely because a session started. Use \`icarus_harness_init\` only when the user opts this repository into the harness or an actual high-risk task needs governed execution.`} If MCP registration changes or the background update finishes, restart ${agentName} before relying on the new MCP binary. Treat an initialization failure as a blocker only for harness-dependent work: do not invent harness state or manually write \`.icarus\`. Do not run \`icarus_doctor\`, build the graph, or create a task merely because a session started.
-
-### Risk-based operating policy
-
-Use the relevant ICARUS and available HIVEMIND MCP tools deliberately; **do not call every tool on every turn**.
-
-### Default memory-engine loop
-
-ICARUS's default job in this repository is a lightweight, durable memory filesystem — **not** a task gate. It works without an LLM, embedding key, or reachable remote provider: local lexical recall is the baseline; vectors and reranking only improve ranking when available. Use it to avoid re-reading large repositories and losing important reasoning between sessions:
-
-1. Before a non-trivial change, call targeted \`icarus_recall\`, \`icarus_recall_bugs\`, \`icarus_why_code\`, or \`icarus_graph_query\` for the decision, subsystem, bug, or symbol actually in scope.
-2. Keep only the returned, task-relevant evidence in working context. Do not paste whole documents, previous transcripts, or broad repository dumps into the context window.
-3. After a confirmed outcome, save durable knowledge: decisions, invariants, root causes, non-obvious patches, verification facts, and safe handoff notes. Tag the record precisely: \`memory:fact\`, \`memory:decision\`, \`memory:instruction\`, or \`memory:event\`; reserve \`memory:task\` for time-bounded state that must survive a handoff.
-4. On a later session or resumed task, recall the saved material instead of reconstructing it from scratch. Use \`icarus_compact\` occasionally after substantial deletion or cleanup.
-
-Remote embeddings and reranking improve recall quality when available, but local lexical evidence remains usable when they are unavailable. Do not treat a vector, reranker, graph, or harness outage as a reason to discard local evidence or block safe low-risk work.
-
-- **Fast/read-only lane:** for investigation, log analysis, architecture questions, curls, status, or ordinary answers, do not create a governed task. Use \`icarus_recall\` only when prior project knowledge could change the answer. Use \`icarus_why_code\` or \`icarus_recall_bugs\` before changing unfamiliar or historically fragile code. Use HIVEMIND tools only for scoped shared memory or live-system facts they own.
-- **Normal code-change lane:** before a non-trivial bug fix or feature, recall only targeted prior decisions, bugs, refactors, and test coverage. A graph is an optional accelerator, never a prerequisite: use \`icarus_graph_query\` only if an index is already available. If it is absent or stale, inspect the relevant files directly and continue. Build with \`icarus_graph_build\` only when the user explicitly asks for a graph or after a major restructuring, and accept its bounded result without waiting/retrying. Never say a graph is “required” before tracing, planning, or editing ordinary work; graph failure must not block low-risk work.
-- **Full governed lifecycle:** use \`icarus_task_start\` (with \`worktree\` + \`branch\`) → \`icarus_task_transition\` → \`icarus_context_get\` → \`icarus_action_check\` → \`icarus_checkpoint\` → \`icarus_task_handoff\` only for high-risk changes: production/deployment, migrations, tenant/auth/billing/security changes, destructive operations, broad refactors, or work that must resume safely across sessions. Advance \`created → orienting → contracted → planned → executing\` one legal state at a time. Checkpoint, verify, and seal observe only the bound worktree. If a worktree is stale, call \`icarus_task_doctor\` — never delete \`.codex\`. Use \`icarus_task_verify\` only for executable criteria; verification still requires real production receipts, and ICARUS never replaces authenticated curls, database checks, logs, or lifecycle canaries.
-
-### Durable project memory
-
-Save only durable, reusable knowledge — never a transcript or routine progress noise. After a confirmed outcome, use the appropriate tool with this repo org:
-
-- \`icarus_log_decision\` for an architectural/API/library decision, alternatives, rationale, and affected files.
-- \`icarus_save_memory\` for a user preference, invariant, crucial note, incident root cause, or verified patch lesson; use precise tags and \`relationship: "update"\` when superseding a prior fact.
-- \`icarus_track_refactor\` after a significant rename, move, split, merge, extract, or restructure.
-- \`icarus_ingest_code\` for a durable code summary worth recalling across sessions, and \`icarus_test_coverage\` when a meaningful test contract is established or changed.
-- \`icarus_recall_bugs\`, \`icarus_why_code\`, and \`icarus_recall\` when their saved knowledge is relevant before planning or editing; do not broad-recall by ritual.
-
-Read \`docs/AGENT_MEMORY_ENGINE.md\` in the ICARUS repository for the complete memory-engine operating guide and tool-to-use-case map.
-
-If HIVEMIND MCP tools are available, use their authoritative shared-memory, tenant, and production-evidence tools for information that belongs there. Keep this repo's ICARUS org isolated; never use a default/shared org or copy tenant-scoped data across boundaries. A harness failure is distinct from a product failure: record it as a harness issue, continue safe low-risk work, and do not claim the product lifecycle is blocked unless the product itself is blocked.
-
-After a sealed task reveals a reusable procedure, call \`icarus_harness_skill_authoring_brief\`. Use the returned evidence and scope to draft a narrow proposed procedure, then call \`icarus_harness_skill_propose\`. Never present a proposal as active: only ICARUS replay evaluation and promotion can place it in future context.`;
+  return require('./agent-guidance.js').projectInstructions(orgName, agentName, harnessEnabled);
 }
 
 const PROJECT_MARK_START = '<!-- icarus:project-instructions -->';

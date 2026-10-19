@@ -59,23 +59,11 @@ test('the memory-first project block makes durable memory explicit without silen
     assert.ok(text.includes('icarus mcp install codex'));
     assert.ok(text.includes('Do **not** initialize a harness merely because a session started.'));
     assert.ok(!text.includes('This repository opted into the harness profile'));
-    assert.ok(text.includes('icarus_harness_init'));
-    assert.ok(text.includes('Treat an initialization failure as a blocker'));
-    assert.ok(text.includes('Risk-based operating policy'));
-    assert.ok(text.includes('Fast/read-only lane'));
-    assert.ok(text.includes('Full governed lifecycle'));
-    assert.ok(text.includes('icarus_recall_bugs'));
-    assert.ok(text.includes('icarus_why_code'));
-    assert.ok(text.includes('icarus_log_decision'));
-    assert.ok(text.includes('icarus_track_refactor'));
-    assert.ok(text.includes('icarus_save_memory'));
-    assert.ok(text.includes('icarus_graph_build'));
-    assert.ok(text.includes('icarus_context_get'));
-    assert.ok(text.includes('icarus_task_transition'));
+    assert.ok(text.includes('single MCP tool'));
     assert.ok(text.includes('planned → executing'));
-    assert.ok(text.includes('icarus_task_verify'));
-    assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
-    assert.ok(text.includes('without an LLM, embedding key, or reachable remote provider'));
+    assert.ok(text.includes('Local save/get/list/update/delete'));
+    assert.ok(text.includes('Developer sign-in is identity only'));
+    assert.ok(text.length < 2500, 'project instructions must stay bounded');
     assert.ok(text.includes('memory:fact'));
     assert.ok(text.includes('memory:decision'));
     assert.ok(text.includes('memory:instruction'));
@@ -104,9 +92,9 @@ test('global agent skills contain self-bootstrap and risk-based memory guidance'
     const text = mi.globalSkillBody(agent);
     assert.ok(text.includes(`icarus mcp install ${agent}`));
     assert.ok(text.includes('does **not** require a harness'));
-    assert.ok(text.includes('icarus_recall_bugs'));
+    assert.ok(text.includes('action:"describe"'));
     assert.ok(text.includes('Use full task governance only for'));
-    assert.ok(text.includes('no LLM key, embedding key, or remote service'));
+    assert.ok(text.includes('no LLM, embedding model'));
     assert.ok(text.includes('memory:fact'));
   }
   assert.equal(mi.globalSkillPath('cursor'), null, 'do not invent a Cursor global skill location');
@@ -146,7 +134,7 @@ test('re-running refreshes an older managed block while preserving surrounding u
     assert.equal(result.reason, 'updated');
     assert.ok(text.includes('USER PROLOGUE'));
     assert.ok(text.includes('USER EPILOGUE'));
-    assert.ok(text.includes('icarus_harness_skill_authoring_brief'));
+    assert.ok(text.includes('single MCP tool'));
     assert.equal(text.split(MARK_START).length - 1, 1);
   });
 });

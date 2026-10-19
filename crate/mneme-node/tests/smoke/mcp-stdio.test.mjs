@@ -18,10 +18,10 @@ afterEach(() => {
   children.clear();
 });
 
-function startMcp() {
+function startMcp({ legacy = true, home } = {}) {
   const child = spawn(process.execPath, [CLI, 'mcp-serve'], {
-    cwd: join(HERE, '..', '..'),
-    env: { ...process.env, NO_COLOR: '1' },
+    cwd: home || join(HERE, '..', '..'),
+    env: { ...process.env, NO_COLOR: '1', ICARUS_MCP_LEGACY_TOOLS: legacy ? '1' : '', ...(home ? { ICARUS_HOME: home } : {}) },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -76,6 +76,25 @@ function startMcp() {
   };
   return { request, notify, messages };
 }
+
+test('compact MCP advertises one tool and discloses individual schemas on demand', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'icarus-meta-discovery-'));
+  try {
+    const mcp = startMcp({ legacy: false, home });
+    await mcp.request(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'compact-acceptance', version: '1' } });
+    mcp.notify('notifications/initialized', {});
+    const listed = await mcp.request(2, 'tools/list', {});
+    assert.deepEqual(listed.result.tools.map(t => t.name), ['icarus']);
+    const result = await mcp.request(3, 'tools/call', { name: 'icarus', arguments: { action: 'describe', args: { tool: 'hivemind_save_memory' } } });
+    const schema = JSON.parse(result.result.content[0].text);
+    assert.ok(schema.inputSchema.required.includes('content'));
+    assert.ok(schema.inputSchema.properties.scope);
+    const invalid = await mcp.request(4, 'tools/call', { name: 'icarus', arguments: { action: 'save_memory', args: { title: 'missing content' } } });
+    assert.equal(invalid.result.isError, true);
+    const discovered = await mcp.request(5, 'tools/call', { name: 'icarus', arguments: { action: 'discover', args: { query: 'history' } } });
+    assert.ok(JSON.parse(discovered.result.content[0].text).tools.some(t => t.action === 'timeline'));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 test('MCP stdio server completes initialize and exposes the public tool surface', async () => {
   const mcp = startMcp();

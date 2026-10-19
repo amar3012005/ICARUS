@@ -44,7 +44,10 @@ const RELATIONSHIP_ENUM = z.enum(['update', 'extend', 'derive', 'contradict', 'p
 const RELATIONSHIP_ENUM_WITH_ALL = z.enum(['update', 'extend', 'derive', 'contradict', 'partof', 'mentions', 'all']);
 
 async function run() {
-  const server = new McpServer({ name: 'icarus', version: '1.0.0' });
+  const { createToolkit, installToolkit } = require('./mcp-toolkit.js');
+  const toolkit = createToolkit();
+  // Collect existing schemas/handlers once; compact and legacy surfaces dispatch identically.
+  const server = toolkit;
   const memoryCall = (operation, args) => callMemory(operation, args, loadCfg());
 
   server.registerTool(
@@ -95,12 +98,15 @@ async function run() {
         topK: z.number().int().positive().max(200).default(5),
         usePq: z.boolean().default(false).describe('Use PQ/ADC recall instead of the default hybrid recall — requires icarus_train_pq to have run first for this org'),
         scope: z.enum(['repo', 'user', 'all']).default('all').describe('repo = this checkout shard only; user = ~/.icarus/data; all = both (default)'),
+        tags: z.array(z.string()).default([]),
+        project: z.string().optional(), source_type: z.string().optional(),
+        mode: z.enum(['quick', 'balanced', 'deep']).optional().describe('HIVEMIND compatibility hint; ICARUS always returns bounded raw local evidence'),
       },
     },
-    async ({ query, org, topK, usePq, scope }) => {
+    async ({ query, org, topK, usePq, scope, tags, project, source_type }) => {
       try {
         const cfg = loadCfg();
-        const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq, scope: scope || 'all' });
+        const hits = await memoryCall('recall', { query, org: org || 'default', topK: topK || 5, usePq: !!usePq, scope: scope || 'all', tags, project, source_type });
         require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_recalled', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
@@ -151,13 +157,14 @@ async function run() {
         scope: z.enum(['repo', 'user']).default('repo').describe('repo writes <repo>/.icarus/data (default); user writes ~/.icarus/data so it survives leaving this checkout'),
         relationship: RELATIONSHIP_ENUM.optional().describe('Real typed edge to an existing memory -- update|extend|derive|contradict|partof|mentions. "update" also marks the target superseded (excluded from future recall).'),
         related_to: z.string().optional().describe('Memory id this relates to -- required together with relationship'),
+        valid_time: z.string().datetime({ offset: true }).optional().describe('When this fact became true; defaults to now'),
       },
     },
-    async ({ title, content, tags, source_type, org, project, relationship, related_to, scope }) => {
+    async ({ title, content, tags, source_type, org, project, relationship, related_to, scope, valid_time }) => {
       try {
         const cfg = loadCfg();
         const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
-          title, tags, sourceType: source_type, project, relationship, relatedTo: related_to, scope: scope || 'repo',
+          title, tags, sourceType: source_type, project, relationship, relatedTo: related_to, scope: scope || 'repo', validFrom: valid_time ? Date.parse(valid_time) : undefined,
         } });
         require('./telemetry.js').record(require('./cli-lib.js').HOME, cfg, 'memory_saved', { version: require('./cli-lib.js').ICARUS_VERSION });
         return textResult(r);
@@ -212,14 +219,15 @@ async function run() {
         memory_id: z.string().describe('Memory id to update'),
         content: z.string().optional().describe('New content (re-embedded if provided)'),
         title: z.string().optional().describe('New title'),
+        valid_time: z.string().datetime({ offset: true }).optional().describe('When the corrected fact became true'),
         tags: z.array(z.string()).optional().describe('New tags (replaces existing entirely)'),
         org: z.string().default('default'),
       },
     },
-    async ({ memory_id, content, title, tags, org }) => {
+    async ({ memory_id, content, title, tags, org, valid_time }) => {
       try {
         const cfg = loadCfg();
-        const r = await memoryCall('update_structured', { memory_id, patch: { content, title, tags }, org: org || 'default' });
+        const r = await memoryCall('update_structured', { memory_id, patch: { content, title, tags, ...(valid_time ? { valid_from: Date.parse(valid_time) } : {}) }, org: org || 'default' });
         return textResult(r);
       } catch (e) { return errorResult(e); }
     },
@@ -253,7 +261,7 @@ async function run() {
         title: z.string().describe('Conversation topic'),
         messages: z.array(z.object({ role: z.string(), content: z.string() })).describe('Array of {role, content} -- a summary, not a full transcript'),
         tags: z.array(z.string()).default([]),
-        platform: z.enum(['claude', 'cursor', 'chatgpt', 'other']).optional(),
+        platform: z.enum(['codex', 'claude', 'cursor', 'vscode', 'chatgpt', 'other']).optional(),
         org: z.string().default('default'),
       },
     },
@@ -300,16 +308,17 @@ async function run() {
         file_path: z.string().describe('Path to the file, e.g. src/auth/middleware.ts'),
         content: z.string().describe('Full file content or relevant snippet'),
         summary: z.string().optional().describe('Human-readable summary (1-3 sentences)'),
+        related_to: z.string().optional().describe('Override the automatic prior file version'),
         project: z.string().optional(),
         tags: z.array(z.string()).default([]),
         org: z.string().default('default'),
       },
     },
-    async ({ file_path, content, summary, project, tags, org }) => {
+    async ({ file_path, content, summary, project, tags, org, related_to }) => {
       try {
         const cfg = loadCfg();
         const fileTag = `file:${file_path}`;
-        const prior = (await memoryCall('list_structured', { org: org || 'default', options: { tags: [fileTag], limit: 1 } }))[0];
+        const prior = related_to ? { id: related_to } : (await memoryCall('list_structured', { org: org || 'default', options: { tags: [fileTag], limit: 1 } }))[0];
         const body = summary ? `${summary}\n\n${content}` : content;
         const r = await memoryCall('save_structured', { content: body, org: org || 'default', options: {
           title: file_path, tags: [...tags, 'code', fileTag], sourceType: 'code', project,
@@ -328,18 +337,20 @@ async function run() {
       description: 'Call before writing code in an area to avoid repeating known bugs. Filters recall to entries tagged bug, fix, or gotcha -- only memories YOU (or a prior session) explicitly tagged that way, not a fuzzy guess.',
       inputSchema: {
         context: z.string().describe('What you are about to implement, or the error you are seeing'),
+        project: z.string().optional(),
         file_path: z.string().optional().describe('File currently being edited -- narrows to entries also tagged file:<path>'),
         limit: z.number().int().positive().max(20).default(5),
         org: z.string().default('default'),
       },
     },
-    async ({ context, file_path, limit, org }) => {
+    async ({ context, file_path, limit, org, project }) => {
       try {
         const cfg = loadCfg();
         const hits = await memoryCall('recall_by_tags', { query: context, org: org || 'default', options: {
           requireAnyTags: ['bug', 'fix', 'gotcha'],
           requireAllTags: file_path ? [`file:${file_path}`] : [],
           limit: limit || 5,
+          project,
         } });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
@@ -391,17 +402,18 @@ async function run() {
         reason: z.string().describe('Why this refactoring was done'),
         affected_files: z.array(z.string()).default([]),
         project: z.string().optional(),
+        tags: z.array(z.string()).default([]),
         related_to: z.string().optional().describe('Memory id of the original code memory'),
         org: z.string().default('default'),
       },
     },
-    async ({ refactor_type, old_name, new_name, reason, affected_files, project, related_to, org }) => {
+    async ({ refactor_type, old_name, new_name, reason, affected_files, project, related_to, org, tags }) => {
       try {
         const cfg = loadCfg();
         const content = `${refactor_type}: "${old_name}" -> "${new_name}"\nReason: ${reason}${affected_files.length ? `\nAffected files: ${affected_files.join(', ')}` : ''}`;
         const r = await memoryCall('save_structured', { content, org: org || 'default', options: {
           title: `${refactor_type}: ${old_name} -> ${new_name}`,
-          tags: ['refactor', refactor_type, ...affected_files.map((f) => `file:${f}`)],
+          tags: [...tags, 'refactor', refactor_type, ...affected_files.map((f) => `file:${f}`)],
           sourceType: 'code', project,
           ...(related_to ? { relationship: 'derive', relatedTo: related_to } : {}),
         } });
@@ -417,7 +429,7 @@ async function run() {
       description: 'action=save records which functions have tests (and what those tests cover). action=recall retrieves coverage BEFORE modifying code so you know what tests must still pass.',
       inputSchema: {
         action: z.enum(['save', 'recall']),
-        function_name: z.string().describe('Function, class, or module name'),
+        function_name: z.string().optional().describe('Function, class, or module name; required for save'),
         file_path: z.string().optional(),
         test_file: z.string().optional().describe('Path to test file (save action)'),
         test_cases: z.array(z.string()).default([]).describe('Test case descriptions (save action)'),
@@ -429,8 +441,9 @@ async function run() {
     async ({ action, function_name, file_path, test_file, test_cases, coverage_pct, project, org }) => {
       try {
         const cfg = loadCfg();
-        const fnTag = `fn:${function_name}`;
+        const fnTag = function_name ? `fn:${function_name}` : null;
         if (action === 'save') {
+          if (!function_name) throw new Error('function_name is required when saving test coverage');
           const parts = [`Test coverage for ${function_name}`];
           if (test_file) parts.push(`Test file: ${test_file}`);
           if (test_cases.length) parts.push(`Cases: ${test_cases.join('; ')}`);
@@ -442,7 +455,7 @@ async function run() {
           } });
           return textResult(r);
         }
-        const hits = await memoryCall('recall_by_tags', { query: function_name, org: org || 'default', options: { requireAnyTags: ['test-coverage'], requireAllTags: [fnTag], limit: 5 } });
+        const hits = await memoryCall('recall_by_tags', { query: function_name || file_path || 'test coverage', org: org || 'default', options: { requireAnyTags: ['test-coverage'], requireAllTags: [...(fnTag ? [fnTag] : []), ...(file_path ? [`file:${file_path}`] : [])], project, limit: 5 } });
         return textResult(hits);
       } catch (e) { return errorResult(e); }
     },
@@ -455,13 +468,14 @@ async function run() {
       description: 'Call before modifying code you did not write or do not remember the context for. Returns relevant decisions, refactors, bug fixes, and code references, categorised into buckets by tag.',
       inputSchema: {
         query: z.string().describe('What you want to understand'),
+        project: z.string().optional(),
         file_path: z.string().optional(),
         function_name: z.string().optional(),
         limit: z.number().int().positive().max(20).default(8),
         org: z.string().default('default'),
       },
     },
-    async ({ query, file_path, function_name, limit, org }) => {
+    async ({ query, file_path, function_name, limit, org, project }) => {
       try {
         const cfg = loadCfg();
         const requireAllTags = [
@@ -469,8 +483,8 @@ async function run() {
           ...(function_name ? [`fn:${function_name}`] : []),
         ];
         const wide = requireAllTags.length
-          ? await memoryCall('recall_by_tags', { query, org: org || 'default', options: { requireAllTags, limit: limit || 8 } })
-          : (await memoryCall('recall', { query, org: org || 'default', topK: limit || 8, usePq: false }));
+          ? await memoryCall('recall_by_tags', { query, org: org || 'default', options: { requireAllTags, project, limit: limit || 8 } })
+          : (await memoryCall('recall', { query, org: org || 'default', topK: limit || 8, project, usePq: false }));
         const buckets = { decisions: [], refactors: [], bugs: [], other: [] };
         for (const h of wide) {
           const tags = h.tags || [];
@@ -963,8 +977,11 @@ async function run() {
     },
   );
 
+  require('./mcp-extra-tools.js').registerExtraTools(server, memoryCall);
+  const mcp = new McpServer({ name: 'icarus', version: require('./cli-lib.js').ICARUS_VERSION });
+  installToolkit(mcp, toolkit, { legacy: process.env.ICARUS_MCP_LEGACY_TOOLS === '1' });
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await mcp.connect(transport);
 }
 
 module.exports = { run };

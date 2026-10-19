@@ -28,6 +28,9 @@ test('global Auto preserves other MCP entries and repository files; reruns are i
     assert.ok(JSON.parse(readFileSync(join(home,'.cursor/mcp.json'))).mcpServers.other);
     assert.equal(readFileSync(join(home,'repo/AGENTS.md'),'utf8'),'User instructions\n');assert.equal(existsSync(join(home,'repo/.icarus')),false);
     assert.ok(existsSync(join(home,'.codex/skills/icarus-agent-memory/SKILL.md')));
+    for (const resource of ['icarus-agent-memory/references/coding.md', 'icarus-agent-memory/references/history.md', 'icarus-coding-memory/SKILL.md', 'icarus-memory-history/SKILL.md']) {
+      assert.ok(existsSync(join(home, '.codex/skills', resource)), `missing installed skill resource: ${resource}`);
+    }
   }finally{rmSync(home,{recursive:true,force:true});}
 });
 test('Auto skips absent clients instead of creating their directories',()=>{

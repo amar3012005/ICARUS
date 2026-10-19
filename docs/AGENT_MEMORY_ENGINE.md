@@ -5,6 +5,8 @@ ICARUS has two independent roles:
 1. **Memory engine (default):** a local, durable project memory filesystem.
 2. **Harness and governance (risk-based):** a certification path for high-risk work.
 
+The default MCP entry point is now the single `icarus({action,args})` toolkit. Use `discover` to find actions and `describe` to load one schema. Names such as `icarus_recall` below identify operations: call them as `icarus({action:"recall",args:{...}})`, or enable `ICARUS_MCP_LEGACY_TOOLS=1` for the individual tool surface. Read [MCP_TOOLKIT.md](MCP_TOOLKIT.md) for compatibility, history and optional hosted-service boundaries.
+
 Do not make normal development wait on the harness. A coding agent should use the memory engine on every non-trivial project as a small retrieval-and-save loop.
 
 The intended experience is similar to managed agent-memory systems: durable facts, events, instructions, and explicit task state can survive the chat that created them, while an agent retrieves only the small slice relevant to its next action. ICARUS does this locally by default; it does **not** need an LLM, embedding API key, or remote reranker to save and recall project knowledge.

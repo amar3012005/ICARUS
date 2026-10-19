@@ -1245,7 +1245,7 @@ function rrfMerge(listA, listB, k = 60) {
 function unwrapHit(h) {
   const rec = tryParseMemoryRecord(h.text);
   if (!rec) return h;
-  return { ...h, text: memoryDisplayText(rec), memoryId: rec.id, tags: rec.tags || [], isLatest: rec.is_latest !== false };
+  return { ...h, text: memoryDisplayText(rec), memoryId: rec.id, tags: rec.tags || [], project: rec.project, source_type: rec.source_type, isLatest: rec.is_latest !== false };
 }
 
 /** Real gap: native update()'s own doc comment claims "Recall then returns only the latest" —
@@ -1261,13 +1261,14 @@ function dropSuperseded(hits) { return hits.filter((h) => h.isLatest !== false);
  * wide semantic recall, then keeps only hits whose structured tags intersect requireAnyTags — a
  * hit with no tags at all (plain prose from /save or /ingest, never tagged) is excluded, matching
  * the real semantic exactly rather than a fuzzy best-effort fallback. */
-async function recallByTags(query, org, cfg, { requireAnyTags = [], requireAllTags = [], limit = 5 } = {}) {
+async function recallByTags(query, org, cfg, { requireAnyTags = [], requireAllTags = [], limit = 5, project } = {}) {
   const wide = await recallQuery(query, org, cfg, Math.max(limit * 6, 30), false);
   return wide
     .filter((h) => {
       const tags = h.tags || [];
       if (requireAnyTags.length && !requireAnyTags.some((t) => tags.includes(t))) return false;
       if (requireAllTags.length && !requireAllTags.every((t) => tags.includes(t))) return false;
+      if (project && h.project !== project && !tags.includes(`project:${project}`)) return false;
       return true;
     })
     .slice(0, limit);
@@ -1332,7 +1333,7 @@ async function recallQueryOn(query, org, cfg, topK = 5, usePq = false) {
   if (!viaHivemind || !auxiliaryQueryAvailable) {
     // Disconnected: the hybrid merge IS the final result — no rerank stage.
     return merged.slice(0, topK).map((h) => ({
-      score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical', memoryId: h.memoryId, tags: h.tags,
+      score: h.rrfScore ?? h.score, text: h.text, mode: qv ? 'hybrid' : 'lexical', memoryId: h.memoryId, tags: h.tags, project: h.project, source_type: h.source_type,
     }));
   }
   // Connected: narrow re-score the wide hybrid candidates with the real cross-encoder.
@@ -1832,7 +1833,8 @@ async function saveStructuredMemory(content, org, cfg, opts = {}) {
   const rec = {
     id, content, title: opts.title || null, tags: Array.isArray(opts.tags) ? opts.tags : [],
     source_type: opts.sourceType || null, layer: 'memory', created_at: now.toISOString(),
-    valid_from: now.getTime(), is_latest: true, project: opts.project || null,
+    valid_from: opts.validFrom ?? now.getTime(), transaction_time: now.toISOString(),
+    is_latest: true, project: opts.project || null,
   };
   let vec = new Float32Array(cfg.dim);
   let vectorMode = false;
@@ -1920,6 +1922,8 @@ async function updateStructuredMemory(memoryId, patch, org, cfg) {
   if (!old) throw new Error(`memory "${memoryId}" exists but isn't a structured record — can't update it with this tool`);
   const merged = {
     ...old,
+    transaction_time: new Date().toISOString(),
+    valid_from: patch.valid_from ?? old.valid_from,
     content: patch.content ?? old.content,
     title: patch.title !== undefined ? patch.title : old.title,
     tags: Array.isArray(patch.tags) ? patch.tags : old.tags,
