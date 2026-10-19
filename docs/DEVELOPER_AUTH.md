@@ -116,3 +116,15 @@ authorization code. Server email/code expiry is unchanged. Automated fake-clock 
 the default deadline, and a real loopback recovery test rejects the prior state before completing
 a fresh PKCE exchange. Local memory continues to work throughout. Bus/Computer Use source
 presence is independent of this account flow.
+
+
+## Timeout patch release — v0.3.91
+
+Published [v0.3.91](https://github.com/amar3012005/ICARUS/releases/tag/v0.3.91) from
+`8cef678df854c2404f305ffbe461cbeb8cb3f440`. Workflow `39268732885` passed all five platform
+builds, publication, and Windows/Linux ARM64 cold-download checks. All 154 CLI tests passed,
+including default-timeout and fresh-state/PKCE recovery coverage. The built macOS ARM64 binary
+passed checksum, version and provenance verification and a real browser-to-terminal handoff
+using the email-verified session. It visibly reported the fifteen-minute wait, stored a mode-0600
+developer credential, and returned identity 200 with null organization and no customer connection.
+This patch changes the CLI only; it does not require another backend or frontend deployment.

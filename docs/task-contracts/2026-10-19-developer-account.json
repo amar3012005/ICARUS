@@ -1,6 +1,6 @@
 {
   "title": "ICARUS flagship local modules and optional developer sign-in",
-  "status": "releasing",
+  "status": "complete",
   "baseline_sha": "b9499b0392bbc1f67808b0f884775474f9749ae0",
   "native_owner": "ICARUS CLI; HIVEMIND control-plane identity; Da-vinci login UI",
   "outcome": "Concrete independent local module checkouts and developer-scoped email/Google browser-to-terminal authorization",
@@ -24,7 +24,8 @@
       "passed": true,
       "evidence": [
         "152 complete CLI tests, 37 backend/email tests, 3 release-config preservation tests, 11 rendered/mobile UI tests, 5 frontend Node tests passed",
-        "All 5 CLI platform artifacts built; macOS ARM64 checksum, provenance, version and offline memory cold checks passed"
+        "All 5 CLI platform artifacts built; macOS ARM64 checksum, provenance, version and offline memory cold checks passed",
+        "Timeout patch v0.3.91: 154 CLI tests including default deadline and fresh-state/PKCE recovery; all five release builds and published cold checks passed."
       ]
     },
     {
@@ -58,12 +59,18 @@
     "requested": true,
     "source_sha": "53d99eda62e59e91b11f36625439ed46a175ee8c",
     "artifact": "Published v0.3.90: 5 platform binaries/checksums/SBOMs, workflow 39265537628 passed including Windows/Linux ARM64 cold checks; macOS public artifact checksum/version/provenance verified. Control-plane sha-44dbea8b healthy; developer frontend deployed and preserved through later independent releases.",
-    "rollback": "Frontend prior Worker e607c168-54e1-4f21-a1d9-4b0b6d9fcdc7; control-plane sha256:e6ac7e0a359f28f385510895fbbf3307249b848bb72764992e909850998840d2"
+    "rollback": "Frontend prior Worker e607c168-54e1-4f21-a1d9-4b0b6d9fcdc7; control-plane sha256:e6ac7e0a359f28f385510895fbbf3307249b848bb72764992e909850998840d2",
+    "timeout_patch": {
+      "version": "0.3.91",
+      "source_sha": "8cef678df854c2404f305ffbe461cbeb8cb3f440",
+      "workflow": 39268732885,
+      "result": "All five platform builds, publication and Windows/Linux ARM64 cold checks passed; 154 CLI tests passed; macOS ARM64 checksum/provenance/version and live verified-session handoff passed."
+    }
   },
   "blockers": [],
   "limitations": [
     "New-identity enrollment is automatically tested; the unused email alias received its email but was not verified live.",
-    "v0.3.90 three-minute CLI wait expired during live human email entry; v0.3.91 extends wait to fifteen minutes with explicit recovery. Patch publication in progress.",
+    "A human journey can still exceed the bounded fifteen-minute wait; the CLI explains retry using a verified browser session. State/PKCE and server email/code expiry remain unchanged.",
     "No npm engine publication or Bus/Computer Use bridge implementation included."
   ]
 }
