@@ -27,6 +27,11 @@ on:
       tag:
         description: 'Existing tag to (re)build and publish, e.g. v0.4.0'
         required: true
+      publish_release:
+        description: 'Publish the release after building; false stages verified Actions artifacts only'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write   # required to create the release and upload assets
@@ -208,6 +213,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'push' || inputs.publish_release != false
     needs: [verify-version, build]
     runs-on: ubuntu-latest
     steps:

@@ -6,7 +6,14 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
-## Unreleased
+## v0.3.90
+
+### Changed
+- **Optional developer identity:** `icarus connect` uses SINGULANCE email/Google login with
+  developer-specific context, a loopback callback, state and S256 PKCE. Identity credentials stay
+  separate from hosted customer keys; local memory does not require sign-in.
+- **Explicit module workspace:** Memory and opt-in Harness retain their existing paths. Independent
+  Bus and Computer Use source checkouts are optional, experimental and excluded from flagship tracking.
 
 ### Added
 - **Opt-in anonymous usage metrics:** `icarus telemetry enable|disable|status|flush` records only
