@@ -72,7 +72,7 @@ vector service, a relational store, and a graph database.
 
 ### 01 — Install the agent CLI
 
-CLI **v0.3.92** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
+CLI **v0.3.93** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
 x64/ARM64, and native Windows x64. No Node.js or Rust toolchain is needed on those platforms.
 
 **macOS / Linux / WSL:**
@@ -126,7 +126,7 @@ icarus mcp install codex --global        # Only Codex, in this user account
 icarus mcp install claude --global       # Only Claude Code
 ```
 
-For non-interactive installation, set `ICARUS_INSTALL_AGENTS=auto`, `codex`, `claude`, `cursor`, or
+For non-interactive POSIX installation, set `ICARUS_INSTALL_AGENTS=auto`, `codex`, `claude`, `cursor`, or
 `skip` in the installer's environment. Without that setting, non-interactive installation leaves
 agent registration for later. Auto recognizes existing local client configuration, not running
 processes. Supported clients are Codex, Claude Code, and Cursor.
@@ -191,7 +191,7 @@ icarus update
 
 Restart coding-agent sessions after an update so their MCP process uses the new binary. The
 standalone CLI and the `singulance-amr` npm engine have independent releases; the npm package is
-an integration library, not the v0.3.92 CLI installer.
+an integration library, not the v0.3.93 CLI installer.
 
 ## The performance profile
 

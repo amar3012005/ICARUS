@@ -110,7 +110,7 @@ function installClaudeCode(command, repo) {
     cfg.mcpServers[name] = { type: 'stdio', ...entry, env: {} };
     wrote = true;
   }
-  if (!wrote) return { agent: 'claude-code', installed: false, reason: 'already registered' };
+  if (!wrote) return { agent: 'claude-code', installed: false, reason: 'already registered', path: p };
   writeJsonPreserving(p, cfg);
   return { agent: 'claude-code', installed: true, path: p };
 }
@@ -129,7 +129,7 @@ function installCursor(command, repo) {
     cfg.mcpServers[name] = entry;
     wrote = true;
   }
-  if (!wrote) return { agent: 'cursor', installed: false, reason: 'already registered' };
+  if (!wrote) return { agent: 'cursor', installed: false, reason: 'already registered', path: p };
   writeJsonPreserving(p, cfg);
   return { agent: 'cursor', installed: true, path: p };
 }
@@ -152,7 +152,7 @@ function installCodex(command, repo) {
     block += `\n[mcp_servers.${name}]\ncommand = ${JSON.stringify(entry.command)}\nargs = ${argsToml}\n`;
     wrote = true;
   }
-  if (!wrote) return { agent: 'codex', installed: false, reason: 'already registered' };
+  if (!wrote) return { agent: 'codex', installed: false, reason: 'already registered', path: p };
   fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(p, (existing && !existing.endsWith('\n') ? '\n' : '') + block);
   return { agent: 'codex', installed: true, path: p };

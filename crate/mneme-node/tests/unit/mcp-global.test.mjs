@@ -22,7 +22,7 @@ test('global Auto preserves other MCP entries and repository files; reruns are i
     writeFileSync(join(home,'mock-bin/launchctl'),'#!/bin/sh\nexit 0\n',{mode:0o700});
     const env={...process.env,HOME:home,USERPROFILE:home,ICARUS_HOME:join(home,'.icarus'),PATH:join(home,'mock-bin')+':'+process.env.PATH};
     const script='require(process.argv[1]).run({_:[],global:true},{telemetry:{enabled:false}})';
-    for(let i=0;i<2;i++)execFileSync(process.execPath,['-e',script,modulePath],{env,cwd:join(home,'repo'),stdio:'pipe'});
+    for(let i=0;i<2;i++){const output=execFileSync(process.execPath,['-e',script,modulePath],{env,cwd:join(home,'repo'),encoding:'utf8'});assert.doesNotMatch(output,/undefined/);for(const agent of ['codex','claude','cursor'])assert.match(output,new RegExp(agent+': '+(i?'already registered':'registered')+' in '));}
     const claude=JSON.parse(readFileSync(join(home,'.claude.json')));assert.equal(claude.userValue,'keep');assert.ok(claude.mcpServers.other);assert.ok(claude.mcpServers.icarus);
     const codex=readFileSync(join(home,'.codex/config.toml'),'utf8');assert.equal((codex.match(/\[mcp_servers.icarus\]/g)||[]).length,1);assert.ok(codex.includes('[mcp_servers.other]'));
     assert.ok(JSON.parse(readFileSync(join(home,'.cursor/mcp.json'))).mcpServers.other);

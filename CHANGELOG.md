@@ -6,6 +6,12 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
+## v0.3.93
+
+### Fixed
+- **Repeat agent setup:** already-registered clients now report their actual configuration path.
+  Existing MCP entries remain unchanged when user-wide setup is repeated.
+
 ## v0.3.92
 
 ### Fixed
