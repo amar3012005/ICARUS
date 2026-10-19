@@ -72,7 +72,7 @@ vector service, a relational store, and a graph database.
 
 ### 01 — Install the agent CLI
 
-CLI **v0.3.93** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
+CLI **v0.3.94** is available as one self-contained binary on macOS Apple Silicon/Intel, Linux
 x64/ARM64, and native Windows x64. No Node.js or Rust toolchain is needed on those platforms.
 
 **macOS / Linux / WSL:**
@@ -191,9 +191,9 @@ icarus update
 
 Restart coding-agent sessions after an update so their MCP process uses the new binary. The
 standalone CLI and the `singulance-amr` npm engine have independent releases; the npm package is
-an integration library, not the v0.3.93 CLI installer.
+an integration library, not the v0.3.94 CLI installer.
 
-New CLI builds provide a single MCP second-brain toolkit: `icarus({action:"discover",args:{query:"coding"}})` finds operations, `describe` returns one schema, and the chosen action accepts familiar memory/coding arguments inside `args`. Older binaries retain individual tools until upgraded. Local memory works without an embedding model. See the [toolkit guide](docs/MCP_TOOLKIT.md) and [main agent skill](skills/icarus-agent-memory/SKILL.md); coding and history guidance load only when needed.
+ICARUS provides a single MCP second-brain toolkit: `icarus({action:"discover",args:{query:"coding"}})` finds operations, `describe` returns one schema, and the chosen action accepts familiar memory/coding arguments inside `args`. Older binaries retain individual tools until upgraded. Local memory works without an embedding model. See the [toolkit guide](docs/MCP_TOOLKIT.md) and [main agent skill](skills/icarus-agent-memory/SKILL.md); coding and history guidance load only when needed.
 
 ## The performance profile
 

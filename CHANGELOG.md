@@ -6,6 +6,24 @@ Notable changes to mneme / the `.amr` format. Pre-1.0: pin a commit or a publish
 The **format is frozen** — the 202-byte slot in `SPEC.md` has not changed a field since the
 RFC, and a spec-lock test enforces it. Entries below are engine, binding and tooling.
 
+## v0.3.94
+
+### Added
+- **One second-brain MCP toolkit:** `icarus({action,args})` discovers and describes actions on
+  demand instead of advertising every schema. Existing action arguments and common HIVEMIND
+  aliases are supported; `ICARUS_MCP_LEGACY_TOOLS=1` retains the individual tool surface.
+- **Local time travel:** timeline, snapshots and diffs over retained structured AMR versions,
+  with explicit learned/effective timestamps and honest limitations for legacy corrections.
+- **Progressive agent guidance:** main, coding and history skills, bounded session handoffs,
+  SINGULANCE/Amar Sai product context and links, and preserved marked instruction blocks.
+- **Optional Web Intelligence and synthesis:** customer-scoped web adapters and grounded local
+  evidence for the calling agent when no synthesis model is configured. Developer identity
+  grants no customer web authority. Local memory remains usable without embeddings.
+
+### Changed
+- Daemon RPC protocol advances to 3 for history and filtered recall; restart coding clients
+  after upgrading so all sessions use the current executable and daemon protocol.
+
 ## v0.3.93
 
 ### Fixed
